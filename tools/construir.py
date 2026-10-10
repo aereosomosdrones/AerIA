@@ -32,6 +32,10 @@ FUENTES = {
     "cursos": "publico/cursos.json",
     "licitaciones": "publico/licitaciones.json",
 }
+# Opcionales: si faltan, la página arranca con valores vacíos
+OPCIONALES = {
+    "comercial": ("privado/comercial.json", {"fuente": "", "cotizaciones": []}),
+}
 
 
 def data_uri(ruta: Path) -> str:
@@ -43,6 +47,9 @@ def cargar_datos() -> dict:
     if faltan:
         sys.exit("Faltan datos: " + ", ".join(faltan) + "\nVer CLAUDE.md → «Recuperar los datos privados».")
     paquete = {k: json.loads((DATOS / r).read_text(encoding="utf-8")) for k, r in FUENTES.items()}
+    for k, (r, vacio) in OPCIONALES.items():
+        ruta = DATOS / r
+        paquete[k] = json.loads(ruta.read_text(encoding="utf-8")) if ruta.exists() else vacio
     paquete["construido"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     return paquete
 
@@ -54,7 +61,9 @@ def construir() -> Path:
     datos_json = json.dumps(paquete, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     reemplazos = {
         "/*__CSS__*/": (APP / "aeria.css").read_text(encoding="utf-8"),
+        "/*__COMERCIAL__*/": (APP / "comercial.js").read_text(encoding="utf-8"),
         "/*__MOTOR__*/": (APP / "motor.js").read_text(encoding="utf-8"),
+        "/*__UI_COMERCIAL__*/": (APP / "ui-comercial.js").read_text(encoding="utf-8"),
         "/*__UI__*/": (APP / "ui.js").read_text(encoding="utf-8"),
         "__ISO__": data_uri(APP / "marca" / "aereo-iso-mascara.png"),
         "__WORDMARK__": data_uri(APP / "marca" / "aereo-wordmark-mascara.png"),
@@ -72,9 +81,9 @@ def construir() -> Path:
     destino = DIST / "aeria.html"
     destino.write_text(html, encoding="utf-8")
     print(f"AerIA armada → {destino.relative_to(RAIZ)}  ({destino.stat().st_size // 1024} KB)")
-    for k, r in FUENTES.items():
+    for k, r in list(FUENTES.items()) + [(k, v[0]) for k, v in OPCIONALES.items()]:
         d = paquete[k]
-        fecha = d.get("generado_fuente") or d.get("corte") or d.get("extraido") or ""
+        fecha = d.get("generado_fuente") or d.get("corte") or d.get("extraido") or (str(len(d.get("cotizaciones", []))) + " cotizaciones" if "cotizaciones" in d else "")
         print(f"  {k:13s} {r:28s} {str(fecha)[:19]}")
     return destino
 

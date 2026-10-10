@@ -1,0 +1,454 @@
+/* =============================================================================
+   AerIA · PESTAÑA COMERCIAL
+   El dashboard comercial dentro de AerIA: cotizaciones editables (una por
+   documento en la base de la página), embudo, pronóstico de venta B2B, lo
+   ganado, acciones, importador desde el dashboard local y exportación.
+   La lógica vive en comercial.js; aquí solo se dibuja y se edita.
+   ui.js crea este módulo con AeriaComercialUI(ctx) antes de pintar.
+   ============================================================================= */
+(function () {
+  'use strict';
+  window.AeriaComercialUI = function (ctx) {
+    const { $, $$, esc, F, C } = ctx;
+    const S = ctx.S;
+    const L = (S.comUI = S.comUI || { filtro: 'abiertas', linea: '', texto: '', orden: 'monto', ver: 40, editor: null, borrar: false, imp: null });
+    const hoy = () => F.iso(new Date());
+    const ahoraISO = () => new Date().toISOString();
+    const R = () => ctx.I().comercial;
+    const opciones = (lista, actual, vacio) => (vacio != null ? `<option value="">${esc(vacio)}</option>` : '') +
+      lista.map(o => `<option value="${esc(o.id)}"${o.id === actual ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+    const ESTADO_PILL = { borrador: '', enviada: 'media', negociacion: 'oportunidad', ganada: 'bien', perdida: 'critica', vencida: '' };
+    const fechaCorta = s => s ? F.fCorta(s) : '—';
+
+    /* ---------------- vista principal ---------------- */
+    function render() {
+      const v = $('#v-comercial');
+      const Rc = R();
+      if (!Rc) { v.innerHTML = '<p class="panel-b mudo">El módulo comercial no está disponible en esta versión.</p>'; return; }
+      const conectado = ctx.M.dashboardConectado(Rc);
+      const cot = ctx.I().cot;
+      const kp = (l, val, s, cls) => `<div class="panel kpi"><span class="k-l">${l}</span><span class="k-v ${cls || ''}">${val}</span><span class="k-s">${s}</span></div>`;
+      const f0 = Rc.pronostico.meses[0];
+      v.innerHTML = `
+        ${conectado ? '' : avisoConexion(cot, Rc)}
+        <div class="grilla g-5">
+          ${kp('Cotizado abierto', F.mm(Rc.abiertas.monto), Rc.abiertas.n + ' cotizaciones · ~' + F.mm(Rc.abiertas.ponderado) + ' ponderado')}
+          ${kp('Ganado en 90 días', F.mm(Rc.ganadas.ultimos90), F.mm(Rc.ganadas.anio) + ' en el año · ' + Rc.ganadas.n + ' ventas')}
+          ${kp('Venta B2B esperada · ' + esc(f0.etiqueta), F.mm(f0.total), conectado ? 'Equilibrio ' + F.mm(f0.equilibrio || 0) + ' · meta ' + F.mm(f0.meta || 0) : 'parcial: falta el dashboard', conectado && f0.equilibrio && f0.total < f0.equilibrio ? 'mal' : '')}
+          ${Rc.tasa.referencia
+            ? kp('Tasa de cierre', F.pct(Rc.tasa.referencia.valor), 'del dashboard al ' + esc(F.fCorta(Rc.tasa.referencia.corte)) + ' · por monto')
+            : kp('Tasa de cierre 12 meses', Rc.tasa.monto != null ? F.pct(Rc.tasa.monto) : '—', Rc.tasa.muestra ? 'por monto · ' + Rc.tasa.muestra + ' cerradas' : 'sin cotizaciones cerradas')}
+          ${kp('Ciclo de venta', Rc.ciclo != null ? Math.round(Rc.ciclo) + ' días' : '—', Rc.ganadas.ticket ? 'ticket ganado ' + F.mm(Rc.ganadas.ticket) : 'de cotización a ganada')}
+        </div>
+        <div class="grilla g-2">
+          <section class="panel"><div class="panel-c"><h2>Pronóstico de venta B2B</h2><span class="bajada">Por mes: lo ganado más lo esperable de lo abierto (monto × probabilidad, por fecha estimada de cierre). Las líneas son el equilibrio y la meta del plan 2027.</span></div>
+            <div class="panel-b"><div class="grafico" id="g-pronostico"></div></div>
+            ${conectado ? '' : '<p class="nota-panel"><b>Pronóstico parcial.</b> Solo ve las cotizaciones cargadas aquí; las de tu dashboard todavía no. Por eso no lo uso para alertas ni para el escenario 2027 hasta que lo conectes.</p>'}
+            ${Rc.pronostico.sinFechaEstimada ? `<p class="nota-panel">${Rc.pronostico.sinFechaEstimada} cotizaciones abiertas no tienen fecha estimada de cierre: las ubico con el ciclo de venta${Rc.ciclo != null ? ' histórico (' + Math.round(Rc.ciclo) + ' días)' : ' supuesto de 30 días'}.</p>` : ''}</section>
+          <section class="panel"><div class="panel-c"><h2>Embudo</h2><span class="bajada">Cantidad y monto por estado.</span></div>
+            <div class="panel-b ras">${embudoHtml(Rc)}</div>
+            <div class="panel-b ras">${lineasHtml(Rc)}</div></section>
+        </div>
+        <div class="grilla g-7-5 arriba">
+          <section class="panel" id="panel-cotizaciones"><div class="panel-c"><h2>Cotizaciones</h2><span class="bajada">${Rc.total} en AerIA${ctx.persistencia() === 'db' ? ' · se guardan para todos los que abren AerIA' : ' · ' + esc(ctx.persistencia())}</span>
+              <span class="acc"><button class="btn sm" type="button" data-com="nueva">Nueva cotización</button><button class="btn sm sec" type="button" data-com="importar">Importar</button><button class="btn sm sec" type="button" data-com="exportar">Exportar CSV</button></span></div>
+            <div class="panel-b" style="padding-bottom:10px">${filtrosHtml(Rc)}</div>
+            <div class="panel-b ras" id="tabla-cot">${tablaHtml(Rc)}</div></section>
+          <div class="lado">
+            <section class="panel"><div class="panel-c"><h2>Hay que mover</h2><span class="bajada">Seguimientos, cierres y facturas pendientes.</span></div>
+              <div class="agenda">${accionesHtml(Rc)}</div></section>
+            <section class="panel"><div class="panel-c"><h2>Lo ganado</h2><span class="bajada">Por mes de cierre.</span></div>
+              <div class="panel-b ras">${ganadoHtml(Rc)}</div></section>
+          </div>
+        </div>
+        <section class="panel" id="panel-importar"${L.imp ? '' : ' hidden'}>${L.imp ? importadorHtml() : ''}</section>`;
+      graficoPronostico($('#g-pronostico'), Rc);
+      if (L.editor && !$('#modal-com')) pintarEditor();
+    }
+
+    function avisoConexion(cot, Rc) {
+      return `<section class="panel conectar"><div class="panel-c"><h2>Conecta tu dashboard comercial</h2>
+          <span class="bajada">Lo último que veo de tu dashboard es el agregado del ${esc(F.fCorta(cot.corte))}: ${F.mm(cot.abiertasMonto)} abiertas con ${cot.tasaCierre ? F.pct(cot.tasaCierre) : '?'} de cierre.${Rc.total ? ' Abajo están las ' + Rc.total + ' que ya reuní desde el SII, el banco, Notion y el plan.' : ''}</span></div>
+        <div class="panel-b pasos">
+          <div class="paso"><b>1</b><div><p>Arrastra este botón a tu barra de marcadores:</p><a class="btn sm marcador" href="javascript:${esc(C.EXTRACTOR)}" data-com="marcador" title="Arrástrame a la barra de marcadores">AerIA · Extraer</a>
+            <p class="c-sub">¿No ves la barra? Cmd+Shift+B en Chrome. También puedes <button class="enlace-btn" type="button" data-com="copiar-extractor">copiar el código</button> y pegarlo en la consola del dashboard.</p></div></div>
+          <div class="paso"><b>2</b><div><p>Abre tu dashboard (<span class="mono">localhost:8765/_Dashboard/dashboard.html</span>) y haz clic en el marcador. Copia todas las tablas y los datos guardados de la página.</p></div></div>
+          <div class="paso"><b>3</b><div><p>Vuelve aquí y pega con Cmd+V en el importador. Si tu dashboard exporta CSV, Excel guardado como CSV o JSON, también sirve.</p>
+            <button class="btn sm" type="button" data-com="importar">Abrir el importador</button></div></div>
+        </div></section>`;
+    }
+
+    function embudoHtml(Rc) {
+      const max = Math.max(1, ...Rc.embudo.map(e => e.monto));
+      const color = id => id === 'ganada' ? '--s-3' : (id === 'perdida' || id === 'vencida') ? '--s-neutro' : '--s-1';
+      return Rc.embudo.map(e => `<div class="hbar"><span class="h-l">${esc(e.label)}<small>${e.n}</small></span>
+        <span class="h-p"><i style="width:${(e.monto / max * 100).toFixed(1)}%;background:var(${color(e.id)})"></i></span><span class="h-v">${F.mm(e.monto)}</span></div>`).join('');
+    }
+    function lineasHtml(Rc) {
+      if (!Rc.porLinea.length) return '';
+      const tasa = !Rc.tasa.referencia; // con el dashboard sin conectar, la tasa por línea sale sesgada: no se muestra
+      return `<div class="tabla-env"><table><thead><tr><th>Línea</th><th class="d">Abierto</th><th class="d">Ganado</th>${tasa ? '<th class="d">Cierre</th>' : ''}</tr></thead><tbody>
+        ${Rc.porLinea.map(l => `<tr><td>${esc(l.label)}${l.b2b ? '' : ' <span class="c-sub">(fuera de la meta B2B)</span>'}</td><td class="d">${F.mm(l.abierto)}</td><td class="d">${F.mm(l.ganado)}</td>${tasa ? `<td class="d">${l.tasa != null ? F.pct(l.tasa) : '—'}</td>` : ''}</tr>`).join('')}
+        </tbody></table></div>`;
+    }
+    function filtrosHtml(Rc) {
+      const n = id => Rc.cotizaciones.filter(q => id === 'abiertas' ? q.abierta : id === 'perdidas' ? (q.estado === 'perdida' || q.estado === 'vencida') : id === 'todas' ? true : q.estado === id).length;
+      const ops = [['abiertas', 'Abiertas'], ['ganada', 'Ganadas'], ['perdidas', 'Perdidas'], ['todas', 'Todas']];
+      return `<div class="filtros-com">
+        <div class="chips" role="group" aria-label="Filtrar por estado">${ops.map(([k, t]) => `<button class="chip" type="button" data-com="filtro" data-valor="${k}" aria-pressed="${L.filtro === k}">${t}<span class="n">${n(k)}</span></button>`).join('')}</div>
+        <div class="fila-filtros">
+          <label class="sr" for="com-buscar">Buscar cotización</label><input id="com-buscar" type="search" placeholder="Buscar cliente, folio o detalle" value="${esc(L.texto)}" data-com-input="texto">
+          <label class="sr" for="com-linea">Línea</label><select id="com-linea" data-com-input="linea">${opciones(C.LINEAS, L.linea, 'Todas las líneas')}</select>
+          <label class="sr" for="com-orden">Ordenar</label><select id="com-orden" data-com-input="orden">
+            ${[['monto', 'Mayor monto'], ['reciente', 'Más recientes'], ['seguimiento', 'Seguimiento más próximo'], ['cierre', 'Cierre estimado'], ['cliente', 'Cliente A–Z']].map(([k, t]) => `<option value="${k}"${L.orden === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
+        </div></div>`;
+    }
+    function filtradas(Rc) {
+      const t = F.plano(L.texto);
+      let l = Rc.cotizaciones.filter(q => L.filtro === 'abiertas' ? q.abierta : L.filtro === 'perdidas' ? (q.estado === 'perdida' || q.estado === 'vencida') : L.filtro === 'todas' ? true : q.estado === L.filtro);
+      if (L.linea) l = l.filter(q => q.linea === L.linea);
+      if (t) l = l.filter(q => F.plano([q.cliente, q.folio, q.descripcion, q.contacto, q.notas, q.rut].join(' ')).includes(t));
+      const fecha = q => q.fecha_cierre || q.fecha_cotizacion || (q.actualizada || '').slice(0, 10) || '';
+      const orden = {
+        monto: (a, b) => (b.monto || 0) - (a.monto || 0),
+        reciente: (a, b) => fecha(b).localeCompare(fecha(a)),
+        seguimiento: (a, b) => (a.proximo_seguimiento || '9999').localeCompare(b.proximo_seguimiento || '9999'),
+        cierre: (a, b) => (a.cierreEstimado || a.fecha_cierre || '9999').localeCompare(b.cierreEstimado || b.fecha_cierre || '9999'),
+        cliente: (a, b) => String(a.cliente).localeCompare(String(b.cliente), 'es'),
+      }[L.orden];
+      return l.sort(orden);
+    }
+    function tablaHtml(Rc) {
+      const l = filtradas(Rc);
+      if (!l.length) return `<p class="panel-b mudo">${Rc.total ? 'No hay cotizaciones en este filtro.' : 'Todavía no hay cotizaciones. Créalas con «Nueva cotización» o tráelas desde tu dashboard con «Importar».'}</p>`;
+      const vis = l.slice(0, L.ver);
+      const total = l.reduce((a, q) => a + (q.monto || 0), 0);
+      return `<div class="tabla-env"><table class="tabla-cot"><thead><tr><th>Cliente y detalle</th><th class="d">Monto</th><th>Estado</th><th>Seguimiento</th></tr></thead><tbody>
+        ${vis.map(q => `<tr class="fila-cot" data-com="abrir" data-id="${esc(q.id)}" tabindex="0">
+          <td class="ancho"><div class="c-main">${esc(q.cliente || 'Sin cliente')}</div><div class="c-sub">${esc([q.folio ? 'N° ' + q.folio : '', q.lineaLabel, q.descripcion].filter(Boolean).join(' · ').slice(0, 160))}</div></td>
+          <td class="d">${F.clp(q.monto || 0)}${q.monto_tipo === 'con_iva' ? '<div class="c-sub">con IVA</div>' : ''}${q.abierta ? `<div class="c-sub">${Math.round(q.prob * 100)}% · ${F.mm(q.ponderado)}</div>` : ''}${!q.monto ? '<div class="c-sub">monto por completar</div>' : ''}</td>
+          <td class="nw"><label class="sr" for="est-${esc(q.id)}">Estado de ${esc(q.cliente)}</label><select id="est-${esc(q.id)}" class="sel-estado ${ESTADO_PILL[q.estado] || ''}" data-com-estado="${esc(q.id)}">${opciones(C.ESTADOS, q.estado)}</select>
+            ${q.estado === 'ganada' ? `<div class="c-sub">${q.factura_folio ? 'Factura ' + esc(q.factura_folio) + (q.cobrada === 'si' ? ' · cobrada' : '') : 'Sin factura'}</div>` : ''}</td>
+          <td class="nw">${q.abierta ? (q.proximo_seguimiento ? `<span class="pill${q.seguimientoVencido ? ' critica' : ''}">${esc(fechaCorta(q.proximo_seguimiento))}</span>` : '<span class="c-sub">sin fecha</span>') +
+            (q.diasSinContacto != null ? `<div class="c-sub">contacto hace ${q.diasSinContacto} d</div>` : '') : `<span class="c-sub">${esc(fechaCorta(q.fecha_cierre))}</span>`}</td></tr>`).join('')}
+        </tbody><tfoot><tr><td style="font-weight:700">${l.length} cotizaciones</td><td class="d" style="font-weight:700">${F.clp(total)}</td><td colspan="2"></td></tr></tfoot></table></div>
+        ${l.length > L.ver ? `<div class="pie-lista"><button class="enlace-btn" type="button" data-com="ver-mas">Ver ${Math.min(40, l.length - L.ver)} más (quedan ${l.length - L.ver})</button></div>` : ''}`;
+    }
+    function accionesHtml(Rc) {
+      if (!Rc.acciones.length) return '<p class="nota-panel" style="padding-top:12px">Nada pendiente: no hay seguimientos vencidos, cierres atrasados ni ventas sin factura.</p>';
+      return Rc.acciones.map(a => `<div class="ag-item${a.cuando === 'hoy' ? ' hoy' : ''}"><span></span>
+        <button class="enlace-btn ag-tit" type="button" data-com="abrir" data-id="${esc(a.cotizacion)}">${esc(a.titulo)}</button>
+        <span class="por">${esc(a.por)}</span></div>`).join('');
+    }
+    function ganadoHtml(Rc) {
+      const meses = Rc.ganadas.porMes.slice(-8).reverse();
+      if (!meses.length) return '<p class="nota-panel" style="padding-top:12px">Aún no hay ventas ganadas registradas.</p>';
+      return `<div class="tabla-env"><table><thead><tr><th>Mes</th><th class="d">Ventas</th><th class="d">Monto</th><th class="d">B2B</th></tr></thead><tbody>
+        ${meses.map(m => `<tr><td>${m.mes === 'sin fecha' ? 'Sin fecha' : esc(F.mesNombre(m.mes + '-01')) + ' ' + m.mes.slice(0, 4)}</td><td class="d">${m.n}</td><td class="d">${F.clp(m.monto)}</td><td class="d">${F.clp(m.b2b)}</td></tr>`).join('')}
+        </tbody></table></div>
+        ${Rc.ganadas.topClientes.length ? `<p class="nota-panel" style="padding-top:10px">Principales clientes: ${Rc.ganadas.topClientes.slice(0, 5).map(c => esc(c.cliente) + ' ' + F.mm(c.monto)).join(' · ')}.</p>` : ''}
+        ${Rc.clientes && Rc.clientes.length ? `<p class="nota-panel">Clientes 2026 sin monto registrado: ${Rc.clientes.map(c => esc(c.cliente)).join(' · ')}. Si tienes sus montos, créalos como cotizaciones ganadas.</p>` : ''}
+        <p class="nota-panel">Montos sin IVA. Las ventas con IVA incluido se cuentan netas.</p>`;
+    }
+
+    /* --- gráfico: pronóstico (barras apiladas ganado + esperado, con equilibrio y meta) --- */
+    function graficoPronostico(el, Rc) {
+      if (!el) return;
+      const filas = Rc.pronostico.meses;
+      const W = 640, H = 250, pl = 54, pr = 18, pt = 24, pb = 30;
+      const meta = filas[0].meta || 0, eq = filas[0].equilibrio || 0;
+      const max = Math.max(2e6, Math.ceil(Math.max(meta, eq, ...filas.map(f => f.total)) / 2e6) * 2e6);
+      const y = v => pt + (1 - v / max) * (H - pt - pb);
+      const paso = (W - pl - pr) / filas.length, bw = Math.min(46, paso * 0.56);
+      let g = '';
+      for (let v = 0; v <= max; v += max > 12e6 ? 4e6 : 2e6) g += `<line class="${v ? 'g-l' : 'e-l'}" x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}"/><text class="eje" x="${pl - 8}" y="${y(v) + 4}" text-anchor="end">${v ? '$' + v / 1e6 + 'M' : '$0'}</text>`;
+      filas.forEach((f, i) => {
+        const x = pl + paso * i + (paso - bw) / 2;
+        const yG = y(f.ganado), yT = y(f.total);
+        if (f.ganado > 0) g += `<path d="M${x},${y(0)} V${f.esperado > 0 ? yG : yG + 4} ${f.esperado > 0 ? `H${x + bw}` : `Q${x},${yG} ${x + 4},${yG} H${x + bw - 4} Q${x + bw},${yG} ${x + bw},${yG + 4}`} V${y(0)} Z" fill="var(--s-3)"/>`;
+        if (f.esperado > 0) { const top = yT, bot = f.ganado > 0 ? yG - 2 : y(0); if (bot - top > 1) g += `<path d="M${x},${bot} V${top + 4} Q${x},${top} ${x + 4},${top} H${x + bw - 4} Q${x + bw},${top} ${x + bw},${top + 4} V${bot} Z" fill="var(--s-1)"/>`; }
+        g += `<text class="etq" x="${x + bw / 2}" y="${yT - 7}" text-anchor="middle">${f.total ? F.mm(f.total) : '$0'}</text>`;
+        g += `<text class="eje" x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${esc(f.etiqueta)}</text>`;
+        g += `<rect x="${x - 6}" y="${pt}" width="${bw + 12}" height="${H - pt - pb}" fill="transparent" data-mes="${i}"/>`;
+      });
+      if (eq) g += `<line x1="${pl}" x2="${W - pr}" y1="${y(eq)}" y2="${y(eq)}" stroke="var(--tinta-2)" stroke-width="1.5" stroke-dasharray="2 3"/><text class="etq2" x="${pl + 4}" y="${y(eq) - 6}">Equilibrio ${F.mm(eq)}</text>`;
+      if (meta) g += `<line x1="${pl}" x2="${W - pr}" y1="${y(meta)}" y2="${y(meta)}" stroke="var(--tinta-2)" stroke-width="1.5" stroke-dasharray="6 4"/><text class="etq2" x="${W - pr}" y="${y(meta) - 6}" text-anchor="end">Meta ${F.mm(meta)}</text>`;
+      el.innerHTML = `<div class="leyenda"><span><span class="punto" style="background:var(--s-3)"></span>Ganado</span><span><span class="punto" style="background:var(--s-1)"></span>Esperado de lo abierto</span></div>
+        <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Pronóstico de venta B2B: ${filas.map(f => f.etiqueta + ' ' + F.mm(f.total)).join('; ')}.">${g}</svg>`;
+      for (const r of $$('[data-mes]', el)) {
+        r.addEventListener('pointermove', ev => {
+          const f = filas[Number(r.dataset.mes)];
+          ctx.verTip(ev, `<div class="tt">${esc(f.etiqueta)}</div>
+            <div class="tr"><span class="punto" style="background:var(--s-3)"></span><span class="n">Ganado (${f.nGanadas})</span><span class="v">${F.clp(f.ganado)}</span></div>
+            <div class="tr"><span class="punto" style="background:var(--s-1)"></span><span class="n">Esperado (${f.nAbiertas} abiertas)</span><span class="v">${F.clp(f.esperado)}</span></div>
+            <div class="tr"><span></span><span class="n">Total</span><span class="v">${F.clp(f.total)}</span></div>`);
+        });
+        r.addEventListener('pointerleave', ctx.ocultarTip);
+      }
+    }
+
+    /* ---------------- editor ---------------- */
+    function abrirEditor(id) { L.editor = id || 'nueva'; L.borrar = false; pintarEditor(); }
+    function cerrarEditor() { L.editor = null; L.borrar = false; const m = $('#modal-com'); if (m) m.remove(); }
+    function pintarEditor() {
+      const raw = L.editor === 'nueva' ? null : ctx.cotizaciones().find(q => q.id === L.editor);
+      if (L.editor !== 'nueva' && !raw) { cerrarEditor(); return; }
+      const q = raw ? C.normalizar(C.limpiar(raw), hoy(), R() ? R().ciclo || 30 : 30) : C.limpiar({ estado: 'enviada', fecha_cotizacion: hoy(), linea: 'curso_cerrado' });
+      let m = $('#modal-com');
+      if (!m) { m = document.createElement('div'); m.id = 'modal-com'; m.className = 'modal'; document.body.appendChild(m); }
+      const campo = (k, label, tipo, extra) => `<label class="campo-f"><span>${label}</span>${tipo === 'area'
+        ? `<textarea id="ce-${k}" data-campo="${k}" rows="${extra || 3}">${esc(q[k])}</textarea>`
+        : `<input id="ce-${k}" data-campo="${k}" type="${tipo || 'text'}" value="${esc(q[k])}"${extra || ''}>`}</label>`;
+      const hist = (raw && raw.historial ? raw.historial.slice().reverse() : []);
+      m.innerHTML = `<div class="modal-fondo" data-com="cerrar"></div>
+        <div class="modal-caja" role="dialog" aria-modal="true" aria-labelledby="ce-titulo">
+          <div class="modal-cab"><h2 id="ce-titulo">${raw ? esc(q.cliente || 'Cotización') : 'Nueva cotización'}</h2>
+            ${raw ? `<span class="pill ${ESTADO_PILL[q.estado] || ''}">${esc(q.estadoLabel)}</span>` : ''}
+            <button class="cerrar" type="button" data-com="cerrar" aria-label="Cerrar">×</button></div>
+          <form class="modal-cuerpo" id="f-cot" novalidate>
+            <fieldset><legend>Cliente</legend><div class="g-campos">
+              ${campo('cliente', 'Cliente *')}${campo('rut', 'RUT')}${campo('contacto', 'Contacto')}${campo('email', 'Correo', 'email')}${campo('telefono', 'Teléfono', 'tel')}${campo('folio', 'N° de cotización')}
+            </div></fieldset>
+            <fieldset><legend>Negocio</legend><div class="g-campos">
+              <label class="campo-f"><span>Línea</span><select id="ce-linea" data-campo="linea">${opciones(C.LINEAS, q.linea)}</select></label>
+              <label class="campo-f"><span>Monto (CLP)</span><input id="ce-monto" data-campo="monto" inputmode="numeric" value="${q.monto ? F.clp(q.monto) : ''}" placeholder="$1.200.000"></label>
+              <label class="campo-f"><span>El monto es</span><select id="ce-monto_tipo" data-campo="monto_tipo">${opciones([{ id: 'neto', label: 'Neto (más IVA)' }, { id: 'exento', label: 'Exento' }, { id: 'con_iva', label: 'Con IVA incluido' }, { id: 'desconocido', label: 'No sé' }], q.monto_tipo || 'exento')}</select></label>
+              <label class="campo-f"><span>Estado</span><select id="ce-estado" data-campo="estado">${opciones(C.ESTADOS, q.estado)}</select></label>
+              <label class="campo-f"><span>Probabilidad %</span><input id="ce-probabilidad" data-campo="probabilidad" type="number" min="0" max="100" value="${esc(q.probabilidad)}" placeholder="${Math.round((C.ESTADO[q.estado] || C.ESTADO.enviada).prob * 100)} por defecto"></label>
+              <label class="campo-f ancho2"><span>Descripción</span><textarea id="ce-descripcion" data-campo="descripcion" rows="2">${esc(q.descripcion)}</textarea></label>
+              ${campo('motivo_perdida', 'Motivo si se perdió')}
+            </div></fieldset>
+            <fieldset><legend>Fechas</legend><div class="g-campos">
+              ${campo('fecha_cotizacion', 'Cotizada', 'date')}${campo('fecha_cierre_estimada', 'Cierre estimado', 'date')}${campo('proximo_seguimiento', 'Próximo seguimiento', 'date')}
+              ${campo('ultimo_contacto', 'Último contacto', 'date')}${campo('fecha_cierre', 'Cierre real', 'date')}${campo('fecha_ejecucion', 'Se ejecuta', 'date')}
+            </div></fieldset>
+            <fieldset><legend>Facturación</legend><div class="g-campos">
+              ${campo('factura_folio', 'Folio de la factura')}
+              <label class="campo-f"><span>Cobrada</span><select id="ce-cobrada" data-campo="cobrada">${opciones([{ id: 'si', label: 'Sí' }, { id: 'no', label: 'No' }, { id: 'parcial', label: 'Parcial' }, { id: 'desconocido', label: 'No sé' }], q.cobrada, '—')}</select></label>
+            </div></fieldset>
+            <fieldset><legend>Notas</legend>${campo('notas', 'Notas internas', 'area', 3)}
+              ${raw && (raw.origen || raw.evidencia) ? `<p class="c-sub">Origen: ${esc(raw.origen || '—')}${raw.evidencia ? ' · ' + esc(raw.evidencia) : ''}</p>` : ''}</fieldset>
+            ${raw ? `<fieldset class="seguimiento"><legend>Registrar un seguimiento</legend><div class="g-campos">
+              <label class="campo-f ancho2"><span>Qué pasó</span><input id="ce-seg-nota" placeholder="Ej.: Llamé, piden ajustar a 8 participantes"></label>
+              <label class="campo-f"><span>Próximo seguimiento</span><input id="ce-seg-fecha" type="date" value="${esc(F.sumarDias(hoy(), 7))}"></label>
+              <div class="campo-f"><span>&nbsp;</span><button class="btn sm sec" type="button" data-com="seguimiento">Anotar seguimiento</button></div></div></fieldset>` : ''}
+            <p class="msg" id="ce-msg" aria-live="polite"></p>
+            <div class="modal-pie">
+              <button class="btn" type="submit">${raw ? 'Guardar cambios' : 'Crear cotización'}</button>
+              <button class="btn sec" type="button" data-com="cerrar">Cancelar</button>
+              ${raw ? `<button class="btn sec" type="button" data-com="preguntar">Preguntar a AerIA</button>
+                <span class="sep"></span>${L.borrar ? `<span class="peligro">¿Eliminarla para siempre?</span><button class="btn sm peligro" type="button" data-com="borrar-si">Sí, eliminar</button><button class="enlace-btn" type="button" data-com="borrar-no">No</button>` : '<button class="enlace-btn peligro" type="button" data-com="borrar">Eliminar</button>'}` : ''}
+            </div>
+            ${hist.length ? `<details class="historial"><summary>Historial (${hist.length})</summary>
+              ${hist[0] && Object.keys(hist[0].cambios || {}).length ? '<button class="enlace-btn" type="button" data-com="deshacer">Deshacer el último cambio</button>' : ''}
+              <ol>${hist.map(h => `<li><b>${esc((h.fecha || '').slice(0, 16).replace('T', ' '))}</b> · ${esc(h.por || '')}${h.nota ? ' · ' + esc(h.nota) : ''}${Object.keys(h.cambios || {}).length ? '<div class="c-sub">' + Object.entries(h.cambios).map(([k, [a, b]]) => esc(k) + ': ' + esc(String(a) || '—') + ' → ' + esc(String(b) || '—')).join(' · ') + '</div>' : ''}</li>`).join('')}</ol></details>` : ''}
+          </form></div>`;
+      const primer = $('#ce-cliente'); if (primer && L.editor === 'nueva') primer.focus();
+    }
+    function leerFormulario() {
+      const o = {};
+      for (const el of $$('#f-cot [data-campo]')) o[el.dataset.campo] = el.value;
+      return o;
+    }
+    async function guardarFormulario() {
+      const datos = leerFormulario(), msg = $('#ce-msg');
+      if (!String(datos.cliente || '').trim()) { msg.textContent = 'Falta el cliente.'; $('#ce-cliente').focus(); return; }
+      const actual = L.editor === 'nueva' ? null : ctx.cotizaciones().find(q => q.id === L.editor);
+      if (!actual) {
+        const prov = C.limpiar(Object.assign({}, datos, { origen: 'manual' }));
+        if (ctx.cotizaciones().some(q => q.id === prov.id)) prov.id = prov.id + '-' + Date.now().toString(36);
+        datos.id = prov.id; datos.origen = 'manual';
+      }
+      const r = C.aplicar(actual, datos, 'usuario', actual ? '' : 'Creada en AerIA', ahoraISO());
+      msg.textContent = 'Guardando…';
+      const ok = await ctx.guardarCot(r.cotizacion);
+      if (!ok) { msg.textContent = 'No se pudo guardar. Revisa tu conexión e intenta de nuevo.'; return; }
+      cerrarEditor(); ctx.pintar();
+    }
+    async function anotarSeguimiento() {
+      const actual = ctx.cotizaciones().find(q => q.id === L.editor); if (!actual) return;
+      const nota = $('#ce-seg-nota').value.trim(), prox = $('#ce-seg-fecha').value;
+      if (!nota && !prox) { $('#ce-msg').textContent = 'Escribe qué pasó o la próxima fecha.'; return; }
+      const r = C.aplicar(actual, { ultimo_contacto: hoy(), proximo_seguimiento: prox || actual.proximo_seguimiento }, 'usuario', 'Seguimiento: ' + (nota || 'contacto'), ahoraISO());
+      if (await ctx.guardarCot(r.cotizacion)) { pintarEditor(); ctx.pintar(); }
+    }
+
+    /* ---------------- importador ---------------- */
+    function abrirImportador() {
+      L.imp = L.imp || { paso: 1, texto: '', conjuntos: [], elegido: 0, mapeo: {}, origen: '', plan: null, msg: '' };
+      const p = $('#panel-importar'); if (!p) return;
+      p.hidden = false; p.innerHTML = importadorHtml(); p.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+    function pintarImportador() { const p = $('#panel-importar'); if (p && L.imp) p.innerHTML = importadorHtml(); }
+    function importadorHtml() {
+      const I0 = L.imp;
+      const cab = `<div class="panel-c"><h2>Importar cotizaciones</h2><span class="bajada">Paso ${I0.paso} de 3 · ${['', 'Trae los datos', 'Revisa las columnas', 'Confirma'][I0.paso]}</span>
+        <span class="acc"><button class="btn sm sec" type="button" data-com="imp-cerrar">Cerrar</button></span></div>`;
+      if (I0.paso === 1) return cab + `<div class="importar">
+        <p class="c-sub">Pega aquí lo que copió el marcador «AerIA · Extraer» desde tu dashboard, o un CSV, JSON o tabla copiada de Excel. También puedes subir el archivo.</p>
+        <div class="fila"><label class="btn sm sec" for="imp-archivo">Elegir archivo</label><input id="imp-archivo" type="file" accept=".csv,.json,.txt,.tsv,.html,.htm" class="sr" data-com-archivo="1"><span class="c-sub">${esc(I0.origen || '')}</span></div>
+        <label class="sr" for="imp-texto">Datos a importar</label>
+        <textarea id="imp-texto" placeholder="Pega aquí (Cmd+V)…">${esc(I0.texto.slice(0, 20000))}</textarea>
+        <div class="fila"><button class="btn sm" type="button" data-com="imp-leer">Leer</button>${ctx.puedeIA() ? '<button class="btn sm sec" type="button" data-com="imp-ia">Que AerIA lo ordene</button>' : ''}</div>
+        <p class="msg" aria-live="polite">${esc(I0.msg)}</p></div>`;
+      if (I0.paso === 2) {
+        const cj = I0.conjuntos[I0.elegido];
+        const cols = cj.columnas;
+        const campos = [['cliente', 'Cliente *'], ['monto', 'Monto *'], ['estado', 'Estado'], ['folio', 'N° de cotización'], ['descripcion', 'Descripción'], ['linea', 'Línea'],
+          ['fecha_cotizacion', 'Fecha de cotización'], ['fecha_cierre', 'Fecha de cierre'], ['fecha_cierre_estimada', 'Cierre estimado'], ['fecha_ejecucion', 'Fecha de ejecución'],
+          ['proximo_seguimiento', 'Próximo seguimiento'], ['probabilidad', 'Probabilidad'], ['contacto', 'Contacto'], ['email', 'Correo'], ['telefono', 'Teléfono'], ['rut', 'RUT'],
+          ['factura_folio', 'Factura'], ['cobrada', 'Cobrada'], ['motivo_perdida', 'Motivo de pérdida'], ['notas', 'Notas']];
+        const muestra = C.mapear(cj.filas.slice(0, 5), I0.mapeo, 'vista previa');
+        return cab + `<div class="importar">
+          ${I0.conjuntos.length > 1 ? `<label class="campo-f"><span>Encontré ${I0.conjuntos.length} conjuntos de datos. Usar:</span><select data-com-input="imp-conjunto">${I0.conjuntos.map((c, i) => `<option value="${i}"${i === I0.elegido ? ' selected' : ''}>${esc(c.origen)} · ${c.filas.length} filas</option>`).join('')}</select></label>` : `<p class="c-sub">${esc(cj.origen)} · ${cj.filas.length} filas.</p>`}
+          <div class="mapeo">${campos.map(([k, t]) => `<label class="campo-f"><span>${t}</span><select data-com-mapeo="${k}"><option value="">— no está —</option>${cols.map(c => `<option value="${esc(c)}"${I0.mapeo[k] === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`).join('')}</div>
+          <p class="c-sub">Las columnas que no asignes se guardan en las notas de cada cotización.</p>
+          <div class="tabla-env"><table><thead><tr><th>Cliente</th><th class="d">Monto</th><th>Estado</th><th>Fecha</th><th>Línea</th></tr></thead><tbody>
+            ${muestra.map(q => `<tr><td>${esc(q.cliente || '—')}<div class="c-sub">${esc(q.descripcion.slice(0, 80))}</div></td><td class="d">${F.clp(q.monto)}</td><td>${esc((C.ESTADO[q.estado] || {}).label || q.estado)}</td><td class="nw">${esc(q.fecha_cotizacion || '—')}</td><td>${esc((C.LINEA[q.linea] || {}).label || '')}</td></tr>`).join('')}
+          </tbody></table></div>
+          <div class="fila"><button class="btn sm" type="button" data-com="imp-plan"${I0.mapeo.cliente || I0.mapeo.monto ? '' : ' disabled'}>Seguir</button><button class="enlace-btn" type="button" data-com="imp-volver">Volver</button></div>
+          <p class="msg" aria-live="polite">${esc(I0.msg)}</p></div>`;
+      }
+      const P = I0.plan;
+      return cab + `<div class="importar">
+        <p>Se van a <b>crear ${P.crear.length}</b> cotizaciones y <b>actualizar ${P.actualizar.length}</b>${P.iguales ? '; ' + P.iguales + ' ya estaban iguales' : ''}. Cada cambio queda en el historial de la cotización.</p>
+        ${P.actualizar.length ? `<details><summary>Ver los cambios (${P.actualizar.length})</summary><ul class="c-sub">${P.actualizar.slice(0, 80).map(u => '<li>' + esc(u.antes.cliente || u.id) + ': ' + Object.entries(u.cambios).map(([k, v]) => esc(k) + ' → ' + esc(String(v))).join(', ') + '</li>').join('')}</ul></details>` : ''}
+        <label class="chk"><input type="checkbox" id="imp-dashboard"${I0.esDashboard ? ' checked' : ''}> Estos datos vienen de mi dashboard comercial</label>
+        <div class="fila"><button class="btn sm" type="button" data-com="imp-go"${P.crear.length + P.actualizar.length ? '' : ' disabled'}>Importar</button><button class="enlace-btn" type="button" data-com="imp-volver">Volver</button></div>
+        <div class="progreso" hidden><i></i></div>
+        <p class="msg" aria-live="polite">${esc(I0.msg)}</p></div>`;
+    }
+    function leerImportacion(texto, origen) {
+      const I0 = L.imp;
+      I0.texto = texto; I0.origen = origen || I0.origen || 'texto pegado';
+      try { I0.conjuntos = C.conjuntos(texto); } catch (e) { I0.conjuntos = []; }
+      I0.esDashboard = /aeria-extractor/.test(texto.slice(0, 200)) || /\.(csv|json|tsv|html?)$/i.test(I0.origen);
+      if (!I0.conjuntos.length) { I0.msg = 'No encontré filas de datos ahí. Revisa que lo pegado tenga encabezados (cliente, monto, estado…).'; pintarImportador(); return; }
+      I0.elegido = 0; I0.mapeo = Object.assign({}, I0.conjuntos[0].mapeo); I0.paso = 2; I0.msg = '';
+      pintarImportador();
+    }
+    function planificar() {
+      const I0 = L.imp, cj = I0.conjuntos[I0.elegido];
+      const nuevas = C.mapear(cj.filas, I0.mapeo, 'importación');
+      I0.plan = C.planImportacion(nuevas, ctx.cotizaciones().map(C.limpiar));
+      I0.paso = 3; I0.msg = ''; pintarImportador();
+    }
+    async function ejecutarImportacion() {
+      const I0 = L.imp, P = I0.plan;
+      const origen = ($('#imp-dashboard') && $('#imp-dashboard').checked ? 'dashboard' : 'importación') + ' ' + hoy();
+      const barra = $('#panel-importar .progreso'), msg = $('#panel-importar .msg');
+      barra.hidden = false;
+      const tareas = P.crear.map(q => () => C.aplicar(null, Object.assign({}, q, { origen }), 'importación', 'Importada desde ' + I0.origen, ahoraISO()).cotizacion)
+        .concat(P.actualizar.map(u => () => C.aplicar(u.antes, u.cambios, 'importación', 'Actualizada desde ' + I0.origen, ahoraISO()).cotizacion));
+      let hechas = 0, fallas = 0;
+      for (const t of tareas) {
+        const ok = await ctx.guardarCot(t(), true);
+        if (ok) hechas++; else fallas++;
+        barra.firstElementChild.style.width = Math.round((hechas + fallas) / tareas.length * 100) + '%';
+        msg.textContent = 'Guardando ' + (hechas + fallas) + ' de ' + tareas.length + '…';
+      }
+      L.imp = null;
+      ctx.pintar();
+      ctx.avisar(fallas ? 'Importé ' + hechas + ' cotizaciones; ' + fallas + ' no se pudieron guardar. Vuelve a importar para reintentar las que faltan.' : 'Listo: importé ' + hechas + ' cotizaciones.');
+    }
+
+    /* ---------------- exportar ---------------- */
+    async function exportarCSV() {
+      const campos = ['id'].concat(C.CAMPOS);
+      const cel = v => { const s = String(v == null ? '' : v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+      const csv = '﻿' + [campos.join(';')].concat(ctx.cotizaciones().map(q => campos.map(k => cel(q[k])).join(';'))).join('\n');
+      const nombre = 'aeria-cotizaciones-' + hoy() + '.csv';
+      const d = await ctx.descargas();
+      if (d) {
+        try { await d.save({ filename: nombre, data: csv }); return; } catch (e) { if (e && e.code === 'declined') return; }
+      }
+      try { await navigator.clipboard.writeText(csv); ctx.avisar('No pude ofrecer la descarga aquí: copié el CSV al portapapeles. Pégalo en Excel o en un archivo de texto.'); }
+      catch (e) { ctx.avisar('No pude ofrecer la descarga ni copiar el CSV en esta vista.'); }
+    }
+
+    /* ---------------- eventos ---------------- */
+    document.addEventListener('click', async ev => {
+      const t = ev.target.closest('[data-com]');
+      if (!t) return;
+      const a = t.dataset.com;
+      if (a === 'marcador') { ev.preventDefault(); ctx.avisar('Arrastra el botón «AerIA · Extraer» a tu barra de marcadores; aquí dentro no hace nada.'); return; }
+      if (a === 'abrir') { abrirEditor(t.dataset.id); return; }
+      if (a === 'nueva') { abrirEditor('nueva'); return; }
+      if (a === 'cerrar') { cerrarEditor(); return; }
+      if (a === 'importar') { abrirImportador(); return; }
+      if (a === 'exportar') { exportarCSV(); return; }
+      if (a === 'filtro') { L.filtro = t.dataset.valor; L.ver = 40; render(); return; }
+      if (a === 'ver-mas') { L.ver += 40; $('#tabla-cot').innerHTML = tablaHtml(R()); return; }
+      if (a === 'copiar-extractor') {
+        try { await navigator.clipboard.writeText(C.EXTRACTOR); ctx.avisar('Copié el código. En tu dashboard abre la consola (Cmd+Option+J), pégalo y presiona Enter.'); }
+        catch (e) { ctx.avisar('No pude copiar en esta vista. Usa el botón arrastrable.'); }
+        return;
+      }
+      if (a === 'seguimiento') { anotarSeguimiento(); return; }
+      if (a === 'borrar') { L.borrar = true; pintarEditor(); return; }
+      if (a === 'borrar-no') { L.borrar = false; pintarEditor(); return; }
+      if (a === 'borrar-si') { const id = L.editor; if (await ctx.borrarCot(id)) { cerrarEditor(); ctx.pintar(); } return; }
+      if (a === 'deshacer') {
+        const actual = ctx.cotizaciones().find(q => q.id === L.editor); if (!actual) return;
+        const d = C.deshacer(actual, ahoraISO());
+        if (d && await ctx.guardarCot(d)) { pintarEditor(); ctx.pintar(); }
+        return;
+      }
+      if (a === 'preguntar') {
+        const q = ctx.cotizaciones().find(x => x.id === L.editor); cerrarEditor();
+        if (q) ctx.preguntar('Analiza la cotización [' + q.id + '] de ' + q.cliente + ' (' + F.clp(q.monto || 0) + '): qué tan probable es cerrarla, qué haría para cerrarla y cuál debería ser el próximo paso con fecha.');
+        return;
+      }
+      if (a === 'imp-cerrar') { L.imp = null; const p = $('#panel-importar'); if (p) { p.hidden = true; p.innerHTML = ''; } return; }
+      if (a === 'imp-volver') { L.imp.paso = Math.max(1, L.imp.paso - 1); L.imp.msg = ''; pintarImportador(); return; }
+      if (a === 'imp-leer') { leerImportacion($('#imp-texto').value, L.imp.origen && L.imp.origen !== 'texto pegado' ? L.imp.origen : 'texto pegado'); return; }
+      if (a === 'imp-plan') { planificar(); return; }
+      if (a === 'imp-go') { t.disabled = true; ejecutarImportacion(); return; }
+      if (a === 'imp-ia') {
+        const txt = $('#imp-texto').value.trim();
+        if (!txt) { L.imp.msg = 'Pega primero el contenido.'; pintarImportador(); return; }
+        L.imp.msg = 'AerIA está ordenando los datos…'; pintarImportador();
+        try {
+          const arr = await ctx.iaJSON('Convierte este export de un dashboard de cotizaciones de una empresa chilena en un JSON array de objetos con estas claves: cliente, monto (número en pesos, sin puntos), estado (enviada, negociacion, ganada, perdida o vencida), fecha_cotizacion (AAAA-MM-DD o ""), fecha_cierre (AAAA-MM-DD o ""), linea (sence, curso_cerrado, aoc, servicios, escuela, flota, venta_equipos u otro), descripcion, folio, contacto, notas. Una fila por cotización; ignora totales y encabezados. Responde solo el JSON.\n\n' + txt.slice(0, 50000));
+          const filas = Array.isArray(arr) ? arr : [];
+          L.imp.conjuntos = filas.length ? [{ origen: 'Ordenado por AerIA', filas, columnas: Object.keys(filas[0] || {}), puntaje: 9, mapeo: C.sugerirMapeo(Object.keys(filas[0] || {})) }] : [];
+          if (!filas.length) { L.imp.msg = 'AerIA no encontró cotizaciones en ese contenido.'; pintarImportador(); return; }
+          L.imp.elegido = 0; L.imp.mapeo = L.imp.conjuntos[0].mapeo; L.imp.paso = 2; L.imp.msg = ''; pintarImportador();
+        } catch (e) { L.imp.msg = e && e.message ? e.message : 'No se pudo ordenar ahora.'; pintarImportador(); }
+      }
+    });
+    document.addEventListener('change', async ev => {
+      const t = ev.target;
+      if (t.dataset.comEstado) {
+        const actual = ctx.cotizaciones().find(q => q.id === t.dataset.comEstado); if (!actual) return;
+        const r = C.aplicar(actual, { estado: t.value }, 'usuario', '', ahoraISO());
+        if (await ctx.guardarCot(r.cotizacion)) ctx.pintar(); else t.value = actual.estado;
+      } else if (t.dataset.comInput === 'linea' || t.dataset.comInput === 'orden') {
+        L[t.dataset.comInput] = t.value; L.ver = 40; $('#tabla-cot').innerHTML = tablaHtml(R());
+      } else if (t.dataset.comInput === 'imp-conjunto') {
+        L.imp.elegido = Number(t.value); L.imp.mapeo = Object.assign({}, L.imp.conjuntos[L.imp.elegido].mapeo); pintarImportador();
+      } else if (t.dataset.comMapeo) {
+        L.imp.mapeo[t.dataset.comMapeo] = t.value; pintarImportador();
+      } else if (t.dataset.comArchivo && t.files && t.files[0]) {
+        const f = t.files[0]; L.imp.origen = f.name;
+        leerImportacion(await f.text(), f.name);
+      }
+    });
+    document.addEventListener('input', ev => {
+      if (ev.target.dataset.comInput === 'texto') { L.texto = ev.target.value; L.ver = 40; $('#tabla-cot').innerHTML = tablaHtml(R()); }
+    });
+    document.addEventListener('submit', ev => { if (ev.target.id === 'f-cot') { ev.preventDefault(); guardarFormulario(); } });
+    document.addEventListener('keydown', ev => {
+      if (ev.key === 'Escape' && L.editor) cerrarEditor();
+      if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.classList && ev.target.classList.contains('fila-cot')) { ev.preventDefault(); abrirEditor(ev.target.dataset.id); }
+    });
+    document.addEventListener('paste', ev => {
+      if (S.tab !== 'comercial' || (ev.target && /input|textarea/i.test(ev.target.tagName))) return;
+      const txt = ev.clipboardData && ev.clipboardData.getData('text');
+      if (!txt || txt.length < 20) return;
+      ev.preventDefault(); abrirImportador(); leerImportacion(txt, /aeria-extractor/.test(txt.slice(0, 200)) ? 'extractor de AerIA' : 'texto pegado');
+    });
+
+    return { render, abrirEditor, abrirImportador, cerrarEditor };
+  };
+})();

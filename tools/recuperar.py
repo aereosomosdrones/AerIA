@@ -22,6 +22,7 @@ DESTINOS = {
     "cotizaciones": "privado/cotizaciones.json",
     "cursos": "publico/cursos.json",
     "licitaciones": "publico/licitaciones.json",
+    "comercial": "privado/comercial.json",
 }
 
 if len(sys.argv) != 2:

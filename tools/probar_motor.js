@@ -9,6 +9,7 @@ const D = {
   finanzas: leer('privado/finanzas.json'), plan: leer('privado/plan2027.json'),
   modelo: leer('privado/modelo2027.json'), cotizaciones: leer('privado/cotizaciones.json'),
   cursos: leer('publico/cursos.json'), licitaciones: leer('publico/licitaciones.json'), notas: [],
+  comercial: fs.existsSync(path.join(raiz, 'datos', 'privado', 'comercial.json')) ? leer('privado/comercial.json') : { cotizaciones: [] },
 };
 const hoy = process.argv.find(a => /^\d{4}-\d{2}-\d{2}$/.test(a)) || M.fmt.iso(new Date());
 const I = M.analizar(D, hoy, new Date(hoy + 'T13:00:00-03:00'));
@@ -24,3 +25,9 @@ console.log('\n== PASADO', JSON.stringify({ flujo: I.pasado.flujoOperacional, so
 console.log('== CURSOS', JSON.stringify(I.cursos.resN1), JSON.stringify(I.cursos.resN23), 'racha', I.cursos.racha);
 console.log('== POR COBRAR', I.porCobrar.map(p => p.cliente + ' ' + p.saldo).join(' | '));
 console.log('== CRUCE', JSON.stringify(I.cruce && I.cruce.estado));
+if (I.comercial) {
+  const R = I.comercial;
+  console.log('== COMERCIAL', R.total, 'cotizaciones · abiertas', R.abiertas.n, M.fmt.mm(R.abiertas.monto), '· ponderado', M.fmt.mm(R.abiertas.ponderado), '· ganadas', R.ganadas.n, M.fmt.mm(R.ganadas.monto), '· tasa', R.tasa.monto, '· ciclo', R.ciclo && Math.round(R.ciclo));
+  console.log('   pronóstico', R.pronostico.meses.map(f => f.etiqueta + ' ' + M.fmt.mm(f.total)).join(' | '));
+  console.log('   alertas', R.alertas.map(a => a.id).join(', '));
+}

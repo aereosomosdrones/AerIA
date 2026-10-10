@@ -9,18 +9,17 @@ normalizado en datos/. El motor (tools/construir.py) solo lee datos/.
     python3 tools/extraer.py plan      <lectura-claude-docs.json | plan.xml> [url del doc]
     python3 tools/extraer.py cursos    <carpeta del repo aereo-web>
     python3 tools/extraer.py licitaciones <licitaciones.json del radar>
-    python3 tools/extraer.py cotizaciones <export del dashboard .json|.csv>
+    python3 tools/extraer.py comercial  <carpeta del respaldo de la colección «cotizaciones»>
 
 Los cuatro focos:
     PASADO   finanzas      informe de cartolas, SII y Mercado Pago (artifact)
     PRESENTE cursos        fechas y cupos publicados en aereo.cl (repo aereo-web)
-             cotizaciones  dashboard local de cotizaciones (export)
+    COMERCIAL comercial    cotizaciones de la pestaña Comercial (se editan en la página;
+                           el dashboard local se importa ahí con el extractor)
              licitaciones  radar de Mercado Público (repo licitaciones-aereo)
     FUTURO   plan          AÉREO 2027 · Plan de rentabilidad (Claude Docs)
     MARCA    la identidad visual sale de aereo-web/assets/aereo-ui.css
 """
-import csv
-import io
 import json
 import re
 import subprocess
@@ -257,49 +256,30 @@ def extraer_licitaciones(origen: Path):
 
 
 # --------------------------------------------------------------------------
-# PRESENTE · cotizaciones (export del dashboard local)
+# COMERCIAL · respaldo de las cotizaciones que viven en la base de la página
 # --------------------------------------------------------------------------
-COLUMNAS = {
-    "cliente": ["cliente", "empresa", "razon", "razón social", "nombre"],
-    "monto": ["monto", "total", "valor", "neto", "precio"],
-    "estado": ["estado", "status", "etapa"],
-    "fecha": ["fecha", "emision", "emisión", "creada"],
-    "linea": ["linea", "línea", "tipo", "servicio", "producto", "categoria", "categoría"],
-    "folio": ["folio", "numero", "número", "id", "n°", "codigo", "código"],
-}
+def extraer_comercial(origen: Path):
+    """Arma datos/privado/comercial.json desde un respaldo de la base de la página.
 
-
-def _monto(v):
-    if isinstance(v, (int, float)):
-        return float(v)
-    s = re.sub(r"[^\d,.-]", "", str(v or ""))
-    s = s.replace(".", "").replace(",", ".")
-    try:
-        return float(s)
-    except ValueError:
-        return 0.0
-
-
-def extraer_cotizaciones(origen: Path):
-    texto = origen.read_text(encoding="utf-8")
-    if origen.suffix == ".json":
-        filas = json.loads(texto)
-        if isinstance(filas, dict):
-            filas = next((v for v in filas.values() if isinstance(v, list)), [])
-    else:
-        filas = list(csv.DictReader(io.StringIO(texto), delimiter=";" if texto.count(";") > texto.count(",") else ","))
-    items = []
-    for f in filas:
-        bajo = {str(k).strip().lower(): v for k, v in f.items()}
-        it = {}
-        for campo, alias in COLUMNAS.items():
-            it[campo] = next((bajo[a] for a in alias if a in bajo and bajo[a] not in (None, "")), "")
-        it["monto"] = _monto(it["monto"])
-        items.append(it)
-    destino = PRIVADO / "cotizaciones.json"
+    El respaldo se saca con la herramienta ArtifactData (action «list», colección
+    «cotizaciones», out_dir=<carpeta>): deja un JSON por cotización en
+    <carpeta>/cotizaciones/<id>.json. Las cotizaciones se editan en la página
+    (pestaña Comercial); este archivo solo es el respaldo que va dentro del
+    paquete y que la página muestra mientras la base no responde.
+    """
+    carpeta = origen / "cotizaciones" if (origen / "cotizaciones").is_dir() else origen
+    if not carpeta.is_dir():
+        sys.exit(f"{origen} no es una carpeta con los JSON de la colección «cotizaciones».")
+    cotizaciones = []
+    for f in sorted(carpeta.glob("*.json")):
+        d = json.loads(f.read_text(encoding="utf-8"))
+        d = d.get("data", d)  # algunos respaldos envuelven el documento
+        d.setdefault("id", f.stem)
+        cotizaciones.append(d)
+    destino = PRIVADO / "comercial.json"
     previo = json.loads(destino.read_text(encoding="utf-8")) if destino.exists() else {}
-    previo.update({"fuente": f"Export del dashboard de cotizaciones ({origen.name})",
-                   "extraido": ahora(), "items": items})
+    previo.update({"fuente": "Base de la página AerIA (colección cotizaciones)", "extraido": ahora(), "cotizaciones": cotizaciones})
+    previo.setdefault("clientes", [])
     guardar(destino, previo)
 
 
@@ -308,7 +288,7 @@ ADAPTADORES = {
     "plan": extraer_plan,
     "cursos": extraer_cursos,
     "licitaciones": extraer_licitaciones,
-    "cotizaciones": extraer_cotizaciones,
+    "comercial": extraer_comercial,
 }
 
 if __name__ == "__main__":

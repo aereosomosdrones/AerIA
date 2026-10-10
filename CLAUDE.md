@@ -5,7 +5,8 @@ Lee cuatro focos (marca, pasado, presente, futuro), los cruza en `app/motor.js` 
 los muestra en una página publicada como artifact privado:
 
 **URL de la página: https://claude.ai/artifact/YAdA6FWFfLL7Q4F4FKe6m9**
-Capacidades: `sample` (chat con Claude) y `db` (estado compartido). Al republicar
+Capacidades: `sample` (chat con Claude), `db` (estado compartido) y `downloads`
+(exportar CSV). Al republicar
 desde otra conversación, pasar esta URL como `url`; nunca crear otra página.
 
 ## Reglas
@@ -24,7 +25,10 @@ desde otra conversación, pasar esta URL como `url`; nunca crear otra página.
 - Identidad visual de aereo.cl: amarillo `#ECE31D` con borde negro y sombra dura,
   Big Shoulders Display en mayúsculas para títulos, Roboto para texto, Roboto Mono
   para etiquetas. Claro y oscuro con tokens en `app/aeria.css`.
-- El análisis va en `app/motor.js` (funciones puras, sin DOM). La interfaz en `app/ui.js`.
+- El análisis va en `app/motor.js` y `app/comercial.js` (funciones puras, sin DOM). La
+  interfaz en `app/ui.js` y `app/ui-comercial.js`. Orden de carga en la página:
+  comercial.js → motor.js → ui-comercial.js → ui.js.
+- Las pruebas usan datos ficticios: el repo es público.
 
 ## Recuperar los datos privados (sesión nueva)
 
@@ -42,7 +46,8 @@ desde otra conversación, pasar esta URL como `url`; nunca crear otra página.
 | Futuro (plan 2027) | Claude Docs `read` del documento indicado en `config/fuentes` (`plan_doc_id` y `plan_nodo`) → guardar la salida JSON → `python3 tools/extraer.py plan <json> <enlace>`. Si cambian cifras del modelo (costos fijos, márgenes, palancas, precios 2027), actualizar a mano `datos/privado/modelo2027.json` y comprobar con `node tools/probar_motor.js` que reproduce el resultado del plan |
 | Presente (cursos) | Clonar `aereosomosdrones/aereo-web` → `python3 tools/extraer.py cursos <carpeta>` |
 | Presente (licitaciones) | Clonar `aereosomosdrones/licitaciones-aereo` (público) → `python3 tools/extraer.py licitaciones <carpeta>/docs/data/licitaciones.json` |
-| Presente (cotizaciones) | El usuario las importa en la página (quedan en la db, documento `presente/cotizaciones`). Para fijarlas en el paquete: `ArtifactData get` de ese documento o `python3 tools/extraer.py cotizaciones <export.csv>` |
+| Comercial (cotizaciones) | Viven en la db de la página (colección `cotizaciones`); el usuario las crea, edita e importa allí desde su dashboard local con el extractor. Para respaldarlas en el paquete: `ArtifactData list` de la colección `cotizaciones` con `out_dir` → `python3 tools/extraer.py comercial <out_dir>` |
+| Agregado del dashboard | `datos/privado/cotizaciones.json` (monto abierto y tasa de cierre al último corte conocido). Se usa solo mientras el dashboard no esté conectado |
 
 Luego `python3 tools/construir.py --revisar` y publicar `dist/aeria.html` en la URL de arriba
 (omitir `capabilities` e `icon` al republicar para conservarlos).
@@ -54,17 +59,24 @@ Luego `python3 tools/construir.py --revisar` y publicar `dist/aeria.html` en la 
 | `estado/alertas` | `{mapa: {<id alerta>: {estado: "resuelta", fecha}}}` |
 | `estado/agenda` | `{mapa: {<id acción>: {hecho: true, fecha}}}` |
 | `memoria/notas` | `{items: [{id, texto, fecha}]}` — la memoria de AerIA; entra al contexto del chat |
-| `presente/cotizaciones` | `{fuente, corte, items: [{cliente, monto, estado, fecha, linea, folio}]}` o `{borrado: true}` |
+| `cotizaciones/<id>` | Una cotización: `{id, folio, cliente, rut, contacto, email, telefono, linea, descripcion, monto, monto_tipo, estado, probabilidad, fecha_cotizacion, fecha_cierre_estimada, fecha_cierre, fecha_ejecucion, proximo_seguimiento, ultimo_contacto, factura_folio, cobrada, motivo_perdida, notas, origen, evidencia, confianza, historial[], creada, actualizada}`. Escribirla siempre con `AeriaComercial.aplicar` (o el mismo formato) para que el historial y el «deshacer» funcionen |
 | `config/fuentes` | Enlaces e ids de las fuentes privadas (escrito por Claude, no por la página) |
 
 Los ids de alertas y acciones son estables (`fin-<hallazgo>`, `lic-<código>`,
-`feriado-<nivel>-<fecha>`, `vender-<nivel>-<fecha>`, `caja`, `cobrar`…): no cambiarlos
-sin migrar `estado/*`.
+`feriado-<nivel>-<fecha>`, `vender-<nivel>-<fecha>`, `caja`, `cobrar`, `com-*`…): no
+cambiarlos sin migrar `estado/*`.
+
+Ids de cotizaciones: `f-<folio>` (importadas con folio), `q-<hash>` (sin folio),
+`sii-<folio>` y `banco-*` (sembradas desde facturas y cobros), `plan-*`, `web-*` y
+`n-<folio>` (sembradas desde el plan 2027, aereo.cl y el CRM de Notion). El dashboard
+cuenta como «conectado» cuando alguna cotización tiene `origen` con «dashboard» o
+«import».
 
 ## Probar
 
 ```bash
 node tools/probar_motor.js 2026-10-10            # briefing, alertas, agenda, tablero, escenarios
 node tools/probar_motor.js 2026-10-10 --resumen  # el contexto que recibe el chat (debe quedar bajo ~40 KB)
+node tools/probar_comercial.js                   # pruebas del módulo comercial (datos ficticios)
 python3 tools/construir.py                       # arma dist/aeria.html
 ```

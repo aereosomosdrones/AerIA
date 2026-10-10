@@ -39,6 +39,10 @@
   const MES3 = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
   const DIAS_SEM = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
   const NIVELES = ['critica', 'alta', 'oportunidad', 'media', 'baja'];
+  /* Módulo comercial (app/comercial.js): en la página llega como global; en node, por require */
+  const Com = (typeof module !== 'undefined' && module.exports) ? require('./comercial.js') : raiz.AeriaComercial;
+  /* ¿Ya entró el detalle del dashboard comercial (no solo lo sembrado desde SII, Notion o el plan)? */
+  const dashboardConectado = com => !!(com && com.cotizaciones.some(q => /dashboard|import/i.test(q.origen || '')));
 
   /* ---------- formato ---------- */
   function miles(n) {
@@ -279,7 +283,7 @@
     return { resultado: res, equilibrio, palancas: sumPal, margenEscuela: margenEsc, margenB2B: 12 * b2bMes * M.margen_b2b };
   }
 
-  function leerFuturo(M, pasado, hoy) {
+  function leerFuturo(M, pasado, hoy, com) {
     const ultimo = pasado.meses[pasado.meses.length - 1];
     const prom = pasado.b2b / pasado.meses.length;
     const escenarios = [
@@ -287,7 +291,9 @@
       { id: 'ultimo', nombre: 'Ritmo de ' + mesNombre(ultimo.mes), b2b: ultimo.b2b, real: true },
       { id: 'meta', nombre: 'Meta 2027', b2b: M.b2b_meta_mes },
       { id: 'promedio', nombre: 'Promedio ' + pasado.meses.map(m => MES3[Number(m.mes.slice(5)) - 1]).join('–'), b2b: prom, real: true },
-    ].map(e => ({ ...e, ...resultado2027(M, e.b2b) }))
+    ].concat(dashboardConectado(com) && com.pronostico.promedio3 > 0
+      ? [{ id: 'comercial', nombre: 'Pronóstico comercial 3 meses', b2b: com.pronostico.promedio3, real: true }] : [])
+      .map(e => ({ ...e, ...resultado2027(M, e.b2b) }))
       .sort((a, b) => a.b2b - b.b2b);
     const hito = M.hito_decisivo;
     return {
@@ -300,7 +306,7 @@
     };
   }
 
-  function leerTablero(M, pasado, cursos, D) {
+  function leerTablero(M, pasado, cursos, D, com) {
     const u = pasado.meses[pasado.meses.length - 1];
     const estado = (bien, mal) => bien ? 'bien' : (mal ? 'critico' : 'atencion');
     return M.tablero.map(t => {
@@ -309,6 +315,10 @@
         valor = mm(u.b2b) + ' en ' + mesNombre(u.mes);
         est = estado(u.b2b >= M.b2b_meta_mes, u.b2b < M.b2b_minimo_mes);
         nota = 'Venta a empresas e instituciones según las cartolas (incluye anticipos de factoring).';
+        if (dashboardConectado(com)) {
+          const f = com.pronostico.meses[0];
+          nota += ' Comercial: ' + f.etiqueta + ' lleva ' + mm(f.ganado) + ' ganado y ' + mm(f.esperado) + ' esperable de lo abierto.';
+        }
       } else if (t.id === 'ocup_n1' && cursos.resN1.ocupacion21 != null) {
         valor = pct(cursos.resN1.ocupacion21) + ' vendido';
         est = estado(cursos.resN1.ocupacion21 >= t.umbral, cursos.resN1.ocupacion21 < 0.5);
@@ -443,17 +453,21 @@
         fecha_limite: l.cierre.slice(0, 10), url: l.url,
       });
     }
-    // Cotizaciones desactualizadas
-    if (cot.antiguedad != null && cot.antiguedad > 7) {
+    // Dashboard comercial: si su detalle no ha entrado a AerIA, se avisa con lo último conocido
+    const com = X.comercial;
+    if (!dashboardConectado(com)) {
       add({
-        id: 'cot-antiguas', nivel: 'media', foco: 'presente',
-        titulo: 'Las cotizaciones que veo son del ' + fCorta(cot.corte) + ' (' + cot.antiguedad + ' días)',
-        detalle: 'Tengo ' + mm(cot.abiertasMonto) + ' abiertas con ' + (cot.tasaCierre ? pct(cot.tasaCierre) : '?') +
-          ' de cierre por monto. Sin el detalle no puedo decirte cuáles empujar esta semana.',
-        accion: 'Exporta el dashboard de cotizaciones (CSV o JSON) e impórtalo en Presente → Cotizaciones.',
+        id: 'cot-antiguas', nivel: 'alta', foco: 'comercial',
+        titulo: 'Tu dashboard comercial todavía no está conectado a AerIA',
+        detalle: 'Lo último que veo del dashboard es el agregado del ' + fCorta(cot.corte) + (cot.antiguedad != null ? ' (hace ' + cot.antiguedad + ' días)' : '') + ': ' +
+          mm(cot.abiertasMonto) + ' abiertas con ' + (cot.tasaCierre ? pct(cot.tasaCierre) : '?') + ' de cierre por monto.' +
+          (com && com.total ? ' En Comercial hay ' + com.total + ' cotizaciones cargadas desde otras fuentes (SII, Notion, plan), pero no el detalle del dashboard.' : '') +
+          ' Sin ese detalle no puedo pronosticar bien ni decirte cuáles empujar.',
+        accion: 'Abre tu dashboard, corre el extractor de AerIA y pega el resultado en Comercial → Importar (o sube el CSV o JSON exportado).',
         fuente: 'Dashboard de cotizaciones',
       });
     }
+    if (com) for (const a of com.alertas) add(a);
     // Cruce plan vs cartolas
     if (cruce) {
       add({
@@ -509,7 +523,9 @@
       if (a.id.startsWith('fin-') && a.nivel === 'critica') return [1, 'esta semana'];
       if (a.id.startsWith('fin-') && a.nivel === 'alta') return [2, 'este mes'];
       if (finMedias.includes(a.id)) return [3, 'este mes'];
-      if (['cot-antiguas', 'preventa'].includes(a.id)) return [2, 'este mes'];
+      if (a.id === 'cot-antiguas') return [1, 'esta semana'];
+      if (a.id === 'preventa') return [2, 'este mes'];
+      if (a.id.startsWith('com-pronostico-')) return [2, 'esta semana'];
       if (a.id === 'cruce-por-cobrar') return [3, 'este mes'];
       return null;
     };
@@ -523,6 +539,8 @@
         add({ id: a.id, cuando: 'antes del ' + fCorta(a.fecha_limite), foco: 'presente', prioridad: 2, titulo: 'Preparar oferta: ' + a.titulo.replace(/^[^:]+: /, ''), por: a.detalle, url: a.url });
       }
     }
+    // Acciones comerciales: seguimientos, facturar lo ganado, definir cierres vencidos
+    if (X.comercial) for (const c of X.comercial.acciones) add(c);
     // Las acciones de «Esta semana» del plan que no estén ya cubiertas
     const plan = (D.plan && D.plan.secciones.find(s => /plan de acci/i.test(s.titulo))) || null;
     if (plan) {
@@ -557,6 +575,7 @@
         ev.push({ fecha: f, tipo: 'impuesto', titulo: 'Vence el F29 de ' + MESES[prev.getMonth()] + ' (IVA, PPM y retenciones)', estado: 'tributario' });
       }
     }
+    if (X.comercial) for (const e of X.comercial.eventos) if (e.fecha <= hasta) ev.push(e);
     const fijos = [
       { fecha: '2026-12-31', tipo: 'hito', titulo: 'Cierre 2026 · se fijan precios y fechas de 2027', estado: 'hito' },
       { fecha: '2027-01-06', tipo: 'hito', titulo: 'Primer Nivel 1 de 2027 a ' + clp(D.modelo.precios_2027.nivel1), estado: 'hito' },
@@ -584,10 +603,18 @@
     p.push('Pero esa caja no se quedó en la empresa: salieron ' + mm(-pasado.socioNeto) + ' netos a la cuenta del socio' + (hall('socio') ? ' sin clasificar' : '') + ' y ' +
       mm(-pasado.cofundador) + ' al cofundador (desde Aéreo OTEC entraron ' + mm(pasado.otec) + '). Al ' + fCorta(pasado.fechaCorte) + ' quedaban ' + clp(pasado.cajaFinal) +
       ': ' + futuro.runwayDias.toFixed(1).replace('.', ',') + ' días hábiles de costos fijos.' + (hall('impuestos') ? ' Tampoco veo pagos de impuestos ni cotizaciones.' : ''));
+    const com = X.comercial;
+    const f0 = com && com.total ? com.pronostico.meses[0] : null;
     p.push('Hacia 2027 el punto es el B2B. En ' + mesNombre(u.mes) + ' le vendiste ' + mm(u.b2b) + ' a empresas e instituciones; el equilibrio del plan es ' +
-      mm(futuro.equilibrio) + ' al mes y la meta ' + mm(D.modelo.b2b_meta_mes) + '. Tienes ' + mm(cot.abiertasMonto) + ' en cotizaciones abiertas' +
-      (cot.esperado ? ' (~' + mm(cot.esperado) + ' esperables)' : '') + ' y ' + lic.relevantes.length + ' licitaciones abiertas que calzan con lo que hace Aéreo.');
+      mm(futuro.equilibrio) + ' al mes y la meta ' + mm(D.modelo.b2b_meta_mes) + '. ' +
+      (dashboardConectado(com)
+        ? 'En Comercial tienes ' + com.abiertas.n + ' cotizaciones abiertas por ' + mm(com.abiertas.monto) + ' (~' + mm(com.abiertas.ponderado) + ' ponderado), en los últimos 90 días ganaste ' + mm(com.ganadas.ultimos90) +
+          ' y para ' + f0.etiqueta + ' espero ' + mm(f0.total) + ' de venta B2B'
+        : 'Tu dashboard reportaba ' + mm(cot.abiertasMonto) + ' en cotizaciones abiertas al ' + fCorta(cot.corte) + (cot.esperado ? ' (~' + mm(cot.esperado) + ' esperables)' : '') +
+          ', pero su detalle aún no entra a AerIA' + (com && com.total ? '; lo que sí tengo (' + com.total + ' negocios desde SII, Notion y el plan) suma ' + mm(com.ganadas.ultimos90) + ' ganado en 90 días' : '')) +
+      '. Además hay ' + lic.relevantes.length + ' licitaciones abiertas que calzan con lo que hace Aéreo.');
     const hoyTxt = [];
+    if (!dashboardConectado(com)) hoyTxt.push('conectar el dashboard comercial a AerIA');
     if (capUrg.length) hoyTxt.push('ofertar a ' + capUrg.length + (capUrg.length === 1 ? ' licitación' : ' licitaciones') + ' de capacitación que ' + (capUrg.length === 1 ? 'cierra' : 'cierran') + ' en menos de 72 horas');
     if (totalCobrar) hoyTxt.push('cobrar ' + mm(totalCobrar));
     if (hall('socio')) hoyTxt.push('clasificar los retiros');
@@ -606,9 +633,17 @@
     const cot = leerCotizaciones(D.cotizaciones, hoy);
     const porCobrar = leerPorCobrar(D.finanzas);
     const cruce = cruzarPorCobrarPlan(D.plan, D.finanzas);
-    const futuro = leerFuturo(D.modelo, pasado, hoy);
-    const tablero = leerTablero(D.modelo, pasado, cursos, D);
-    const X = { pasado, cursos, lic, cot, porCobrar, cruce, futuro, tablero };
+    const equilibrio = resultado2027(D.modelo, 0).equilibrio;
+    const conectado = !!(D.comercial && (D.comercial.cotizaciones || []).some(q => /dashboard|import/i.test(q.origen || '')));
+    const comercial = Com && D.comercial ? Com.analizar(D.comercial.cotizaciones || [], hoy, {
+      meta: D.modelo.b2b_meta_mes, minimo: D.modelo.b2b_minimo_mes, equilibrio,
+      sii: D.finanzas.sii, siiCorte: D.finanzas.periodo.hasta, clientes: D.comercial.clientes || [],
+      tasaReferencia: !conectado && D.cotizaciones.tasa_cierre_monto ? { valor: D.cotizaciones.tasa_cierre_monto, corte: D.cotizaciones.corte } : null,
+      conectado,
+    }) : null;
+    const futuro = leerFuturo(D.modelo, pasado, hoy, comercial);
+    const tablero = leerTablero(D.modelo, pasado, cursos, D, comercial);
+    const X = { pasado, cursos, lic, cot, porCobrar, cruce, futuro, tablero, comercial };
     const alertas = construirAlertas(D, X, hoy, ahora);
     const agenda = construirAgenda(D, X, alertas, hoy);
     const viene = construirViene(D, X, hoy);
@@ -652,10 +687,11 @@
     L.push('\n## PRESENTE');
     L.push('- Cursos publicados en aereo.cl (precio actual N1 ' + clp(D.cursos.precios_web.nivel1) + ', N2+3 ' + clp(D.cursos.precios_web.nivel23) + ', Pack ' + clp(D.cursos.precios_web.pack) + '; 6 cupos por curso). Meses agotados 2026: ' + cursos.racha.map(m => MESES[m]).join(', ') + '.');
     for (const c of cursos.proximos) L.push('  · ' + c.nombre + ' ' + c.inicio + (c.nivel === 'n1' ? '→' + c.fin : '/' + c.fin) + ': ' + c.vendidos + '/' + c.max + ' vendidos' + (c.feriados.length ? ' — FERIADO ' + c.feriados.map(f => f.fecha + ' ' + f.nombre).join(', ') : ''));
-    L.push('- Cotizaciones (' + (cot.items.length ? cot.items.length + ' importadas' : 'solo agregado') + ', corte ' + cot.corte + '): abiertas ' + clp(cot.abiertasMonto) + ', cierre por monto ' + (cot.tasaCierre ? pct(cot.tasaCierre) : '?') + (cot.esperado ? ', esperable ' + clp(cot.esperado) : '') + '. ' + cot.notas.join(' '));
+    L.push('- Agregado del dashboard comercial (' + (dashboardConectado(I.comercial) ? 'ya reemplazado por el detalle en Comercial' : 'su detalle aún no está en AerIA') + ', corte ' + cot.corte + '): abiertas ' + clp(cot.abiertasMonto) + ', cierre por monto ' + (cot.tasaCierre ? pct(cot.tasaCierre) : '?') + (cot.esperado ? ', esperable ' + clp(cot.esperado) : '') + '. ' + cot.notas.join(' '));
     if (cot.mayores.length) L.push('  Mayores abiertas: ' + cot.mayores.map(i => (i.cliente || '?') + ' ' + clp(i.monto) + ' [' + (i.estado || '') + ']').join('; '));
     L.push('- Por cobrar (banco + SII): ' + porCobrar.map(p => p.cliente + ' f.' + p.folio + ' ' + clp(p.saldo) + ' — ' + p.tipoDeuda).join('; ') + '.');
     L.push('- Licitaciones abiertas que calzan (' + lic.relevantes.length + ' de ' + lic.abiertas.length + '): ' + lic.relevantes.map(l => l.encaje_label + ' · ' + l.nombre.slice(0, 80) + ' · ' + l.organismo + ' · ' + (l.monto ? clp(l.monto) : 's/monto') + ' · cierra ' + l.cierre.slice(0, 16)).join(' | '));
+    if (Com && I.comercial) L.push('\n' + Com.resumenParaIA(I.comercial));
     L.push('\n## FUTURO · Plan 2027');
     const M = D.modelo;
     L.push('- Modelo: costos fijos ' + clp(M.costos_fijos_mes) + '/mes (' + clp(M.costos_fijos_anio) + '/año, ' + clp(M.costo_dia_habil) + ' por día hábil); margen B2B ' + pct(M.margen_b2b, 1) + '; margen escuela ' + clp(M.margen_escuela.realista) + ' realista / ' + clp(M.margen_escuela.llena) + ' llena. Resultado = margen escuela + 12×B2B×0,675 + palancas − fijos.');
@@ -676,7 +712,7 @@
   }
 
   const API = {
-    analizar, resultado2027, buscarMovimientos, resumenParaIA, cuentas,
+    analizar, resultado2027, buscarMovimientos, resumenParaIA, cuentas, dashboardConectado,
     fmt: { clp, mm, pct, fCorta, fLarga, mesNombre, cuando, horasA, plano, diasEntre, sumarDias, iso },
     FERIADOS, MESES,
   };

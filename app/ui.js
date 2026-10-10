@@ -13,15 +13,18 @@
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const NIVEL_TXT = { critica: 'Crítica', alta: 'Alta', oportunidad: 'Oportunidad', media: 'Media', baja: 'Baja' };
-  const FOCO_TXT = { pasado: 'Pasado', presente: 'Presente', futuro: 'Futuro', cruce: 'Cruce' };
+  const FOCO_TXT = { pasado: 'Pasado', presente: 'Presente', futuro: 'Futuro', cruce: 'Cruce', comercial: 'Comercial' };
+  const C = window.AeriaComercial;
+  const VISTAS = ['mando', 'pasado', 'presente', 'comercial', 'futuro', 'hablar'];
   const MES3 = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
   const DIA3 = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
 
   const S = {
     tab: 'mando', filtroAlertas: 'principales', filtroLic: 'calzan', abiertas: new Set(),
-    sim: null, alertas: {}, agenda: {}, notas: [], cot: null,
+    sim: null, alertas: {}, agenda: {}, notas: [],
     chat: [], ctl: null, profundo: false, enCurso: false,
-    sample: null, tools: 0, ia: 'cargando', db: null, cotPrevia: null,
+    sample: null, tools: 0, ia: 'cargando', db: null,
+    comDocs: new Map(), comCargado: false, comUI: null,
   };
   let I = null;
 
@@ -30,12 +33,11 @@
     get(k, d) { try { const v = localStorage.getItem('aeria:' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem('aeria:' + k, JSON.stringify(v)); } catch (e) { /* sin almacenamiento */ } },
   };
-  const DOCS = { alertas: 'estado/alertas', agenda: 'estado/agenda', notas: 'memoria/notas', cot: 'presente/cotizaciones' };
-  const aCuerpo = (k, v) => k === 'notas' ? { items: v } : k === 'cot' ? (v || { borrado: true }) : { mapa: v };
+  const DOCS = { alertas: 'estado/alertas', agenda: 'estado/agenda', notas: 'memoria/notas' };
+  const aCuerpo = (k, v) => k === 'notas' ? { items: v } : { mapa: v };
   const deCuerpo = (k, d) => {
-    if (!d) return k === 'notas' ? [] : k === 'cot' ? null : {};
+    if (!d) return k === 'notas' ? [] : {};
     if (k === 'notas') return Array.isArray(d.items) ? d.items : [];
-    if (k === 'cot') return d.borrado ? null : d;
     return d.mapa || {};
   };
   async function guardar(k) {
@@ -48,9 +50,48 @@
   for (const k of Object.keys(DOCS)) S[k] = LS.get(k, S[k]);
   S.chat = LS.get('chat', []);
 
+  /* ---------- cotizaciones: una por documento en cotizaciones/<id> ----------
+     Con base de datos: lo que hay en la base (antes de que responda, el paquete).
+     Sin base (fuera de claude.ai): lo guardado en este navegador o el paquete. */
+  const paqueteCot = () => ((D0.comercial || {}).cotizaciones || []);
+  function cotizacionesActuales() {
+    if (S.db && S.comCargado) return Array.from(S.comDocs.values());
+    if (!S.db) { const loc = LS.get('cotizaciones', null); if (loc) return Object.values(loc); }
+    return paqueteCot();
+  }
+  const espera = ms => new Promise(r => setTimeout(r, ms));
+  async function guardarCot(q) {
+    if (S.db) {
+      for (let i = 0; i < 5; i++) {
+        try { await S.db.doc('cotizaciones/' + q.id).set(q); S.comDocs.set(q.id, q); return true; }
+        catch (e) {
+          if (!e || !['resource_exhausted', 'unavailable'].includes(e.code)) { console.warn('AerIA: no se pudo guardar la cotización', e); return false; }
+          await espera(500 * Math.pow(2, i));
+        }
+      }
+      return false;
+    }
+    const loc = LS.get('cotizaciones', null) || Object.fromEntries(paqueteCot().map(x => [x.id, x]));
+    loc[q.id] = q; LS.set('cotizaciones', loc);
+    return true;
+  }
+  async function borrarCot(id) {
+    if (S.db) {
+      try { await S.db.doc('cotizaciones/' + id).delete(); S.comDocs.delete(id); return true; } catch (e) { console.warn('AerIA: no se pudo borrar', e); return false; }
+    }
+    const loc = LS.get('cotizaciones', null) || Object.fromEntries(paqueteCot().map(x => [x.id, x]));
+    delete loc[id]; LS.set('cotizaciones', loc);
+    return true;
+  }
+  function avisar(msg) {
+    const t = $('#toast'); if (!t) return;
+    t.textContent = msg; t.hidden = false;
+    clearTimeout(avisar.t); avisar.t = setTimeout(() => { t.hidden = true; }, 6000);
+  }
+
   /* ---------- cálculo ---------- */
   const hoy = () => F.iso(new Date());
-  const datos = () => Object.assign({}, D0, { cotizaciones: S.cot || D0.cotizaciones, notas: S.notas });
+  const datos = () => Object.assign({}, D0, { notas: S.notas, comercial: { cotizaciones: cotizacionesActuales() } });
   function recalcular() { I = M.analizar(datos(), hoy(), new Date()); }
   const resuelta = a => S.alertas[a.id] && S.alertas[a.id].estado === 'resuelta';
   const fuerte = t => esc(t).replace(/(−?\$[\d.,]+M?)/g, '<b>$1</b>');
@@ -81,6 +122,9 @@
       '<span>Hoy <b>' + F.fLarga(I.hoy) + '</b></span>';
     const c = $('#cuenta-criticas');
     c.hidden = !crit; c.textContent = crit;
+    const hoyCom = I.comercial ? I.comercial.acciones.filter(a => a.cuando === 'hoy').length : 0;
+    const cc = $('#cuenta-comercial');
+    if (cc) { cc.hidden = !hoyCom; cc.textContent = hoyCom; }
   }
   function irA(tab, foco) {
     S.tab = tab;
@@ -94,7 +138,7 @@
     $('#pie').innerHTML =
       '<p><b>Fuentes.</b> Pasado: ' + esc(D0.finanzas.fuente) + ', generado el ' + esc(D0.finanzas.generado_fuente.slice(0, 10)) +
       '. Presente: ' + esc(D0.cursos.fuente) + ' (commit ' + esc(D0.cursos.commit || '?') + '); ' + esc(D0.licitaciones.fuente) +
-      ', ' + esc((D0.licitaciones.generado_fuente || '').slice(0, 16).replace('T', ' ')) + ' UTC; ' + esc((S.cot || D0.cotizaciones).fuente) +
+      ', ' + esc((D0.licitaciones.generado_fuente || '').slice(0, 16).replace('T', ' ')) + ' UTC; ' + esc(D0.cotizaciones.fuente) + '; Comercial: ' + (I.comercial ? I.comercial.total : 0) + ' cotizaciones en la base de AerIA' +
       '. Futuro: ' + esc(D0.plan.fuente) + '; ' + esc(D0.modelo.fuente) + '.</p>' +
       '<p><b>Método.</b> AerIA no inventa cifras: todo número sale de esas fuentes o de cálculos sobre ellas, y cada alerta dice de dónde viene. ' +
       'Montos en pesos chilenos. Paquete armado el ' + esc((D0.construido || '').slice(0, 16).replace('T', ' ')) + '.</p>';
@@ -110,6 +154,8 @@
     '¿Qué licitaciones vale la pena postular esta semana?',
     'Arma un plan de preventa para noviembre y diciembre',
     '¿Qué riesgos tributarios ves y qué le pregunto al contador?',
+    '¿Qué cotizaciones debo empujar esta semana y por qué?',
+    '¿Cuánto hemos ganado y en qué líneas nos va mejor?',
   ];
 
   function titular(t) {
@@ -150,7 +196,9 @@
             <div class="t-cab"><h3>Presente</h3><span class="t-que">Lo que estamos haciendo</span></div><span class="t-ir">Ver →</span>
             <dl>
               <div><dt>Cupos N1 vendidos</dt><dd>${C.resN1.vendidos}/${C.resN1.cupos}<small>${C.resN1.fechas} fechas publicadas</small></dd></div>
-              <div><dt>Cotizaciones abiertas</dt><dd>${F.mm(Q.abiertasMonto)}<small>${Q.esperado ? '~' + F.mm(Q.esperado) + ' esperables' : 'sin tasa de cierre'}</small></dd></div>
+              ${M.dashboardConectado(I.comercial)
+                ? `<div><dt>Cotizaciones abiertas</dt><dd>${F.mm(I.comercial.abiertas.monto)}<small>~${F.mm(I.comercial.abiertas.ponderado)} ponderado · ${I.comercial.abiertas.n} abiertas</small></dd></div>`
+                : `<div><dt>Cotizaciones abiertas</dt><dd>${F.mm(Q.abiertasMonto)}<small>dato del ${esc(F.fCorta(Q.corte))} · falta conectar el dashboard</small></dd></div>`}
               <div><dt>Licitaciones que calzan</dt><dd>${L.relevantes.length}<small>${urg ? urg + ' de capacitación cierran en 72 h' : 'de ' + L.abiertas.length + ' abiertas'}</small></dd></div>
             </dl>
           </button>
@@ -158,7 +206,9 @@
             <div class="t-cab"><h3>Futuro</h3><span class="t-que">Lo que viene · plan 2027</span></div><span class="t-ir">Ver →</span>
             <dl>
               <div><dt>2027 al ritmo de ${esc(F.mesNombre(P.meses[P.meses.length - 1].mes))}</dt><dd class="${ritmo.resultado < 0 ? 'mal' : 'bien'}">${F.mm(ritmo.resultado)}<small>B2B ${F.mm(ritmo.b2b)} al mes</small></dd></div>
-              <div><dt>Equilibrio</dt><dd>${F.mm(U.equilibrio)}<small>de B2B al mes</small></dd></div>
+              ${M.dashboardConectado(I.comercial)
+                ? `<div><dt>Venta B2B esperada · ${esc(I.comercial.pronostico.meses[0].etiqueta)}</dt><dd class="${I.comercial.pronostico.meses[0].total < U.equilibrio ? 'mal' : 'bien'}">${F.mm(I.comercial.pronostico.meses[0].total)}<small>equilibrio ${F.mm(U.equilibrio)} al mes</small></dd></div>`
+                : `<div><dt>Equilibrio</dt><dd>${F.mm(U.equilibrio)}<small>de B2B al mes</small></dd></div>`}
               <div><dt>Hito del plan</dt><dd>${U.diasHito} días<small>al ${esc(F.fCorta(U.hito.fecha))} de 2027</small></dd></div>
             </dl>
           </button>
@@ -248,7 +298,7 @@
       return `<div class="ag-item${h ? ' hecho' : ''}${it.cuando === 'hoy' ? ' hoy' : ''}">
         <input type="checkbox" id="${id}" data-accion="agenda" data-id="${esc(it.id)}"${h ? ' checked' : ''}>
         <label for="${id}">${esc(it.titulo)}</label>
-        <span class="por">${fuerte(it.por)}${it.url ? ` · <a href="${esc(it.url)}" target="_blank" rel="noopener">ficha ↗</a>` : ''}</span></div>`;
+        <span class="por">${fuerte(it.por)}${it.url ? ` · <a href="${esc(it.url)}" target="_blank" rel="noopener">ficha ↗</a>` : ''}${it.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(it.cotizacion)}">abrir cotización</button>` : ''}</span></div>`;
     }).join('')).join('') + `<div class="pie-lista">${visibles.length < I.agenda.length ? `<button class="enlace-btn" type="button" data-accion="agenda-todas">Ver ${I.agenda.length - visibles.length} más para este mes</button>` : ''}<span class="mudo">${hechas} de ${I.agenda.length} hechas${S.db ? '' : ' · se guarda solo en este navegador'}</span></div>`;
   }
   function vieneHtml() {
@@ -258,8 +308,9 @@
   }
   function eventoHtml(e) {
     const extra = e.tipo === 'curso' ? (e.estado === 'lleno' ? 'lleno' : e.estado === 'vacio' ? 'sin ventas' : 'con cupos') :
-      e.tipo === 'licitacion' ? 'licitación' : e.tipo === 'impuesto' ? 'tributario' : 'hito';
-    const t = e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.titulo)}</a>` : esc(e.titulo);
+      e.tipo === 'licitacion' ? 'licitación' : e.tipo === 'impuesto' ? 'tributario' : e.tipo === 'comercial' ? 'comercial' : 'hito';
+    const t = e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.titulo)}</a>`
+      : e.cotizacion ? `<button class="enlace-btn ev-btn" type="button" data-com="abrir" data-id="${esc(e.cotizacion)}">${esc(e.titulo)}</button>` : esc(e.titulo);
     return `<div class="ev t-${e.tipo}"><div class="ev-f">${fechaCaja(e.fecha)}</div><div><div class="ev-t">${t}</div><div class="ev-d">${dSem(e.fecha)} · ${F.cuando(e.dias)} · ${extra}</div></div></div>`;
   }
 
@@ -445,8 +496,9 @@
           ${I.porCobrar.map(p => `<tr><td><div class="c-main">${esc(p.cliente)}</div><div class="c-sub">${esc(p.tipoDeuda)}</div></td><td class="nw">${esc(p.folio)} · ${esc(F.fCorta(p.fecha))}</td><td class="d">${F.clp(p.saldo)}</td></tr>`).join('')}
           </tbody><tfoot><tr><td colspan="2" style="font-weight:700">Total</td><td class="d" style="font-weight:700">${F.clp(totCobrar)}</td></tr></tfoot></table></div></div>
           ${I.cruce ? `<p class="nota-panel">Ojo: el plan 2027 decía «${esc(I.cruce.frase)}». Las cartolas muestran: ${esc(I.cruce.estado.map(e => e.cliente + ' ' + e.leido).join('; '))}.</p>` : ''}</section>
-        <section class="panel" id="panel-cot"><div class="panel-c"><h2>Cotizaciones</h2><span class="bajada">${Q.items.length ? Q.items.length + ' importadas · ' + esc(Q.fuente || '') : 'Agregado del dashboard al ' + esc(F.fCorta(Q.corte))}</span></div>
-          ${cotizacionesHtml(Q)}</section>
+        <section class="panel"><div class="panel-c"><h2>Comercial</h2><span class="bajada">${M.dashboardConectado(I.comercial) ? 'Cotizaciones del dashboard en AerIA.' : 'El dashboard aún no está conectado: abajo, lo que reuní de otras fuentes.'}</span>
+            <span class="acc"><button class="btn sm" type="button" data-tab="comercial">Abrir Comercial</button></span></div>
+          ${comercialMirada(I.comercial, Q)}</section>
       </div>
       <section class="panel"><div class="panel-c"><h2>Licitaciones abiertas</h2><span class="bajada">Radar de Mercado Público y Compra Ágil, actualizado ${esc((D0.licitaciones.generado_fuente || '').slice(0, 16).replace('T', ' '))} UTC. «Calzan» = capacitación, asesoría o servicios aéreos.</span></div>
         <div class="panel-b" style="padding-bottom:10px">${chipsLic()}</div>
@@ -467,26 +519,15 @@
     }).join('')}</div></div>`).join('');
   }
 
-  function cotizacionesHtml(Q) {
-    const resumen = `<div class="panel-b"><div class="sim-datos"><span>Abiertas <b>${F.clp(Q.abiertasMonto)}</b></span><span>Cierre por monto <b>${Q.tasaCierre ? F.pct(Q.tasaCierre) : '—'}</b></span><span>Esperable <b>${Q.esperado ? F.clp(Q.esperado) : '—'}</b></span>${Q.antiguedad != null ? `<span>Dato de hace <b>${Q.antiguedad} días</b></span>` : ''}</div>
-      ${Q.notas.length ? '<ul class="c-sub" style="margin-top:8px">' + Q.notas.map(n => '<li>' + esc(n) + '</li>').join('') + '</ul>' : ''}</div>`;
-    const tabla = Q.items.length ? `<div class="panel-b ras"><div class="tabla-env alto"><table><thead><tr><th>Cliente</th><th>Estado</th><th class="d">Monto</th></tr></thead><tbody>
-      ${Q.items.slice().sort((a, b) => (b.monto || 0) - (a.monto || 0)).map(i => `<tr><td><div class="c-main">${esc(i.cliente || '—')}</div><div class="c-sub">${esc([i.linea, i.folio, i.fecha].filter(Boolean).join(' · '))}</div></td><td>${esc(i.estado || '—')}</td><td class="d">${F.clp(Number(i.monto) || 0)}</td></tr>`).join('')}
-      </tbody></table></div></div>` : '';
-    const prev = S.cotPrevia;
-    return resumen + tabla + `<div class="importar">
-      <span class="ceja">Importar desde tu dashboard</span>
-      <p class="c-sub">Exporta las cotizaciones de tu dashboard local (CSV o JSON) y cárgalas aquí, o pega la tabla copiada. AerIA reconoce columnas como cliente, monto, estado, fecha y línea.</p>
-      <div class="fila"><label class="btn sm sec" for="cot-archivo">Elegir archivo</label><input id="cot-archivo" type="file" accept=".csv,.json,.txt,.tsv" class="sr" data-accion="cot-archivo"></div>
-      <label class="sr" for="cot-texto">Pegar cotizaciones</label>
-      <textarea id="cot-texto" placeholder="cliente;monto;estado;fecha&#10;Empresa ejemplo;1200000;enviada;2026-10-01">${prev ? '' : ''}</textarea>
-      <div class="fila">
-        <button class="btn sm" type="button" data-accion="cot-leer">Leer</button>
-        ${S.sample ? '<button class="btn sm sec" type="button" data-accion="cot-ia">Que AerIA lo ordene</button>' : ''}
-        ${prev ? `<button class="btn sm" type="button" data-accion="cot-guardar">Guardar ${prev.items.length} cotizaciones</button>` : ''}
-        ${S.cot ? '<button class="enlace-btn" type="button" data-accion="cot-borrar">Volver al agregado del plan</button>' : ''}
-      </div>
-      <p class="msg" id="cot-msg" aria-live="polite">${prev ? esc(prev.msg) : ''}</p></div>`;
+  function comercialMirada(Rc, Q) {
+    const filas = Rc && Rc.total ? [
+      ['Cotizado abierto', F.clp(Rc.abiertas.monto) + ' · ' + Rc.abiertas.n + ' cotizaciones'],
+      ['Esperable de lo abierto', F.clp(Rc.abiertas.ponderado)],
+      ['Ganado en 90 días', F.clp(Rc.ganadas.ultimos90)],
+      ['Venta B2B esperada ' + Rc.pronostico.meses[0].etiqueta, F.clp(Rc.pronostico.meses[0].total)],
+    ] : [];
+    if (!M.dashboardConectado(Rc)) filas.push(['Último agregado del dashboard (' + F.fCorta(Q.corte) + ')', F.clp(Q.abiertasMonto) + ' abiertas · ' + (Q.tasaCierre ? F.pct(Q.tasaCierre) : '?') + ' de cierre']);
+    return `<div class="panel-b ras"><div class="tabla-env"><table><tbody>${filas.map(([a, b]) => `<tr><td>${esc(a)}</td><td class="d">${esc(b)}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
 
   function chipsLic() {
@@ -505,50 +546,6 @@
       <td class="ancho"><div class="c-main">${esc(x.nombre)}</div><div class="c-sub">${esc(x.organismo)} · ${esc(x.region)} · ${x.fuente === 'compra_agil' ? 'Compra Ágil' : 'Licitación'} ${esc(x.codigo)}</div></td>
       <td class="d">${x.monto ? F.clp(x.monto) : '—'}</td><td>${esc(x.encaje_label)}</td>
       <td class="nw"><a href="${esc(x.url)}" target="_blank" rel="noopener">Ficha ↗</a></td></tr>`).join('')}</tbody></table>`;
-  }
-
-  /* --- importador de cotizaciones --- */
-  const ALIAS = {
-    cliente: ['cliente', 'empresa', 'razon social', 'razón social', 'razon', 'nombre', 'institucion', 'institución', 'organismo'],
-    monto: ['monto', 'total', 'valor', 'monto total', 'neto', 'precio', 'monto neto'],
-    estado: ['estado', 'status', 'etapa', 'situacion', 'situación'],
-    fecha: ['fecha', 'emision', 'emisión', 'fecha emision', 'fecha emisión', 'creada', 'fecha cotizacion', 'fecha cotización'],
-    linea: ['linea', 'línea', 'tipo', 'servicio', 'producto', 'categoria', 'categoría', 'curso', 'detalle'],
-    folio: ['folio', 'numero', 'número', 'n°', 'nro', 'id', 'codigo', 'código', 'cotizacion', 'cotización'],
-  };
-  const aMonto = v => typeof v === 'number' ? v : Number(String(v || '').replace(/[^\d,.-]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')) || 0;
-  function mapear(filas) {
-    return filas.map(f => {
-      const bajo = {}; for (const [k, v] of Object.entries(f)) bajo[F.plano(String(k)).trim()] = v;
-      const it = {};
-      for (const [campo, al] of Object.entries(ALIAS)) {
-        const k = al.map(F.plano).find(a => bajo[a] != null && bajo[a] !== '');
-        it[campo] = k ? bajo[k] : '';
-      }
-      it.monto = aMonto(it.monto);
-      return it;
-    }).filter(i => i.cliente || i.monto);
-  }
-  function leerTexto(txt) {
-    txt = txt.trim();
-    if (!txt) return [];
-    if (/^[[{]/.test(txt)) {
-      const j = JSON.parse(txt);
-      const arr = Array.isArray(j) ? j : Object.values(j).find(Array.isArray) || [];
-      return mapear(arr);
-    }
-    const lineas = txt.split(/\r?\n/).filter(l => l.trim());
-    const sep = ['\t', ';', ','].map(s => [s, lineas[0].split(s).length]).sort((a, b) => b[1] - a[1])[0][0];
-    const partir = l => { const out = []; let cur = '', q = false; for (const ch of l) { if (ch === '"') q = !q; else if (ch === sep && !q) { out.push(cur); cur = ''; } else cur += ch; } out.push(cur); return out.map(s => s.trim()); };
-    const cab = partir(lineas[0]);
-    return mapear(lineas.slice(1).map(l => { const c = partir(l), o = {}; cab.forEach((h, i) => { o[h] = c[i]; }); return o; }));
-  }
-  function prepararCot(items, origen) {
-    const total = items.reduce((a, i) => a + (i.monto || 0), 0);
-    S.cotPrevia = { items, origen, msg: items.length ? `Leí ${items.length} cotizaciones por ${F.clp(total)}. Revisa y guarda.` : 'No reconocí cotizaciones en ese contenido. Revisa que tenga una fila de encabezados (cliente, monto, estado…).' };
-    if (!items.length) S.cotPrevia.items = [];
-    renderPresente();
-    const p = $('#panel-cot'); if (p) p.scrollIntoView({ block: 'nearest' });
   }
 
   /* ========================================================================
@@ -647,7 +644,9 @@ Cómo respondes:
 - No inventes datos. Si algo no está en tus fuentes, dilo y di de dónde sacarlo.
 - En temas tributarios, laborales o legales da tu lectura y recomienda confirmarla con contador(a) o abogado(a).
 - Si el usuario te pide recordar algo o toma una decisión, guárdala con la herramienta guardar_nota (si la tienes) y confírmalo en una línea.
-- Puedes consultar el detalle con tus herramientas: úsalas cuando la pregunta pida datos finos (movimientos, facturas, secciones del plan, licitaciones, simulaciones).
+- Puedes consultar el detalle con tus herramientas: úsalas cuando la pregunta pida datos finos (movimientos, facturas, secciones del plan, licitaciones, simulaciones, cotizaciones).
+- Manejas el dashboard comercial de Aéreo (pestaña Comercial): puedes buscar, crear y actualizar cotizaciones y anotar seguimientos con tus herramientas. Hazlo solo cuando el usuario lo pida o lo confirme («marca la de X como ganada», «anota que llamé a Y»). Si no está claro de qué cotización se trata, pregunta antes de cambiar. Cada cambio queda en el historial y el usuario lo puede deshacer; al terminar, di en una línea qué cambiaste.
+- Lo ganado y lo cotizado alimentan el futuro: cuando hables de 2027 o de la meta B2B, usa el pronóstico comercial (ganado + abierto ponderado) junto al modelo del plan.
 
 Abajo está tu lectura actual de la empresa.`;
 
@@ -655,7 +654,71 @@ Abajo está tu lectura actual de la empresa.`;
     const Dt = datos();
     const cats = Object.entries(D0.finanzas.cats).map(([k, c]) => k + '=' + c.label).join('; ');
     const avance = t => { const h = $('.msj.aeria:last-child .herr'); if (h) h.textContent = t; };
+    const Rc = () => { recalcular(); return I.comercial; }; // siempre con lo último de la base, también tras un cambio en esta misma respuesta
+    const resumenCot = q => ({ id: q.id, folio: q.folio || undefined, cliente: q.cliente, descripcion: q.descripcion ? q.descripcion.slice(0, 160) : undefined, linea: q.lineaLabel,
+      monto: q.monto, estado: q.estadoLabel, probabilidad: q.abierta ? Math.round(q.prob * 100) : undefined, fecha_cotizacion: q.fecha_cotizacion || undefined,
+      cierre_estimado: q.fecha_cierre_estimada || undefined, fecha_cierre: q.fecha_cierre || undefined, proximo_seguimiento: q.proximo_seguimiento || undefined,
+      dias_sin_contacto: q.abierta ? q.diasSinContacto : undefined, factura: q.factura_folio || undefined, cobrada: q.cobrada || undefined, contacto: q.contacto || undefined });
+    const encontrar = ref => {
+      const t = String(ref || '').trim(), lista = cotizacionesActuales();
+      let q = lista.find(x => x.id === t) || lista.find(x => x.folio && F.plano(x.folio) === F.plano(t));
+      if (q) return q;
+      const c = lista.filter(x => F.plano(x.cliente + ' ' + x.descripcion).includes(F.plano(t)));
+      if (c.length === 1) return c[0];
+      throw new Error(c.length ? 'Hay ' + c.length + ' cotizaciones que calzan con «' + t + '»: ' + c.slice(0, 8).map(x => x.id + ' (' + x.cliente + ', ' + F.clp(x.monto || 0) + ')').join('; ') + '. Usa el id exacto.' : 'No encontré la cotización «' + t + '».');
+    };
+    const anotarCambio = (q, tipo, cambios) => { const r = S.respActual; if (r) (r.cambios = r.cambios || []).push({ id: q.id, cliente: q.cliente, tipo, campos: Object.keys(cambios || {}) }); };
+    const EDITABLES = ['estado', 'monto', 'probabilidad', 'fecha_cotizacion', 'fecha_cierre_estimada', 'fecha_cierre', 'fecha_ejecucion', 'proximo_seguimiento', 'ultimo_contacto', 'factura_folio', 'cobrada', 'motivo_perdida', 'descripcion', 'contacto', 'email', 'telefono', 'linea', 'folio', 'cliente', 'rut'];
     const lista = [
+      { name: 'cotizaciones_buscar', description: 'Busca en las cotizaciones del dashboard comercial de AerIA. Devuelve total, suma y hasta 40 cotizaciones (id, cliente, monto, estado, probabilidad, fechas, seguimiento, factura). Estados: abiertas, enviada, negociacion, ganada, perdida, vencida, todas.',
+        inputSchema: { type: 'object', properties: { texto: { type: 'string', description: 'Cliente, folio o palabra del detalle' }, estado: { type: 'string' }, linea: { type: 'string', enum: C.LINEAS.map(l => l.id) }, desde: { type: 'string', description: 'AAAA-MM-DD (fecha de cotización o cierre)' }, hasta: { type: 'string' }, orden: { type: 'string', enum: ['monto', 'reciente', 'seguimiento'] }, limite: { type: 'number' } } },
+        execute: i => {
+          avance('Revisando cotizaciones…');
+          const e = String(i.estado || 'todas'), t = F.plano(i.texto || '');
+          let l = Rc().cotizaciones.filter(q => (e === 'todas' ? true : e === 'abiertas' ? q.abierta : q.estado === e) && (!i.linea || q.linea === i.linea) &&
+            (!t || F.plano([q.cliente, q.folio, q.descripcion, q.contacto, q.notas].join(' ')).includes(t)));
+          const f = q => q.fecha_cierre || q.fecha_cotizacion || '';
+          if (i.desde) l = l.filter(q => f(q) >= i.desde); if (i.hasta) l = l.filter(q => f(q) && f(q) <= i.hasta);
+          l.sort(i.orden === 'reciente' ? (a, b) => f(b).localeCompare(f(a)) : i.orden === 'seguimiento' ? (a, b) => (a.proximo_seguimiento || '9').localeCompare(b.proximo_seguimiento || '9') : (a, b) => b.monto - a.monto);
+          return { total: l.length, suma: l.reduce((a, q) => a + (q.monto || 0), 0), cotizaciones: l.slice(0, Math.min(40, Number(i.limite) || 40)).map(resumenCot) };
+        } },
+      { name: 'comercial_resumen', description: 'Resumen del dashboard comercial: abierto y ponderado, ganado (mes, 90 días, año), tasa de cierre, ciclo de venta, por línea, pronóstico de venta B2B por mes contra equilibrio y meta, y las alertas comerciales.',
+        execute: () => { avance('Leyendo el dashboard comercial…'); const R = Rc(); return { conectado_al_dashboard: M.dashboardConectado(R), total: R.total, abiertas: R.abiertas, ganadas: Object.assign({}, R.ganadas, { sinFactura: R.ganadas.sinFactura.length, porCobrar: R.ganadas.porCobrar.length, porEjecutar: R.ganadas.porEjecutar.length }), perdidas: R.perdidas, tasa: R.tasa, ciclo_dias: R.ciclo, por_linea: R.porLinea, pronostico: R.pronostico, alertas: R.alertas.map(a => a.titulo), agregado_dashboard: { corte: I.cot.corte, abiertas: I.cot.abiertasMonto, tasa_cierre: I.cot.tasaCierre } }; } },
+      { name: 'cotizacion_ver', description: 'Todo sobre una cotización (por id, folio o cliente si es único): campos, notas, origen e historial de cambios.',
+        inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        execute: i => { avance('Abriendo la cotización…'); const q = encontrar(i.id); return Object.assign({}, q, { historial: (q.historial || []).slice(-10) }); } },
+      { name: 'cotizacion_actualizar', description: 'Cambia campos de una cotización existente (estado, monto, probabilidad, fechas, factura, cobro, motivo de pérdida, descripción, contacto, línea…). Úsala solo cuando el usuario lo pida. Queda en el historial y se puede deshacer. Fechas AAAA-MM-DD. Estados: enviada, negociacion, ganada, perdida, vencida, borrador.',
+        inputSchema: { type: 'object', properties: { id: { type: 'string' }, cambios: { type: 'object', description: 'Campos a cambiar: ' + EDITABLES.join(', ') + '. Para sumar texto a las notas usa notas_agregar.' }, nota: { type: 'string', description: 'Por qué se cambia' } }, required: ['id', 'cambios'] },
+        execute: async i => {
+          avance('Actualizando la cotización…');
+          const q = encontrar(i.id), c = {};
+          for (const [k, v] of Object.entries(i.cambios || {})) if (EDITABLES.includes(k)) c[k] = v;
+          if (i.cambios && i.cambios.notas_agregar) c.notas = [q.notas, hoy() + ': ' + i.cambios.notas_agregar].filter(Boolean).join('\n');
+          if (!Object.keys(c).length) throw new Error('No indicaste campos válidos para cambiar.');
+          const r = C.aplicar(q, c, 'AerIA (chat)', i.nota || '', new Date().toISOString());
+          if (!await guardarCot(r.cotizacion)) throw new Error('No se pudo guardar el cambio.');
+          anotarCambio(r.cotizacion, 'actualizada', r.cambios); return { id: q.id, cliente: q.cliente, cambios: r.cambios };
+        } },
+      { name: 'cotizacion_seguimiento', description: 'Anota un seguimiento en una cotización: qué pasó y la próxima fecha. Pone hoy como último contacto. Úsala cuando el usuario cuente que habló con un cliente.',
+        inputSchema: { type: 'object', properties: { id: { type: 'string' }, que_paso: { type: 'string' }, proximo_seguimiento: { type: 'string', description: 'AAAA-MM-DD' } }, required: ['id', 'que_paso'] },
+        execute: async i => {
+          avance('Anotando el seguimiento…');
+          const q = encontrar(i.id);
+          const r = C.aplicar(q, { ultimo_contacto: hoy(), proximo_seguimiento: i.proximo_seguimiento || q.proximo_seguimiento }, 'AerIA (chat)', 'Seguimiento: ' + String(i.que_paso).slice(0, 400), new Date().toISOString());
+          if (!await guardarCot(r.cotizacion)) throw new Error('No se pudo guardar el seguimiento.');
+          anotarCambio(r.cotizacion, 'seguimiento', r.cambios); return { id: q.id, cliente: q.cliente, proximo_seguimiento: r.cotizacion.proximo_seguimiento };
+        } },
+      { name: 'cotizacion_crear', description: 'Crea una cotización nueva en el dashboard comercial. Úsala solo cuando el usuario lo pida. Monto en pesos. Líneas: ' + C.LINEAS.map(l => l.id).join(', ') + '.',
+        inputSchema: { type: 'object', properties: { cliente: { type: 'string' }, monto: { type: 'number' }, descripcion: { type: 'string' }, linea: { type: 'string', enum: C.LINEAS.map(l => l.id) }, estado: { type: 'string' }, folio: { type: 'string' }, fecha_cotizacion: { type: 'string' }, fecha_cierre_estimada: { type: 'string' }, proximo_seguimiento: { type: 'string' }, contacto: { type: 'string' }, email: { type: 'string' }, telefono: { type: 'string' }, notas: { type: 'string' } }, required: ['cliente', 'monto'] },
+        execute: async i => {
+          avance('Creando la cotización…');
+          const datosQ = Object.assign({ estado: 'enviada', fecha_cotizacion: hoy(), origen: 'chat' }, i);
+          const prov = C.limpiar(datosQ);
+          if (cotizacionesActuales().some(x => x.id === prov.id)) datosQ.id = prov.id + '-' + Date.now().toString(36); else datosQ.id = prov.id;
+          const r = C.aplicar(null, datosQ, 'AerIA (chat)', 'Creada desde la conversación', new Date().toISOString());
+          if (!await guardarCot(r.cotizacion)) throw new Error('No se pudo guardar la cotización.');
+          anotarCambio(r.cotizacion, 'creada', r.cambios); return resumenCot(C.normalizar(r.cotizacion, hoy(), 30));
+        } },
       { name: 'buscar_movimientos', description: 'Busca movimientos de las cuentas de Aéreo (' + Object.values(M.cuentas(D0.finanzas)).join(' y ') + ', ' + D0.finanzas.serie[0].fecha + ' a ' + D0.finanzas.periodo.hasta + '). Devuelve cuántos hay, la suma con signo (+ ingreso, − egreso) y hasta 30 movimientos ordenados por monto.',
         inputSchema: { type: 'object', properties: { texto: { type: 'string', description: 'Texto a buscar en glosa, contraparte, nota o categoría (sin importar tildes)' }, categoria: { type: 'string', description: 'Código de categoría. ' + cats }, mes: { type: 'string', description: 'AAAA-MM' }, tipo: { type: 'string', enum: ['ingreso', 'egreso'] }, monto_minimo: { type: 'number' }, limite: { type: 'number' } } },
         execute: i => { avance('Consultando movimientos bancarios…'); return M.buscarMovimientos(Dt, i || {}); } },
@@ -677,13 +740,11 @@ Abajo está tu lectura actual de la empresa.`;
       { name: 'simular_2027', description: 'Calcula el resultado anual 2027 con el modelo del plan. Palancas (ids): ' + D0.modelo.palancas.map(p => p.id + ' ' + p.nombre).join('; ') + '. Sin palancas indicadas usa las del plan.',
         inputSchema: { type: 'object', properties: { b2b_mensual: { type: 'number' }, escuela: { type: 'string', enum: ['realista', 'llena'] }, palancas: { type: 'array', items: { type: 'string' } } }, required: ['b2b_mensual'] },
         execute: i => { avance('Simulando 2027…'); return M.resultado2027(D0.modelo, Number(i.b2b_mensual), i.escuela === 'llena' ? 'llena' : 'realista', Array.isArray(i.palancas) ? i.palancas.map(String) : undefined); } },
-      { name: 'cotizaciones', description: 'Cotizaciones del dashboard: las importadas (cliente, monto, estado, fecha, línea) o, si no hay, el agregado.',
-        inputSchema: { type: 'object', properties: { texto: { type: 'string' } } },
-        execute: i => { avance('Revisando cotizaciones…'); const Q = I.cot; const it = Q.items.filter(x => !i.texto || F.plano(JSON.stringify(x)).includes(F.plano(i.texto))); return { corte: Q.corte, abiertas_monto: Q.abiertasMonto, tasa_cierre: Q.tasaCierre, esperado: Q.esperado, notas: Q.notas, items: it.slice(0, 60) }; } },
       { name: 'guardar_nota', description: 'Guarda en la memoria permanente de AerIA una decisión, preferencia o dato que el usuario pidió recordar. Úsala solo si el usuario lo pide o decide algo explícitamente.',
         inputSchema: { type: 'object', properties: { texto: { type: 'string' } }, required: ['texto'] },
         execute: async i => { avance('Guardando en la memoria…'); const n = { id: 'n' + Date.now().toString(36), texto: String(i.texto).slice(0, 600), fecha: new Date().toISOString() }; S.notas = S.notas.concat([n]); await guardar('notas'); pintarMemoria(); return { guardada: n.texto }; } },
     ];
+    // Orden de prioridad por si la vista permite menos herramientas: comercial, finanzas, memoria, plan
     return S.tools ? lista.slice(0, S.tools) : [];
   }
 
@@ -762,8 +823,32 @@ Abajo está tu lectura actual de la empresa.`;
     c.innerHTML = S.chat.map((m, i) => m.role === 'user'
       ? `<div class="msj yo">${esc(m.content)}</div>`
       : `<div class="msj aeria${S.enCurso && i === S.chat.length - 1 ? ' pensando' : ''}"><span class="quien"><span class="iso" aria-hidden="true"></span>AerIA${m.profundo ? ' · análisis profundo' : ''}</span>
-          <span class="herr">${esc(m.herr || '')}</span><div class="md">${m.content ? md(m.content) : ''}</div>${m.error ? '<p class="aviso">' + esc(m.error) + '</p>' : ''}</div>`).join('');
+          <span class="herr">${esc(m.herr || '')}</span><div class="md">${m.content ? md(m.content) : ''}</div>${m.error ? '<p class="aviso">' + esc(m.error) + '</p>' : ''}${cambiosHtml(m, i)}</div>`).join('');
   }
+  function cambiosHtml(m, i) {
+    if (!m.cambios || !m.cambios.length) return '';
+    const txt = { creada: 'creó', actualizada: 'actualizó', seguimiento: 'anotó un seguimiento en' };
+    return `<div class="cambios-ia"><b>AerIA ${m.deshecho ? 'había cambiado' : 'cambió'} en Comercial:</b><ul>${m.cambios.map(c => `<li>${txt[c.tipo] || c.tipo} <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(c.id)}">${esc(c.cliente || c.id)}</button>${c.campos && c.campos.length && c.tipo !== 'creada' ? ' (' + esc(c.campos.join(', ')) + ')' : ''}</li>`).join('')}</ul>
+      ${m.deshecho ? '<span class="c-sub">Cambios deshechos.</span>' : `<button class="btn sm sec" type="button" data-accion="deshacer-ia" data-i="${i}">Deshacer estos cambios</button>`}</div>`;
+  }
+  async function deshacerIA(i) {
+    const m = S.chat[i]; if (!m || !m.cambios || m.deshecho) return;
+    let fallas = 0;
+    for (const c of m.cambios.slice().reverse()) {
+      const actual = cotizacionesActuales().find(q => q.id === c.id);
+      if (!actual) continue;
+      if (c.tipo === 'creada') { if (!await borrarCot(c.id)) fallas++; continue; }
+      const ult = (actual.historial || [])[actual.historial.length - 1];
+      if (!ult || ult.por !== 'AerIA (chat)') { fallas++; continue; }
+      const d = C.deshacer(actual, new Date().toISOString());
+      if (!d || !await guardarCot(d)) fallas++;
+    }
+    m.deshecho = !fallas;
+    LS.set('chat', S.chat.slice(-40));
+    pintarMensajes(); recalcular();
+    avisar(fallas ? 'No pude deshacer ' + fallas + ' cambios: alguien los editó después. Revísalos en Comercial.' : 'Listo: deshice los cambios de AerIA.');
+  }
+
   function pintarMemoria() {
     const c = $('#memoria'); if (!c) return;
     c.innerHTML = S.notas.length ? S.notas.slice().reverse().map(n => `<div class="nota-mem"><span>${esc(n.texto)}<small>${esc(F.fCorta((n.fecha || '').slice(0, 10)))}</small></span><button type="button" data-accion="nota-borrar" data-id="${esc(n.id)}" aria-label="Borrar nota">×</button></div>`).join('')
@@ -772,11 +857,11 @@ Abajo está tu lectura actual de la empresa.`;
   }
   function pintarFuentes() {
     const c = $('#fuentes-ia'); if (!c) return;
-    const Q = S.cot || D0.cotizaciones;
+    const Q = D0.cotizaciones;
     const f = [
       ['Pasado', 'Finanzas ' + I.pasado.etiqueta, 'Cartolas, SII y Mercado Pago · corte ' + F.fCorta(I.pasado.fechaCorte)],
       ['Presente', 'Cursos de aereo.cl', D0.cursos.nivel1.length + ' fechas N1 y ' + D0.cursos.niveles23.length + ' N2+N3 · commit ' + (D0.cursos.commit || '?').split(' ')[0]],
-      ['Presente', 'Cotizaciones', (Q.items && Q.items.length ? Q.items.length + ' importadas' : 'Agregado') + ' · corte ' + F.fCorta(I.cot.corte)],
+      ['Comercial', 'Cotizaciones', (I.comercial ? I.comercial.total : 0) + ' en AerIA' + (M.dashboardConectado(I.comercial) ? ' · dashboard conectado' : ' · dashboard sin conectar (agregado al ' + F.fCorta(Q.corte) + ')')],
       ['Presente', 'Licitaciones', D0.licitaciones.abiertas.length + ' abiertas al ' + (D0.licitaciones.generado_fuente || '').slice(0, 10)],
       ['Futuro', 'Plan de rentabilidad 2027', D0.plan.secciones.length + ' secciones · modelo v4 del 8-oct'],
       ['Memoria', 'Notas', S.notas.length + ' guardadas'],
@@ -799,6 +884,7 @@ Abajo está tu lectura actual de la empresa.`;
     if (S.ia !== 'lista' || S.enCurso) { pintarAvisoIA(); const t = $('#in-chat'); if (t && S.ia !== 'lista') t.value = texto; return; }
     S.chat.push({ role: 'user', content: texto });
     const resp = { role: 'assistant', content: '', herr: 'Pensando…', profundo: S.profundo };
+    S.respActual = resp;
     S.chat.push(resp);
     S.enCurso = true; S.ctl = new AbortController();
     $('#b-parar').hidden = false; pintarAvisoIA(); pintarMensajes(); $('#iso-banda').classList.add('gira');
@@ -826,7 +912,9 @@ Abajo está tu lectura actual de la empresa.`;
       S.enCurso = false; S.ctl = null;
       $('#b-parar').hidden = true; $('#iso-banda').classList.remove('gira');
       if (!resp.content && !resp.error && !resp.herr) S.chat.pop();
-      LS.set('chat', S.chat.slice(-40).map(m => ({ role: m.role, content: m.content, profundo: m.profundo })));
+      S.respActual = null;
+      LS.set('chat', S.chat.slice(-40).map(m => ({ role: m.role, content: m.content, profundo: m.profundo, cambios: m.cambios, deshecho: m.deshecho })));
+      if (resp.cambios && resp.cambios.length) recalcular();
       pintarMensajes(); pintarAvisoIA();
     }
   }
@@ -841,7 +929,7 @@ Abajo está tu lectura actual de la empresa.`;
      ======================================================================== */
   function pintar() {
     recalcular(); renderBanda();
-    ({ mando: renderMando, pasado: renderPasado, presente: renderPresente, futuro: renderFuturo, hablar: renderHablar })[S.tab]();
+    ({ mando: renderMando, pasado: renderPasado, presente: renderPresente, comercial: () => COM && COM.render(), futuro: renderFuturo, hablar: renderHablar })[S.tab]();
     renderPie();
   }
 
@@ -867,19 +955,7 @@ Abajo está tu lectura actual de la empresa.`;
     else if (a === 'agenda-todas') { S.agendaTodas = true; $('#agenda').innerHTML = agendaHtml(); }
     else if (a === 'chat-parar') { if (S.ctl) S.ctl.abort(); }
     else if (a === 'chat-limpiar') { if (S.ctl) S.ctl.abort(); S.chat = []; LS.set('chat', []); pintarMensajes(); }
-    else if (a === 'cot-leer') { try { prepararCot(leerTexto($('#cot-texto').value), 'texto pegado'); } catch (e) { prepararCot([], 'texto'); } }
-    else if (a === 'cot-ia') {
-      const txt = $('#cot-texto').value.trim(); const msg = $('#cot-msg');
-      if (!txt) { msg.textContent = 'Pega primero el contenido de tu dashboard.'; return; }
-      msg.textContent = 'AerIA está ordenando las cotizaciones…';
-      try {
-        const arr = await S.sample.json('Convierte este export de un dashboard de cotizaciones de una empresa chilena en un JSON array de objetos {"cliente": string, "monto": number (pesos, sin puntos), "estado": string, "fecha": "AAAA-MM-DD" o "", "linea": string, "folio": string}. Una fila por cotización; ignora totales y encabezados. Responde solo el JSON.\n\n' + txt.slice(0, 40000), { modelTier: 'quick' });
-        prepararCot(mapear(Array.isArray(arr) ? arr : []), 'ordenado por AerIA');
-      } catch (e) { msg.textContent = e && e.code === 'invalid_json' ? 'AerIA no pudo leerlo como tabla. Prueba con el CSV del dashboard.' : (ERRORES[e && e.code] || 'No se pudo ordenar ahora.'); }
-    } else if (a === 'cot-guardar' && S.cotPrevia) {
-      S.cot = { fuente: 'Importado del dashboard (' + S.cotPrevia.origen + ')', corte: hoy(), extraido: new Date().toISOString(), notas: D0.cotizaciones.notas, items: S.cotPrevia.items };
-      S.cotPrevia = null; await guardar('cot'); pintar();
-    } else if (a === 'cot-borrar') { S.cot = null; S.cotPrevia = null; await guardar('cot'); pintar(); }
+    else if (a === 'deshacer-ia') deshacerIA(Number(t.dataset.i));
   });
   document.addEventListener('change', async ev => {
     const t = ev.target;
@@ -890,11 +966,6 @@ Abajo está tu lectura actual de la empresa.`;
     } else if (t.dataset.accion === 'sim-palanca') {
       const sim = simEstado(); sim.palancas = t.checked ? sim.palancas.concat([t.dataset.id]) : sim.palancas.filter(p => p !== t.dataset.id); pintarSim();
     } else if (t.id === 'chk-profundo') S.profundo = t.checked;
-    else if (t.dataset.accion === 'cot-archivo' && t.files && t.files[0]) {
-      const f = t.files[0]; const txt = await f.text();
-      $('#cot-texto').value = txt.slice(0, 200000);
-      try { prepararCot(leerTexto(txt), f.name); } catch (e) { prepararCot([], f.name); }
-    }
   });
   document.addEventListener('input', ev => {
     if (ev.target.id === 'sim-b2b') { simEstado().b2b = Number(ev.target.value); pintarSim(); }
@@ -920,12 +991,20 @@ Abajo está tu lectura actual de la empresa.`;
   /* ========================================================================
      ARRANQUE
      ======================================================================== */
+  const COM = window.AeriaComercialUI ? window.AeriaComercialUI({
+    S, $, $$, esc, F, C, M, I: () => I, pintar, verTip, ocultarTip, avisar,
+    cotizaciones: cotizacionesActuales, guardarCot, borrarCot,
+    persistencia: () => S.db ? 'db' : (window.claude ? 'conectando con la base…' : 'se guarda solo en este navegador'),
+    preguntar: q => preguntar(q), puedeIA: () => S.ia === 'lista' && !!S.sample,
+    iaJSON: async prompt => { try { return await S.sample.json(prompt, { modelTier: 'quick' }); } catch (e) { throw new Error(e && e.code === 'invalid_json' ? 'AerIA no pudo leerlo como tabla. Prueba con el CSV del dashboard.' : (ERRORES[e && e.code] || 'No se pudo ordenar ahora.')); } },
+    descargas: async () => (window.claude && typeof window.claude.use === 'function') ? window.claude.use('downloads') : null,
+  }) : null;
   const inicial = (location.hash || '').replace('#', '');
-  if (['mando', 'pasado', 'presente', 'futuro', 'hablar'].includes(inicial)) S.tab = inicial;
+  if (VISTAS.includes(inicial)) S.tab = inicial;
   irA(S.tab, false);
   window.addEventListener('hashchange', () => {
     const t = (location.hash || '').replace('#', '');
-    if (t !== S.tab && ['mando', 'pasado', 'presente', 'futuro', 'hablar'].includes(t)) irA(t);
+    if (t !== S.tab && VISTAS.includes(t)) irA(t);
   });
 
   if (window.claude && typeof window.claude.use === 'function') {
@@ -933,9 +1012,9 @@ Abajo está tu lectura actual de la empresa.`;
       S.sample = s;
       if (!s) { S.ia = 'no'; pintarAvisoIA(); return; }
       const lim = await s.limits().catch(() => null);
-      S.tools = lim && lim.tools ? Math.min(lim.tools.maxCount || 0, 9) : 0;
+      S.tools = lim && lim.tools ? Math.min(lim.tools.maxCount || 0, 14) : 0;
       S.ia = 'lista'; pintarAvisoIA();
-      if (S.tab === 'presente') renderPresente();
+      if (S.tab === 'comercial') pintar();
     }).catch(() => { S.ia = 'no'; pintarAvisoIA(); });
     window.claude.use('db').then(db => {
       if (!db) return;
@@ -948,6 +1027,14 @@ Abajo está tu lectura actual de la empresa.`;
           else if (S.tab !== 'hablar') pintar();
         }, e => console.warn('AerIA: suscripción', k, e && e.code));
       }
+      db.collection('cotizaciones').limit(1000).onSnapshot(snap => {
+        if (snap.metadata && snap.metadata.hasPendingWrites && S.comCargado) return;
+        S.comDocs = new Map(snap.docs.map(d => [d.id, d.data()]));
+        S.comCargado = true;
+        recalcular();
+        if (S.tab !== 'hablar') pintar(); else pintarFuentes();
+      }, e => { console.warn('AerIA: suscripción a cotizaciones', e && e.code); avisar('No pude leer las cotizaciones de la base. Muestro las del paquete.'); });
+      if (S.tab === 'comercial') pintar();
     });
   } else { S.ia = 'no'; pintarAvisoIA(); }
 })();
