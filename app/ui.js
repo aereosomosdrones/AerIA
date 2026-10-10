@@ -1,0 +1,953 @@
+/* =============================================================================
+   AerIA · INTERFAZ
+   Dibuja las cinco vistas (Mando, Pasado, Presente, Futuro, Hablar), guarda el
+   estado compartido (alertas resueltas, agenda, memoria, cotizaciones) en la
+   base del artifact y conversa con Claude usando herramientas que leen los
+   datos de Aéreo. El análisis vive en motor.js.
+   ============================================================================= */
+(function () {
+  'use strict';
+  const M = window.AeriaMotor, F = M.fmt;
+  const D0 = JSON.parse(document.getElementById('aeria-datos').textContent);
+  const $ = (s, r) => (r || document).querySelector(s);
+  const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const NIVEL_TXT = { critica: 'Crítica', alta: 'Alta', oportunidad: 'Oportunidad', media: 'Media', baja: 'Baja' };
+  const FOCO_TXT = { pasado: 'Pasado', presente: 'Presente', futuro: 'Futuro', cruce: 'Cruce' };
+  const MES3 = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  const DIA3 = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+
+  const S = {
+    tab: 'mando', filtroAlertas: 'principales', filtroLic: 'calzan', abiertas: new Set(),
+    sim: null, alertas: {}, agenda: {}, notas: [], cot: null,
+    chat: [], ctl: null, profundo: false, enCurso: false,
+    sample: null, tools: 0, ia: 'cargando', db: null, cotPrevia: null,
+  };
+  let I = null;
+
+  /* ---------- almacenamiento ---------- */
+  const LS = {
+    get(k, d) { try { const v = localStorage.getItem('aeria:' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem('aeria:' + k, JSON.stringify(v)); } catch (e) { /* sin almacenamiento */ } },
+  };
+  const DOCS = { alertas: 'estado/alertas', agenda: 'estado/agenda', notas: 'memoria/notas', cot: 'presente/cotizaciones' };
+  const aCuerpo = (k, v) => k === 'notas' ? { items: v } : k === 'cot' ? (v || { borrado: true }) : { mapa: v };
+  const deCuerpo = (k, d) => {
+    if (!d) return k === 'notas' ? [] : k === 'cot' ? null : {};
+    if (k === 'notas') return Array.isArray(d.items) ? d.items : [];
+    if (k === 'cot') return d.borrado ? null : d;
+    return d.mapa || {};
+  };
+  async function guardar(k) {
+    if (S.db) {
+      try { await S.db.doc(DOCS[k]).set(aCuerpo(k, S[k])); return true; } catch (e) { console.warn('AerIA: no se pudo guardar', k, e); }
+    }
+    LS.set(k, S[k]);
+    return false;
+  }
+  for (const k of Object.keys(DOCS)) S[k] = LS.get(k, S[k]);
+  S.chat = LS.get('chat', []);
+
+  /* ---------- cálculo ---------- */
+  const hoy = () => F.iso(new Date());
+  const datos = () => Object.assign({}, D0, { cotizaciones: S.cot || D0.cotizaciones, notas: S.notas });
+  function recalcular() { I = M.analizar(datos(), hoy(), new Date()); }
+  const resuelta = a => S.alertas[a.id] && S.alertas[a.id].estado === 'resuelta';
+  const fuerte = t => esc(t).replace(/(−?\$[\d.,]+M?)/g, '<b>$1</b>');
+  const fechaCaja = s => { const d = F.fCorta(s).split('-'); return '<b>' + d[0] + '</b><small>' + d[1] + '</small>'; };
+  const dSem = s => { const p = s.split('-').map(Number); return DIA3[new Date(p[0], p[1] - 1, p[2]).getDay()]; };
+
+  /* ---------- tooltip ---------- */
+  const tip = $('#tip');
+  function verTip(ev, html) {
+    tip.innerHTML = html; tip.hidden = false;
+    const r = tip.getBoundingClientRect();
+    let x = ev.clientX + 14, y = ev.clientY + 14;
+    if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - 14;
+    if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - 14;
+    tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+  }
+  const ocultarTip = () => { tip.hidden = true; };
+
+  /* ========================================================================
+     BANDA, PESTAÑAS Y PIE
+     ======================================================================== */
+  function renderBanda() {
+    const crit = I.alertas.filter(a => a.nivel === 'critica' && !resuelta(a)).length;
+    $('#banda-estado').innerHTML =
+      '<span><span class="led' + (crit ? ' rojo' : '') + '"></span><b>' + crit + '</b> ' + (crit === 1 ? 'alerta crítica' : 'alertas críticas') + '</span>' +
+      '<span>Pasado al <b>' + F.fCorta(I.pasado.fechaCorte) + '</b></span>' +
+      '<span>Presente al <b>' + F.fCorta((D0.cursos.extraido || '').slice(0, 10)) + '</b></span>' +
+      '<span>Hoy <b>' + F.fLarga(I.hoy) + '</b></span>';
+    const c = $('#cuenta-criticas');
+    c.hidden = !crit; c.textContent = crit;
+  }
+  function irA(tab, foco) {
+    S.tab = tab;
+    for (const b of $$('.pestana')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    for (const v of $$('.vista')) v.hidden = v.id !== 'v-' + tab;
+    try { history.replaceState(null, '', '#' + tab); } catch (e) { /* frame */ }
+    pintar();
+    if (foco !== false) window.scrollTo(0, 0);
+  }
+  function renderPie() {
+    $('#pie').innerHTML =
+      '<p><b>Fuentes.</b> Pasado: ' + esc(D0.finanzas.fuente) + ', generado el ' + esc(D0.finanzas.generado_fuente.slice(0, 10)) +
+      '. Presente: ' + esc(D0.cursos.fuente) + ' (commit ' + esc(D0.cursos.commit || '?') + '); ' + esc(D0.licitaciones.fuente) +
+      ', ' + esc((D0.licitaciones.generado_fuente || '').slice(0, 16).replace('T', ' ')) + ' UTC; ' + esc((S.cot || D0.cotizaciones).fuente) +
+      '. Futuro: ' + esc(D0.plan.fuente) + '; ' + esc(D0.modelo.fuente) + '.</p>' +
+      '<p><b>Método.</b> AerIA no inventa cifras: todo número sale de esas fuentes o de cálculos sobre ellas, y cada alerta dice de dónde viene. ' +
+      'Montos en pesos chilenos. Paquete armado el ' + esc((D0.construido || '').slice(0, 16).replace('T', ' ')) + '.</p>';
+  }
+
+  /* ========================================================================
+     MANDO
+     ======================================================================== */
+  const SUGERENCIAS = [
+    '¿Qué hago hoy y por qué?',
+    '¿Dónde se fue la plata del último período?',
+    '¿Llegamos a la meta 2027 al ritmo actual? ¿Qué palanca mueve más?',
+    '¿Qué licitaciones vale la pena postular esta semana?',
+    'Arma un plan de preventa para noviembre y diciembre',
+    '¿Qué riesgos tributarios ves y qué le pregunto al contador?',
+  ];
+
+  function titular(t) {
+    const i = t.lastIndexOf(' y ');
+    return i > 0 ? esc(t.slice(0, i + 3)) + '<mark>' + esc(t.slice(i + 3)) + '</mark>' : esc(t);
+  }
+
+  function renderMando() {
+    const v = $('#v-mando');
+    const P = I.pasado, C = I.cursos, U = I.futuro, Q = I.cot, L = I.lic;
+    const ritmo = U.escenarios.find(e => e.id === 'ultimo');
+    const urg = L.capacitacion.filter(l => l.horas <= 72).length;
+    const d = new Date(); const dd = d.getDate() + '·' + (d.getMonth() + 1);
+    v.innerHTML = `
+      <div class="grilla g-7-5">
+        <article class="panel briefing">
+          <span class="fondo-num" aria-hidden="true">${dd}</span>
+          <div class="ceja"><span class="iso" aria-hidden="true"></span>AerIA · lectura del ${esc(F.fLarga(I.hoy))}</div>
+          <h2 class="titular">${titular(I.briefing.titular)}</h2>
+          <div class="voz">${I.briefing.parrafos.map(p => '<p>' + fuerte(p) + '</p>').join('')}</div>
+          <form class="pregunta" id="f-pregunta">
+            <label class="sr" for="in-pregunta">Pregúntale a AerIA</label>
+            <input id="in-pregunta" autocomplete="off" placeholder="Pregúntale a AerIA sobre tu empresa…">
+            <button class="btn" type="submit">Preguntar</button>
+          </form>
+          <div class="chips">${SUGERENCIAS.slice(0, 4).map(q => `<button class="chip" type="button" data-accion="preguntar" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
+        </article>
+        <div class="tiempos">
+          <button class="tiempo" type="button" data-tab="pasado">
+            <div class="t-cab"><h3>Pasado</h3><span class="t-que">Lo que ya hicimos · ${esc(P.etiqueta)}</span></div><span class="t-ir">Ver →</span>
+            <dl>
+              <div><dt>Caja al ${esc(F.fCorta(P.fechaCorte))}</dt><dd class="mal">${F.clp(P.cajaFinal)}<small>${U.runwayDias.toFixed(1).replace('.', ',')} días hábiles</small></dd></div>
+              <div><dt>Flujo operacional</dt><dd>${F.mm(P.flujoOperacional)}<small>${P.meses.length} meses</small></dd></div>
+              <div><dt>Hallazgos contables</dt><dd>${D0.finanzas.hallazgos.length}<small>${P.hallazgosSev.alta} de severidad alta</small></dd></div>
+            </dl>
+          </button>
+          <button class="tiempo" type="button" data-tab="presente">
+            <div class="t-cab"><h3>Presente</h3><span class="t-que">Lo que estamos haciendo</span></div><span class="t-ir">Ver →</span>
+            <dl>
+              <div><dt>Cupos N1 vendidos</dt><dd>${C.resN1.vendidos}/${C.resN1.cupos}<small>${C.resN1.fechas} fechas publicadas</small></dd></div>
+              <div><dt>Cotizaciones abiertas</dt><dd>${F.mm(Q.abiertasMonto)}<small>${Q.esperado ? '~' + F.mm(Q.esperado) + ' esperables' : 'sin tasa de cierre'}</small></dd></div>
+              <div><dt>Licitaciones que calzan</dt><dd>${L.relevantes.length}<small>${urg ? urg + ' de capacitación cierran en 72 h' : 'de ' + L.abiertas.length + ' abiertas'}</small></dd></div>
+            </dl>
+          </button>
+          <button class="tiempo" type="button" data-tab="futuro">
+            <div class="t-cab"><h3>Futuro</h3><span class="t-que">Lo que viene · plan 2027</span></div><span class="t-ir">Ver →</span>
+            <dl>
+              <div><dt>2027 al ritmo de ${esc(F.mesNombre(P.meses[P.meses.length - 1].mes))}</dt><dd class="${ritmo.resultado < 0 ? 'mal' : 'bien'}">${F.mm(ritmo.resultado)}<small>B2B ${F.mm(ritmo.b2b)} al mes</small></dd></div>
+              <div><dt>Equilibrio</dt><dd>${F.mm(U.equilibrio)}<small>de B2B al mes</small></dd></div>
+              <div><dt>Hito del plan</dt><dd>${U.diasHito} días<small>al ${esc(F.fCorta(U.hito.fecha))} de 2027</small></dd></div>
+            </dl>
+          </button>
+        </div>
+      </div>
+      <div class="grilla g-7-5 arriba">
+        <section class="panel" aria-labelledby="h-alertas">
+          <div class="panel-c"><h2 id="h-alertas">Alertas</h2><span class="bajada">${resumenAlertas()}</span></div>
+          <div class="panel-b" style="padding-bottom:10px">${chipsAlertas()}</div>
+          <div class="alertas" id="lista-alertas">${listaAlertas()}</div>
+        </section>
+        <section class="panel" aria-labelledby="h-agenda">
+          <div class="panel-c"><h2 id="h-agenda">Te ordeno</h2><span class="bajada">Lo que hay que hacer, en orden de prioridad. Se guarda para todos los que abren AerIA.</span></div>
+          <div class="agenda" id="agenda">${agendaHtml()}</div>
+        </section>
+      </div>
+      <section class="panel" aria-labelledby="h-viene">
+        <div class="panel-c"><h2 id="h-viene">Lo que viene</h2><span class="bajada">Próximos 90 días: cursos, cierres de licitaciones que calzan, vencimientos e hitos del plan.</span></div>
+        <div class="panel-b ras"><div class="viene" id="viene">${vieneHtml()}</div></div>
+      </section>`;
+  }
+
+  function resumenAlertas() {
+    const act = I.alertas.filter(a => !resuelta(a));
+    const c = n => act.filter(a => a.nivel === n).length;
+    return act.length + ' activas: ' + c('critica') + ' críticas, ' + c('alta') + ' altas, ' + c('oportunidad') + ' oportunidades. Cada una dice de dónde viene y qué hacer.';
+  }
+  function chipsAlertas() {
+    const act = I.alertas.filter(a => !resuelta(a));
+    const ops = [['principales', 'Principales', null], ['critica', 'Críticas', act.filter(a => a.nivel === 'critica').length],
+      ['alta', 'Altas', act.filter(a => a.nivel === 'alta').length], ['oportunidad', 'Oportunidades', act.filter(a => a.nivel === 'oportunidad').length],
+      ['media', 'Medias', act.filter(a => a.nivel === 'media').length], ['baja', 'Bajas', act.filter(a => a.nivel === 'baja').length],
+      ['resueltas', 'Resueltas', I.alertas.filter(resuelta).length]];
+    return '<div class="chips" role="group" aria-label="Filtrar alertas">' + ops.map(([k, t, n]) =>
+      `<button class="chip" type="button" data-accion="filtro-alertas" data-valor="${k}" aria-pressed="${S.filtroAlertas === k}">${t}${n != null ? '<span class="n">' + n + '</span>' : ''}</button>`).join('') + '</div>';
+  }
+  function alertasFiltradas() {
+    const f = S.filtroAlertas;
+    if (f === 'resueltas') return I.alertas.filter(resuelta);
+    const act = I.alertas.filter(a => !resuelta(a));
+    if (f === 'principales') return act.filter(a => a.nivel !== 'baja').slice(0, 9);
+    return act.filter(a => a.nivel === f);
+  }
+  function plazo(a) {
+    if (!a.fecha_limite) return '';
+    const dias = F.diasEntre(I.hoy, a.fecha_limite);
+    return '<span class="pill' + (dias <= 3 ? ' critica' : '') + '">' + (dias < 0 ? 'vencida' : F.cuando(dias)) + '</span>';
+  }
+  function alertaHtml(a) {
+    const r = resuelta(a);
+    return `<div class="alerta ${a.nivel}${r ? ' resuelta' : ''}"><span class="barra" aria-hidden="true"></span>
+      <details data-id="${esc(a.id)}"${S.abiertas.has(a.id) ? ' open' : ''}>
+        <summary><span class="a-tit">${esc(a.titulo)}</span><span class="a-monto">${a.monto ? F.mm(a.monto) : ''}</span>
+          <span class="a-meta"><span class="pill ${a.nivel}">${NIVEL_TXT[a.nivel]}</span><span class="pill foco">${FOCO_TXT[a.foco]}</span>${plazo(a)}</span></summary>
+        <div class="a-cuerpo">
+          <p>${fuerte(a.detalle)}</p>
+          <p class="hacer"><b>Qué hacer:</b> ${esc(a.accion)}</p>
+          <p class="mudo">Fuente: ${esc(a.fuente)}</p>
+          <div class="a-acciones">
+            <button class="btn sm sec" type="button" data-accion="resolver" data-id="${esc(a.id)}">${r ? 'Reabrir' : 'Marcar resuelta'}</button>
+            <button class="btn sm" type="button" data-accion="preguntar-alerta" data-id="${esc(a.id)}">Preguntar a AerIA</button>
+            ${a.url ? `<a href="${esc(a.url)}" target="_blank" rel="noopener">Ver ficha en Mercado Público ↗</a>` : ''}
+          </div>
+        </div>
+      </details></div>`;
+  }
+  function listaAlertas() {
+    const l = alertasFiltradas();
+    const resto = I.alertas.filter(a => !resuelta(a)).length - l.length;
+    return (l.length ? l.map(alertaHtml).join('') : '<p class="panel-b mudo">No hay alertas en este filtro.</p>') +
+      (S.filtroAlertas === 'principales' && resto > 0 ? `<div class="pie-lista"><button class="enlace-btn" type="button" data-accion="filtro-alertas" data-valor="todas">Ver las ${resto} restantes</button></div>` : '') +
+      (S.filtroAlertas === 'todas' ? '' : '');
+  }
+  function agendaHtml() {
+    const grupos = [];
+    const pendientes = I.agenda.filter(it => !(S.agenda[it.id] && S.agenda[it.id].hecho));
+    const visibles = S.agendaTodas ? I.agenda : I.agenda.filter(it => it.cuando === 'hoy' || it.cuando === 'esta semana' || pendientes.indexOf(it) < 10);
+    for (const it of visibles) {
+      const g = it.cuando === 'hoy' ? 'Hoy' : it.cuando === 'esta semana' ? 'Esta semana' : it.cuando === 'este mes' ? 'Este mes' : it.cuando.replace(/^./, c => c.toUpperCase());
+      let grupo = grupos.find(x => x.t === g); if (!grupo) grupos.push(grupo = { t: g, items: [] });
+      grupo.items.push(it);
+    }
+    const hechas = I.agenda.filter(it => S.agenda[it.id] && S.agenda[it.id].hecho).length;
+    return grupos.map(g => '<div class="ag-grupo">' + esc(g.t) + '</div>' + g.items.map(it => {
+      const h = S.agenda[it.id] && S.agenda[it.id].hecho;
+      const id = 'ag-' + it.id.replace(/[^a-z0-9-]/gi, '');
+      return `<div class="ag-item${h ? ' hecho' : ''}${it.cuando === 'hoy' ? ' hoy' : ''}">
+        <input type="checkbox" id="${id}" data-accion="agenda" data-id="${esc(it.id)}"${h ? ' checked' : ''}>
+        <label for="${id}">${esc(it.titulo)}</label>
+        <span class="por">${fuerte(it.por)}${it.url ? ` · <a href="${esc(it.url)}" target="_blank" rel="noopener">ficha ↗</a>` : ''}</span></div>`;
+    }).join('')).join('') + `<div class="pie-lista">${visibles.length < I.agenda.length ? `<button class="enlace-btn" type="button" data-accion="agenda-todas">Ver ${I.agenda.length - visibles.length} más para este mes</button>` : ''}<span class="mudo">${hechas} de ${I.agenda.length} hechas${S.db ? '' : ' · se guarda solo en este navegador'}</span></div>`;
+  }
+  function vieneHtml() {
+    const lista = S.vieneTodo ? I.viene : I.viene.slice(0, 15);
+    return lista.map(eventoHtml).join('') + (lista.length < I.viene.length
+      ? `<div class="ev"><span></span><button class="enlace-btn" type="button" data-accion="viene-todo">Ver los ${I.viene.length - lista.length} siguientes</button></div>` : '');
+  }
+  function eventoHtml(e) {
+    const extra = e.tipo === 'curso' ? (e.estado === 'lleno' ? 'lleno' : e.estado === 'vacio' ? 'sin ventas' : 'con cupos') :
+      e.tipo === 'licitacion' ? 'licitación' : e.tipo === 'impuesto' ? 'tributario' : 'hito';
+    const t = e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.titulo)}</a>` : esc(e.titulo);
+    return `<div class="ev t-${e.tipo}"><div class="ev-f">${fechaCaja(e.fecha)}</div><div><div class="ev-t">${t}</div><div class="ev-d">${dSem(e.fecha)} · ${F.cuando(e.dias)} · ${extra}</div></div></div>`;
+  }
+
+  /* ========================================================================
+     PASADO
+     ======================================================================== */
+  function renderPasado() {
+    const v = $('#v-pasado'); const P = I.pasado; const Fi = D0.finanzas;
+    const kp = (l, val, s, cls, punto) => `<div class="panel kpi"><span class="k-l">${punto ? '<span class="punto" style="background:var(' + punto + ')"></span>' : ''}${l}</span><span class="k-v ${cls || ''}">${val}</span><span class="k-s">${s}</span></div>`;
+    v.innerHTML = `
+      <div class="grilla g-5">
+        ${kp('Ingresos operacionales', F.mm(P.ingresos), 'Cobrado a clientes, MP neto y factoring', '', '--s-1')}
+        ${kp('Egresos operacionales', F.mm(-P.egresos), 'Sueldos, proveedores, viajes, marketing…', '', '--s-2')}
+        ${kp('Flujo operacional', F.mm(P.flujoOperacional), 'Antes de socios y relacionadas')}
+        ${kp('Socio, neto', F.mm(P.socioNeto), 'Transferencias menos aportes', P.socioNeto < 0 ? 'mal' : '', '--s-3')}
+        ${kp('Caja al ' + F.fCorta(P.fechaCorte), F.clp(P.cajaFinal), F.mm(D0.modelo.costos_fijos_mes, 2) + ' es 1 mes de fijos', 'mal')}
+      </div>
+      <div class="grilla g-2">
+        <section class="panel"><div class="panel-c"><h2>Caja diaria</h2><span class="bajada">${esc(Object.values(M.cuentas(Fi)).join(' + '))}, ${esc(F.fCorta(Fi.serie[0].fecha))} a ${esc(F.fCorta(P.fechaCorte))}. Pasa el cursor para ver cada día.</span></div>
+          <div class="panel-b"><div class="grafico" id="g-caja"></div></div></section>
+        <section class="panel"><div class="panel-c"><h2>Dónde se fue la caja</h2><span class="bajada">${esc(P.etiqueta)}, todo el período: de ${F.clp(P.cajaInicial)} a ${F.clp(P.cajaFinal)}.</span></div>
+          <div class="panel-b ras">${puenteHtml(P)}</div>
+          <p class="nota-panel">Los traspasos entre cuentas propias se compensan y no aparecen. El flujo operacional ya descuenta los ${F.mm(-P.egresos)} de egresos.</p></section>
+      </div>
+      <div class="grilla g-2">
+        <section class="panel"><div class="panel-c"><h2>Venta por línea</h2><span class="bajada">Bruto por mes. La línea punteada es la meta B2B 2027.</span></div>
+          <div class="panel-b"><div class="grafico" id="g-lineas"></div></div></section>
+        <section class="panel"><div class="panel-c"><h2>Egresos por categoría</h2><span class="bajada">Dos meses. Entre paréntesis, qué tan segura es la clasificación.</span></div>
+          <div class="panel-b ras">${egresosHtml(P)}</div></section>
+      </div>
+      <section class="panel"><div class="panel-c"><h2>Mes a mes</h2></div>
+        <div class="panel-b ras"><div class="tabla-env">${tablaMeses(P)}</div></div></section>
+      <section class="panel"><div class="panel-c"><h2>Hallazgos del informe financiero</h2><span class="bajada">${Fi.hallazgos.length} hallazgos de la revisión de cartolas, SII, Mercado Pago y rendiciones. Cada uno es también una alerta en Mando.</span></div>
+        <div class="panel-b ras"><div class="tabla-env alto"><table><thead><tr><th>Severidad</th><th>Hallazgo</th><th class="d">Monto</th><th>Qué hacer</th></tr></thead><tbody>
+        ${Fi.hallazgos.map(h => `<tr><td><span class="pill ${h.sev === 'alta' ? 'alta' : h.sev === 'media' ? 'media' : ''}">${esc(h.sev)}</span></td><td class="ancho"><div class="c-main">${esc(h.titulo)}</div><div class="c-sub">${esc(h.detalle)}</div></td><td class="d">${h.monto ? F.clp(h.monto) : '—'}</td><td class="ancho">${esc(h.accion)}</td></tr>`).join('')}
+        </tbody></table></div></div></section>`;
+    graficoCaja($('#g-caja'), Fi.serie);
+    graficoLineas($('#g-lineas'), P);
+  }
+
+  function puenteHtml(P) {
+    const pasos = [
+      { l: 'Caja al ' + F.fCorta(D0.finanzas.serie[0].fecha), v: P.cajaInicial, tipo: 'tot' },
+      { l: 'Ingresos operacionales', v: P.ingresos, tipo: 'sube' },
+      { l: 'Egresos operacionales', v: P.egresos, tipo: 'baja' },
+      { l: 'Socio, neto', v: P.socioNeto, tipo: 'soc' },
+      { l: 'Cofundador', v: P.cofundador, tipo: 'soc' },
+      { l: 'Aéreo OTEC, neto', v: P.otec, tipo: 'soc' },
+      { l: 'Caja al ' + F.fCorta(P.fechaCorte), v: P.cajaFinal, tipo: 'tot' },
+    ];
+    let acc = 0, max = 0;
+    const filas = pasos.map((p, i) => {
+      let desde, hasta;
+      if (p.tipo === 'tot') { desde = 0; hasta = p.v; acc = p.v; }
+      else { desde = acc; hasta = acc + p.v; acc = hasta; }
+      max = Math.max(max, desde, hasta);
+      return { ...p, desde, hasta, i };
+    });
+    const x = n => (n / max * 100).toFixed(2) + '%';
+    return '<div class="puente">' + filas.map((p, i) => {
+      const izq = Math.min(p.desde, p.hasta), der = Math.max(p.desde, p.hasta);
+      const cls = p.tipo === 'tot' ? 'tot' : p.tipo === 'soc' ? 'soc' : p.v >= 0 ? 'sube' : 'baja';
+      const con = i < filas.length - 1 ? `<span class="p-con" style="left:${x(p.hasta)}"></span>` : '';
+      return `<div class="p-fila${p.tipo === 'tot' ? ' total' : ''}"><span class="p-lab">${esc(p.l)}</span>
+        <span class="p-pista"><span class="p-barra ${cls}" style="left:${x(izq)};width:${x(der - izq)}"></span>${con}</span>
+        <span class="p-val">${p.tipo === 'tot' ? F.clp(p.v) : (p.v >= 0 ? '+' : '') + F.mm(p.v)}</span></div>`;
+    }).join('') + '</div>';
+  }
+
+  function egresosHtml(P) {
+    const top = P.egresosCat.slice(0, 10), resto = P.egresosCat.slice(10);
+    if (resto.length) top.push({ label: 'Otras ' + resto.length + ' categorías', monto: resto.reduce((a, e) => a + e.monto, 0), conf: '' });
+    const max = top[0].monto;
+    return top.map(e => `<div class="hbar"><span class="h-l">${esc(e.label)}${e.conf ? '<small>(' + esc(e.conf.toLowerCase()) + ')</small>' : ''}</span>
+      <span class="h-p"><i style="width:${(e.monto / max * 100).toFixed(1)}%"></i></span><span class="h-v">${F.clp(e.monto)}</span></div>`).join('');
+  }
+
+  function tablaMeses(P) {
+    const filas = [
+      ['Ingresos operacionales', m => m.ingresos], ['Egresos operacionales', m => m.egresos], ['Flujo operacional', m => m.flujo, true],
+      ['Socio, neto', m => m.socio], ['Cofundador', m => m.cofundador], ['Aéreo OTEC, neto', m => m.otec],
+      ['Caja a fin de mes', m => m.cajaFin, true, true], ['Venta B2B (empresas e instituciones)', m => m.b2b], ['Venta escuela (N1, Pack, N2+3)', m => m.escuela],
+      ['Alumnos que pagaron', m => m.alumnos, false, true, true], ['Facturado en el SII, neto', m => m.facturado], ['Marketing pagado', m => m.marketing],
+      ['Marketing por alumno', m => m.cac, false, true],
+    ];
+    const th = P.meses.map(m => '<th class="d">' + esc(F.mesNombre(m.mes).replace(/^./, c => c.toUpperCase())) + '</th>').join('');
+    return '<table><thead><tr><th>Concepto</th>' + th + '<th class="d">Total</th></tr></thead><tbody>' + filas.map(([l, f, b, sinTot, entero]) => {
+      const vals = P.meses.map(f);
+      const fmt = n => n == null ? '—' : entero ? String(n) : F.clp(n);
+      return `<tr><td${b ? ' style="font-weight:700"' : ''}>${esc(l)}</td>${vals.map(n => '<td class="d">' + fmt(n) + '</td>').join('')}<td class="d">${sinTot ? (entero ? vals.reduce((a, n) => a + n, 0) : '—') : fmt(vals.reduce((a, n) => a + n, 0))}</td></tr>`;
+    }).join('') + '</tbody></table>';
+  }
+
+  /* --- gráfico: caja diaria (línea con área, cruz y tooltip) --- */
+  function graficoCaja(el, serie) {
+    const W = 640, H = 250, pl = 54, pr = 18, pt = 16, pb = 30;
+    const max = Math.ceil(Math.max(...serie.map(s => s.total)) / 2e6) * 2e6;
+    const x = i => pl + i / (serie.length - 1) * (W - pl - pr);
+    const y = v => pt + (1 - v / max) * (H - pt - pb);
+    const pts = serie.map((s, i) => x(i).toFixed(1) + ',' + y(s.total).toFixed(1));
+    let g = '';
+    for (let v = 0; v <= max; v += 2e6) g += `<line class="${v ? 'g-l' : 'e-l'}" x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}"/><text class="eje" x="${pl - 8}" y="${y(v) + 4}" text-anchor="end">${v ? '$' + v / 1e6 + 'M' : '$0'}</text>`;
+    const marcas = serie.map((s, i) => ({ s, i })).filter(o => (/-(01|15)$/.test(o.s.fecha) && o.i > 2 && o.i < serie.length - 3) || o.i === 0 || o.i === serie.length - 1);
+    for (const o of marcas) g += `<text class="eje" x="${x(o.i)}" y="${H - 8}" text-anchor="${o.i === 0 ? 'start' : o.i === serie.length - 1 ? 'end' : 'middle'}">${F.fCorta(o.s.fecha)}</text>`;
+    const iMax = serie.reduce((b, s, i) => s.total > serie[b].total ? i : b, 0);
+    const iFin = serie.length - 1;
+    const etq = (i, txt, arriba) => `<circle cx="${x(i)}" cy="${y(serie[i].total)}" r="4" fill="var(--s-total)" stroke="var(--sup)" stroke-width="2"/><text class="etq" x="${x(i) + (i === iFin ? -8 : 8)}" y="${y(serie[i].total) + (arriba ? -10 : 16)}" text-anchor="${i === iFin ? 'end' : 'start'}">${txt}</text>`;
+    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Caja diaria de Aéreo entre el ${F.fLarga(serie[0].fecha)} y el ${F.fLarga(serie[serie.length - 1].fecha)}; máximo ${F.clp(serie[iMax].total)} el ${F.fCorta(serie[iMax].fecha)} y cierre en ${F.clp(serie[iFin].total)}." tabindex="0">
+      ${g}
+      <polygon points="${x(0)},${y(0)} ${pts.join(' ')} ${x(iFin)},${y(0)}" fill="var(--s-total)" opacity=".13"/>
+      <polyline points="${pts.join(' ')}" fill="none" stroke="var(--s-total)" stroke-width="2" stroke-linejoin="round"/>
+      ${etq(iMax, 'Máx. ' + F.mm(serie[iMax].total) + ' · ' + F.fCorta(serie[iMax].fecha), true)}
+      ${etq(iFin, F.clp(serie[iFin].total), true)}
+      <line id="cruz" class="e-l" y1="${pt}" y2="${H - pb}" x1="-10" x2="-10" stroke-dasharray="3 3"/>
+      <circle id="cruz-p" r="5" cx="-10" cy="-10" fill="var(--s-total)" stroke="var(--sup)" stroke-width="2" opacity="0"/>
+      <rect x="${pl}" y="${pt}" width="${W - pl - pr}" height="${H - pt - pb}" fill="transparent" id="g-caja-hit"/>
+    </svg>`;
+    const svg = $('svg', el), hit = $('#g-caja-hit', el), cruz = $('#cruz', el), cp = $('#cruz-p', el);
+    const mover = ev => {
+      const r = svg.getBoundingClientRect();
+      const px = (ev.clientX - r.left) / r.width * W;
+      const i = Math.max(0, Math.min(serie.length - 1, Math.round((px - pl) / (W - pl - pr) * (serie.length - 1))));
+      const s = serie[i];
+      cruz.setAttribute('x1', x(i)); cruz.setAttribute('x2', x(i)); cp.setAttribute('cx', x(i)); cp.setAttribute('cy', y(s.total)); cp.setAttribute('opacity', 1);
+      verTip(ev, `<div class="tt">${esc(F.fLarga(s.fecha))}</div>
+        <div class="tr"><span class="punto" style="background:var(--s-total)"></span><span class="n">Total</span><span class="v">${F.clp(s.total)}</span></div>
+        ${Object.entries(M.cuentas(D0.finanzas)).map(([k, n]) => `<div class="tr"><span></span><span class="n">${esc(n)}</span><span class="v">${F.clp(s[k.toLowerCase()] || 0)}</span></div>`).join('')}`);
+    };
+    hit.addEventListener('pointermove', mover);
+    hit.addEventListener('pointerleave', () => { ocultarTip(); cruz.setAttribute('x1', -10); cruz.setAttribute('x2', -10); cp.setAttribute('opacity', 0); });
+  }
+
+  /* --- gráfico: venta por línea (barras agrupadas) --- */
+  function graficoLineas(el, P) {
+    const W = 640, H = 250, pl = 54, pr = 18, pt = 22, pb = 30;
+    const series = [{ k: 'b2b', n: 'B2B (empresas e instituciones)', c: '--s-1' }, { k: 'escuela', n: 'Escuela (N1, Pack, N2+3)', c: '--s-3' }];
+    const meta = D0.modelo.b2b_meta_mes;
+    const max = Math.ceil(Math.max(meta, ...P.meses.flatMap(m => series.map(s => m[s.k]))) / 2e6) * 2e6;
+    const y = v => pt + (1 - v / max) * (H - pt - pb);
+    const grupo = (W - pl - pr) / P.meses.length, bw = Math.min(56, grupo / 3.2);
+    let g = '';
+    for (let v = 0; v <= max; v += 2e6) g += `<line class="${v ? 'g-l' : 'e-l'}" x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}"/><text class="eje" x="${pl - 8}" y="${y(v) + 4}" text-anchor="end">${v ? '$' + v / 1e6 + 'M' : '$0'}</text>`;
+    P.meses.forEach((m, gi) => {
+      const cx = pl + grupo * gi + grupo / 2;
+      g += `<text class="eje" x="${cx}" y="${H - 8}" text-anchor="middle">${esc(F.mesNombre(m.mes))}</text>`;
+      series.forEach((s, si) => {
+        const bx = cx + (si - series.length / 2) * (bw + 2) + 1, v = m[s.k], yy = y(v), h = y(0) - yy;
+        g += `<path d="M${bx},${y(0)} V${yy + 4} Q${bx},${yy} ${bx + 4},${yy} H${bx + bw - 4} Q${bx + bw},${yy} ${bx + bw},${yy + 4} V${y(0)} Z" fill="var(${s.c})" data-tip="${esc(F.mesNombre(m.mes))}|${esc(s.n)}|${v}|${s.c}"/>`;
+        g += `<rect x="${bx - 2}" y="${Math.min(yy, y(0) - 30) - 6}" width="${bw + 4}" height="${Math.max(h, 30) + 6}" fill="transparent" data-tip="${esc(F.mesNombre(m.mes))}|${esc(s.n)}|${v}|${s.c}"/>`;
+        g += `<text class="etq" x="${bx + bw / 2}" y="${yy - 7}" text-anchor="middle">${F.mm(v)}</text>`;
+      });
+    });
+    g += `<line x1="${pl}" x2="${W - pr}" y1="${y(meta)}" y2="${y(meta)}" stroke="var(--tinta-2)" stroke-width="1.5" stroke-dasharray="5 4"/><text class="etq2" x="${W - pr}" y="${y(meta) - 6}" text-anchor="end">Meta B2B 2027 · ${F.mm(meta)}</text>`;
+    el.innerHTML = `<div class="leyenda">${series.map(s => `<span><span class="punto" style="background:var(${s.c})"></span>${esc(s.n)}</span>`).join('')}</div>
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Venta por línea: ${P.meses.map(m => F.mesNombre(m.mes) + ' B2B ' + F.mm(m.b2b) + ' y escuela ' + F.mm(m.escuela)).join('; ')}.">${g}</svg>`;
+    for (const n of $$('[data-tip]', el)) {
+      n.addEventListener('pointermove', ev => { const [mes, s, v, c] = n.dataset.tip.split('|'); verTip(ev, `<div class="tt">${esc(mes)}</div><div class="tr"><span class="punto" style="background:var(${c})"></span><span class="n">${esc(s)}</span><span class="v">${F.clp(Number(v))}</span></div>`); });
+      n.addEventListener('pointerleave', ocultarTip);
+    }
+  }
+
+  /* ========================================================================
+     PRESENTE
+     ======================================================================== */
+  function renderPresente() {
+    const v = $('#v-presente'); const C = I.cursos, Q = I.cot;
+    const totCobrar = I.porCobrar.reduce((a, p) => a + p.saldo, 0);
+    const kp = (l, val, s) => `<div class="panel kpi"><span class="k-l">${l}</span><span class="k-v">${val}</span><span class="k-s">${s}</span></div>`;
+    v.innerHTML = `
+      <div class="grilla g-5">
+        ${kp('Cupos Nivel 1 vendidos', C.resN1.vendidos + ' de ' + C.resN1.cupos, C.resN1.fechas + ' fechas publicadas · ' + F.pct(C.resN1.ocupacion))}
+        ${kp('Cupos N2+N3 vendidos', C.resN23.vendidos + ' de ' + C.resN23.cupos, C.resN23.fechas + ' fechas publicadas · ' + F.pct(C.resN23.ocupacion))}
+        ${kp('Vendido en fechas próximas', F.mm(C.resN1.vendidoMonto + C.resN23.vendidoMonto), 'A precio de lista actual')}
+        ${kp('Por vender', F.mm(C.resN1.libreMonto + C.resN23.libreMonto), (C.resN1.libres + C.resN23.libres) + ' cupos libres')}
+        ${kp('Por cobrar', F.mm(totCobrar), I.porCobrar.length + ' facturas · banco + SII')}
+      </div>
+      <section class="panel"><div class="panel-c"><h2>Cursos publicados en aereo.cl</h2><span class="bajada">Cada punto es un cupo: lleno = vendido. Meses agotados en 2026: ${C.racha.map(m => MES3[m]).join(', ')}.</span></div>
+        <div class="meses-cursos">${cursosHtml(C)}</div>
+        <p class="nota-panel">Fuente: datos/cursos-fechas.js y datos/n23-fechas.js del repo aereo-web (commit ${esc(D0.cursos.commit || '?')}). Para que AerIA vea una venta nueva, se baja el cupo ahí y se vuelve a armar AerIA.</p></section>
+      <div class="grilla g-2">
+        <section class="panel"><div class="panel-c"><h2>Por cobrar</h2><span class="bajada">Según cartolas y SII al ${esc(F.fCorta(I.pasado.fechaCorte))}. Las pendientes de antes del período están por confirmar.</span></div>
+          <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>Cliente</th><th>Factura</th><th class="d">Saldo</th></tr></thead><tbody>
+          ${I.porCobrar.map(p => `<tr><td><div class="c-main">${esc(p.cliente)}</div><div class="c-sub">${esc(p.tipoDeuda)}</div></td><td class="nw">${esc(p.folio)} · ${esc(F.fCorta(p.fecha))}</td><td class="d">${F.clp(p.saldo)}</td></tr>`).join('')}
+          </tbody><tfoot><tr><td colspan="2" style="font-weight:700">Total</td><td class="d" style="font-weight:700">${F.clp(totCobrar)}</td></tr></tfoot></table></div></div>
+          ${I.cruce ? `<p class="nota-panel">Ojo: el plan 2027 decía «${esc(I.cruce.frase)}». Las cartolas muestran: ${esc(I.cruce.estado.map(e => e.cliente + ' ' + e.leido).join('; '))}.</p>` : ''}</section>
+        <section class="panel" id="panel-cot"><div class="panel-c"><h2>Cotizaciones</h2><span class="bajada">${Q.items.length ? Q.items.length + ' importadas · ' + esc(Q.fuente || '') : 'Agregado del dashboard al ' + esc(F.fCorta(Q.corte))}</span></div>
+          ${cotizacionesHtml(Q)}</section>
+      </div>
+      <section class="panel"><div class="panel-c"><h2>Licitaciones abiertas</h2><span class="bajada">Radar de Mercado Público y Compra Ágil, actualizado ${esc((D0.licitaciones.generado_fuente || '').slice(0, 16).replace('T', ' '))} UTC. «Calzan» = capacitación, asesoría o servicios aéreos.</span></div>
+        <div class="panel-b" style="padding-bottom:10px">${chipsLic()}</div>
+        <div class="panel-b ras"><div class="tabla-env">${tablaLic()}</div></div></section>`;
+  }
+
+  function cursosHtml(C) {
+    const porMes = {};
+    for (const c of C.proximos) { const k = c.inicio.slice(0, 7); (porMes[k] = porMes[k] || []).push(c); }
+    return Object.entries(porMes).map(([k, lista]) => `<div class="mes-c"><h3>${esc(F.mesNombre(k + '-01'))} ${k.slice(0, 4)}</h3><div class="cursos">${lista.map(c => {
+      const est = c.libres === 0 ? '<span class="pill lleno">Agotado</span>' : c.vendidos === 0 ? '<span class="pill">Sin ventas</span>' : '<span class="pill media">Quedan ' + c.libres + '</span>';
+      const fer = c.feriados.length ? '<span class="pill critica">Feriado ' + esc(F.fCorta(c.feriados[0].fecha)) + '</span>' : '';
+      const rango = c.nivel === 'n1' ? dSem(c.inicio) + ' ' + F.fCorta(c.inicio) + ' → ' + dSem(c.fin) + ' ' + F.fCorta(c.fin) : 'lun ' + F.fCorta(c.inicio) + ' y mar ' + F.fCorta(c.fin);
+      return `<div class="curso${c.feriados.length ? ' feriado' : ''}"><div class="c-cab"><span class="tag-nivel ${c.nivel}">${c.nivel === 'n1' ? 'Nivel 1' : 'N2 + N3'}</span>${fer || est}</div>
+        <div class="c-fecha">${esc(rango)}</div>
+        <div class="asientos" role="img" aria-label="${c.vendidos} de ${c.max} cupos vendidos">${Array.from({ length: c.max }, (_, i) => '<span class="asiento' + (i < c.vendidos ? ' v' : '') + '"></span>').join('')}</div>
+        <div class="c-pie"><span>${c.vendidos}/${c.max} vendidos</span><span>${c.dias <= 0 ? 'en curso' : 'empieza ' + F.cuando(c.dias)}</span></div></div>`;
+    }).join('')}</div></div>`).join('');
+  }
+
+  function cotizacionesHtml(Q) {
+    const resumen = `<div class="panel-b"><div class="sim-datos"><span>Abiertas <b>${F.clp(Q.abiertasMonto)}</b></span><span>Cierre por monto <b>${Q.tasaCierre ? F.pct(Q.tasaCierre) : '—'}</b></span><span>Esperable <b>${Q.esperado ? F.clp(Q.esperado) : '—'}</b></span>${Q.antiguedad != null ? `<span>Dato de hace <b>${Q.antiguedad} días</b></span>` : ''}</div>
+      ${Q.notas.length ? '<ul class="c-sub" style="margin-top:8px">' + Q.notas.map(n => '<li>' + esc(n) + '</li>').join('') + '</ul>' : ''}</div>`;
+    const tabla = Q.items.length ? `<div class="panel-b ras"><div class="tabla-env alto"><table><thead><tr><th>Cliente</th><th>Estado</th><th class="d">Monto</th></tr></thead><tbody>
+      ${Q.items.slice().sort((a, b) => (b.monto || 0) - (a.monto || 0)).map(i => `<tr><td><div class="c-main">${esc(i.cliente || '—')}</div><div class="c-sub">${esc([i.linea, i.folio, i.fecha].filter(Boolean).join(' · '))}</div></td><td>${esc(i.estado || '—')}</td><td class="d">${F.clp(Number(i.monto) || 0)}</td></tr>`).join('')}
+      </tbody></table></div></div>` : '';
+    const prev = S.cotPrevia;
+    return resumen + tabla + `<div class="importar">
+      <span class="ceja">Importar desde tu dashboard</span>
+      <p class="c-sub">Exporta las cotizaciones de tu dashboard local (CSV o JSON) y cárgalas aquí, o pega la tabla copiada. AerIA reconoce columnas como cliente, monto, estado, fecha y línea.</p>
+      <div class="fila"><label class="btn sm sec" for="cot-archivo">Elegir archivo</label><input id="cot-archivo" type="file" accept=".csv,.json,.txt,.tsv" class="sr" data-accion="cot-archivo"></div>
+      <label class="sr" for="cot-texto">Pegar cotizaciones</label>
+      <textarea id="cot-texto" placeholder="cliente;monto;estado;fecha&#10;Empresa ejemplo;1200000;enviada;2026-10-01">${prev ? '' : ''}</textarea>
+      <div class="fila">
+        <button class="btn sm" type="button" data-accion="cot-leer">Leer</button>
+        ${S.sample ? '<button class="btn sm sec" type="button" data-accion="cot-ia">Que AerIA lo ordene</button>' : ''}
+        ${prev ? `<button class="btn sm" type="button" data-accion="cot-guardar">Guardar ${prev.items.length} cotizaciones</button>` : ''}
+        ${S.cot ? '<button class="enlace-btn" type="button" data-accion="cot-borrar">Volver al agregado del plan</button>' : ''}
+      </div>
+      <p class="msg" id="cot-msg" aria-live="polite">${prev ? esc(prev.msg) : ''}</p></div>`;
+  }
+
+  function chipsLic() {
+    const L = I.lic;
+    const ops = [['calzan', 'Calzan con Aéreo', L.relevantes.length], ['capacitacion', 'Capacitación', L.abiertas.filter(l => l.encaje === 'capacitacion').length],
+      ['servicio', 'Servicios aéreos', L.abiertas.filter(l => l.encaje === 'servicio').length], ['asesoria', 'Asesoría', L.abiertas.filter(l => l.encaje === 'asesoria').length],
+      ['equipo', 'Equipos e insumos', L.abiertas.filter(l => l.encaje === 'equipo').length], ['todas', 'Todas', L.abiertas.length]];
+    return '<div class="chips" role="group" aria-label="Filtrar licitaciones">' + ops.map(([k, t, n]) => `<button class="chip" type="button" data-accion="filtro-lic" data-valor="${k}" aria-pressed="${S.filtroLic === k}">${t}<span class="n">${n}</span></button>`).join('') + '</div>';
+  }
+  function tablaLic() {
+    const L = I.lic, f = S.filtroLic;
+    const l = f === 'todas' ? L.abiertas : f === 'calzan' ? L.relevantes : L.abiertas.filter(x => x.encaje === f);
+    if (!l.length) return '<p class="panel-b mudo">No hay procesos abiertos en este filtro.</p>';
+    return `<table><thead><tr><th>Cierre</th><th>Proceso</th><th class="d">Monto</th><th>Encaje</th><th></th></tr></thead><tbody>${l.map(x => `<tr>
+      <td class="nw"><span class="pill${x.horas <= 72 ? ' critica' : x.horas <= 168 ? ' media' : ''}">${esc(F.horasA(x.cierre, new Date()))}</span><div class="c-sub">${esc(dSem(x.cierre.slice(0, 10)) + ' ' + F.fCorta(x.cierre) + ' ' + x.cierre.slice(11, 16))}</div></td>
+      <td class="ancho"><div class="c-main">${esc(x.nombre)}</div><div class="c-sub">${esc(x.organismo)} · ${esc(x.region)} · ${x.fuente === 'compra_agil' ? 'Compra Ágil' : 'Licitación'} ${esc(x.codigo)}</div></td>
+      <td class="d">${x.monto ? F.clp(x.monto) : '—'}</td><td>${esc(x.encaje_label)}</td>
+      <td class="nw"><a href="${esc(x.url)}" target="_blank" rel="noopener">Ficha ↗</a></td></tr>`).join('')}</tbody></table>`;
+  }
+
+  /* --- importador de cotizaciones --- */
+  const ALIAS = {
+    cliente: ['cliente', 'empresa', 'razon social', 'razón social', 'razon', 'nombre', 'institucion', 'institución', 'organismo'],
+    monto: ['monto', 'total', 'valor', 'monto total', 'neto', 'precio', 'monto neto'],
+    estado: ['estado', 'status', 'etapa', 'situacion', 'situación'],
+    fecha: ['fecha', 'emision', 'emisión', 'fecha emision', 'fecha emisión', 'creada', 'fecha cotizacion', 'fecha cotización'],
+    linea: ['linea', 'línea', 'tipo', 'servicio', 'producto', 'categoria', 'categoría', 'curso', 'detalle'],
+    folio: ['folio', 'numero', 'número', 'n°', 'nro', 'id', 'codigo', 'código', 'cotizacion', 'cotización'],
+  };
+  const aMonto = v => typeof v === 'number' ? v : Number(String(v || '').replace(/[^\d,.-]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')) || 0;
+  function mapear(filas) {
+    return filas.map(f => {
+      const bajo = {}; for (const [k, v] of Object.entries(f)) bajo[F.plano(String(k)).trim()] = v;
+      const it = {};
+      for (const [campo, al] of Object.entries(ALIAS)) {
+        const k = al.map(F.plano).find(a => bajo[a] != null && bajo[a] !== '');
+        it[campo] = k ? bajo[k] : '';
+      }
+      it.monto = aMonto(it.monto);
+      return it;
+    }).filter(i => i.cliente || i.monto);
+  }
+  function leerTexto(txt) {
+    txt = txt.trim();
+    if (!txt) return [];
+    if (/^[[{]/.test(txt)) {
+      const j = JSON.parse(txt);
+      const arr = Array.isArray(j) ? j : Object.values(j).find(Array.isArray) || [];
+      return mapear(arr);
+    }
+    const lineas = txt.split(/\r?\n/).filter(l => l.trim());
+    const sep = ['\t', ';', ','].map(s => [s, lineas[0].split(s).length]).sort((a, b) => b[1] - a[1])[0][0];
+    const partir = l => { const out = []; let cur = '', q = false; for (const ch of l) { if (ch === '"') q = !q; else if (ch === sep && !q) { out.push(cur); cur = ''; } else cur += ch; } out.push(cur); return out.map(s => s.trim()); };
+    const cab = partir(lineas[0]);
+    return mapear(lineas.slice(1).map(l => { const c = partir(l), o = {}; cab.forEach((h, i) => { o[h] = c[i]; }); return o; }));
+  }
+  function prepararCot(items, origen) {
+    const total = items.reduce((a, i) => a + (i.monto || 0), 0);
+    S.cotPrevia = { items, origen, msg: items.length ? `Leí ${items.length} cotizaciones por ${F.clp(total)}. Revisa y guarda.` : 'No reconocí cotizaciones en ese contenido. Revisa que tenga una fila de encabezados (cliente, monto, estado…).' };
+    if (!items.length) S.cotPrevia.items = [];
+    renderPresente();
+    const p = $('#panel-cot'); if (p) p.scrollIntoView({ block: 'nearest' });
+  }
+
+  /* ========================================================================
+     FUTURO
+     ======================================================================== */
+  function simEstado() {
+    if (!S.sim) {
+      const u = I.pasado.meses[I.pasado.meses.length - 1];
+      S.sim = { b2b: Math.round(u.b2b / 1e4) * 1e4, escuela: 'realista', palancas: D0.modelo.palancas.filter(p => p.activa).map(p => p.id) };
+    }
+    return S.sim;
+  }
+  function renderFuturo() {
+    const v = $('#v-futuro'); const Mo = D0.modelo; const U = I.futuro; const sim = simEstado();
+    const atajos = [['Mínimo', Mo.b2b_minimo_mes], [F.mesNombre(I.pasado.meses[I.pasado.meses.length - 1].mes).replace(/^./, c => c.toUpperCase()) + ' real', I.pasado.meses[I.pasado.meses.length - 1].b2b], ['Equilibrio', U.equilibrio], ['Meta', Mo.b2b_meta_mes], ['Promedio ' + I.pasado.etiqueta.replace(/ \d{4}$/, ''), I.pasado.b2b / I.pasado.meses.length]];
+    v.innerHTML = `
+      <section class="panel"><div class="panel-c"><h2>Simulador 2027</h2><span class="bajada">El modelo del plan: margen de la escuela + 12 × B2B mensual × ${F.pct(Mo.margen_b2b, 1)} + palancas − ${F.mm(Mo.costos_fijos_anio)} de costos fijos.</span></div>
+        <div class="sim">
+          <div class="sim-ctrl">
+            <div class="campo"><label for="sim-b2b">Venta B2B al mes <output id="sim-b2b-v">${F.mm(sim.b2b, 2)}</output></label>
+              <input type="range" id="sim-b2b" min="2000000" max="12000000" step="10000" value="${sim.b2b}" data-accion="sim-b2b">
+              <div class="chips">${atajos.map(([t, val]) => `<button class="chip" type="button" data-accion="sim-set" data-valor="${Math.round(val / 1e4) * 1e4}">${t} · ${F.mm(val)}</button>`).join('')}</div></div>
+            <div class="campo"><span class="lab">Escuela</span><div class="seg" role="group" aria-label="Ocupación de la escuela">
+              <button type="button" data-accion="sim-escuela" data-valor="realista" aria-pressed="${sim.escuela === 'realista'}">Ocupación realista</button>
+              <button type="button" data-accion="sim-escuela" data-valor="llena" aria-pressed="${sim.escuela === 'llena'}">Todos los cursos llenos</button></div></div>
+            <div class="campo"><span class="lab">Palancas</span>
+              ${Mo.palancas.map(p => `<label class="palanca"><input type="checkbox" data-accion="sim-palanca" data-id="${p.id}"${sim.palancas.includes(p.id) ? ' checked' : ''}><span>${esc(p.nombre)}<small>${esc(p.estado)}</small></span><span class="pl-e">+${F.mm(p.efecto)}</span></label>`).join('')}</div>
+          </div>
+          <div class="sim-res" id="sim-res"></div>
+        </div></section>
+      <div class="grilla g-2">
+        <section class="panel"><div class="panel-c"><h2>Tablero mensual</h2><span class="bajada">Los siete números del plan para revisar cada día 5. Si dos meses seguidos fallan dos o más, se activa el plan B.</span></div>
+          <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>Indicador</th><th>Hoy</th><th>Meta 2027</th></tr></thead><tbody>
+          ${I.tablero.map(t => `<tr><td><div class="c-main">${esc(t.indicador)}</div><div class="c-sub">${esc(t.nota)}</div></td><td class="nw"><span class="pill ${t.estado}">${{ bien: 'En meta', atencion: 'Atención', critico: 'Crítico', sindato: 'Sin dato' }[t.estado]}</span><div style="margin-top:4px;font-weight:500">${esc(t.valor)}</div></td><td>${esc(t.meta)}</td></tr>`).join('')}
+          </tbody></table></div></div></section>
+        <section class="panel"><div class="panel-c"><h2>El hito del ${esc(F.fCorta(U.hito.fecha))}</h2><span class="bajada">El día que decide el año.</span></div>
+          <div class="panel-b" style="display:flex;flex-direction:column;gap:12px">
+            <div class="gran-num">${U.diasHito} días</div>
+            <p>${esc(U.hito.regla)}</p>
+            <p class="c-sub">Con las tres palancas del plan el B2B necesario para quedar en cero es ${F.mm(U.equilibrio)} al mes; con el plan B (oficina y agencia) baja a ${F.mm(U.equilibrioPlanB)}.</p>
+            <div class="tabla-env"><table><thead><tr><th>Precio</th><th class="d">Hoy</th><th class="d">2027</th></tr></thead><tbody>
+              <tr><td>Nivel 1</td><td class="d">${F.clp(D0.cursos.precios_web.nivel1)}</td><td class="d">${F.clp(Mo.precios_2027.nivel1)}</td></tr>
+              <tr><td>Niveles 2+3</td><td class="d">${F.clp(D0.cursos.precios_web.nivel23)}</td><td class="d">${F.clp(Mo.precios_2027.nivel23)}</td></tr>
+              <tr><td>Pack AÉREO Profesional</td><td class="d">${F.clp(D0.cursos.precios_web.pack)}</td><td class="d">${F.clp(Mo.precios_2027.pack)}</td></tr>
+              <tr><td>Revalidación</td><td class="d">—</td><td class="d">${F.clp(Mo.precios_2027.revalidacion)}</td></tr>
+              <tr><td>SENCE por participante</td><td class="d">—</td><td class="d">${F.clp(Mo.precios_2027.sence_participante)}</td></tr>
+            </tbody></table></div>
+          </div></section>
+      </div>
+      <section class="panel"><div class="panel-c"><h2>${esc(D0.plan.titulo)}</h2><span class="bajada">El documento completo, por secciones. Es la base de todo lo que AerIA dice del futuro.</span>
+        ${D0.plan.url ? `<span class="acc"><a class="btn sm sec" href="${esc(D0.plan.url)}" target="_blank" rel="noopener">Abrir el plan ↗</a></span>` : ''}</div>
+        <div class="panel-b ras" style="padding-top:12px">${D0.plan.secciones.filter(s => !/^fuentes$/i.test(s.titulo)).map(planSeccion).join('')}</div></section>`;
+    pintarSim();
+  }
+  function planSeccion(s) {
+    const tablas = s.tablas.map(t => `<div class="tabla-env"><table><thead><tr>${t[0].map(c => '<th>' + esc(c) + '</th>').join('')}</tr></thead><tbody>${t.slice(1).map(r => '<tr>' + r.map(c => '<td>' + esc(c) + '</td>').join('') + '</tr>').join('')}</tbody></table></div>`).join('');
+    return `<details class="plan"><summary>${esc(s.titulo)}</summary><div class="plan-cuerpo">
+      ${s.parrafos.map(p => '<p>' + fuerte(p) + '</p>').join('')}
+      ${s.listas.map(l => '<ul>' + l.map(i => '<li>' + fuerte(i) + '</li>').join('') + '</ul>').join('')}${tablas}</div></details>`;
+  }
+  function pintarSim() {
+    const sim = simEstado(), Mo = D0.modelo;
+    const r = M.resultado2027(Mo, sim.b2b, sim.escuela, sim.palancas);
+    const filas = I.futuro.escenarios.map(e => ({ n: e.nombre, b2b: e.b2b, v: M.resultado2027(Mo, e.b2b, sim.escuela, sim.palancas).resultado }));
+    filas.push({ n: 'Tu simulación', b2b: sim.b2b, v: r.resultado, tuyo: true });
+    filas.sort((a, b) => a.v - b.v);
+    const lim = Math.max(...filas.map(f => Math.abs(f.v)), 1);
+    const barras = filas.map(f => {
+      const w = Math.abs(f.v) / lim * 50;
+      return `<div class="hbar" style="grid-template-columns:minmax(120px,32%) minmax(0,1fr) 84px;${f.tuyo ? 'font-weight:700' : ''}"><span class="h-l">${esc(f.n)}<small>B2B ${F.mm(f.b2b)}</small></span>
+        <span class="h-p" style="height:14px"><span style="position:absolute;left:50%;top:-4px;bottom:-4px;width:1px;background:var(--linea-2)"></span>
+        <i style="left:${f.v >= 0 ? 50 : 50 - w}%;width:${w}%;background:var(${f.v >= 0 ? '--s-1' : '--s-2'});border-radius:${f.v >= 0 ? '0 3px 3px 0' : '3px 0 0 3px'};${f.tuyo ? 'outline:2px solid var(--tinta);outline-offset:1px' : ''}"></i></span>
+        <span class="h-v">${F.mm(f.v)}</span></div>`;
+    }).join('');
+    $('#sim-res').innerHTML = `
+      <span class="ceja">Resultado 2027</span>
+      <div class="gran-num ${r.resultado < 0 ? 'mal' : 'bien'}">${F.mm(r.resultado)}</div>
+      <div class="sim-datos"><span>Equilibrio con estas palancas <b>${F.mm(r.equilibrio, 2)}</b> de B2B al mes</span><span>Margen escuela <b>${F.mm(r.margenEscuela)}</b></span><span>Margen B2B <b>${F.mm(r.margenB2B)}</b></span><span>Palancas <b>+${F.mm(r.palancas)}</b></span><span>Costos fijos <b>−${F.mm(Mo.costos_fijos_anio)}</b></span></div>
+      <p class="c-sub">${sim.b2b >= r.equilibrio ? 'Con ' + F.mm(sim.b2b) + ' de B2B al mes el año queda en azul: cada $1M más al mes suma ' + F.mm(12e6 * Mo.margen_b2b) + '.' : 'Faltan ' + F.mm(r.equilibrio - sim.b2b, 2) + ' de B2B al mes para quedar en cero.'} El B2B paga a 30–60 días: la caja llega 1 a 2 meses después de la venta.</p>
+      <div><div class="leyenda"><span><span class="punto" style="background:var(--s-1)"></span>Utilidad</span><span><span class="punto" style="background:var(--s-2)"></span>Pérdida</span></div>${barras}</div>`;
+    const o = $('#sim-b2b-v'); if (o) o.textContent = F.mm(sim.b2b, 2);
+  }
+
+  /* ========================================================================
+     HABLAR CON AerIA
+     ======================================================================== */
+  const REGLAS = `Eres AerIA, la inteligencia de dirección de Aéreo SpA: una escuela profesional de pilotos de drones (RPAS) en Chile, aereo.cl. Aéreo vende cursos abiertos (Nivel 1 para la credencial DGAC, Niveles 2+3 de Matrice y vuelo nocturno, Pack AÉREO Profesional, revalidación) y B2B: grupos SENCE, cursos cerrados para empresas e instituciones, asesoría AOC y servicios de termografía y fotogrametría. Tiene una empresa relacionada, Aéreo OTEC (Aéreo Somos Drones SpA).
+
+Hablas con quien dirige Aéreo. Tu trabajo es el de una jefa de gabinete y CFO a la vez: resumir, ordenar prioridades, alertar, anticipar lo que viene y aconsejar con criterio profesional, detalle a detalle.
+
+Cómo respondes:
+- En español de Chile, directa y profesional. Primero la respuesta o la recomendación; después el porqué con cifras; al final la acción concreta (quién, qué, cuándo).
+- Cifras siempre con su fuente: Pasado (cartolas, SII y Mercado Pago del período), Presente (cursos en aereo.cl, cotizaciones, licitaciones, por cobrar) o Futuro (plan 2027). Distingue hecho, supuesto del plan e inferencia tuya.
+- Montos en pesos chilenos: $1.234.567, o en millones con coma ($6,1M).
+- Breve: 120 a 250 palabras salvo que te pidan detalle. Listas cortas; tablas solo si comparan.
+- No inventes datos. Si algo no está en tus fuentes, dilo y di de dónde sacarlo.
+- En temas tributarios, laborales o legales da tu lectura y recomienda confirmarla con contador(a) o abogado(a).
+- Si el usuario te pide recordar algo o toma una decisión, guárdala con la herramienta guardar_nota (si la tienes) y confírmalo en una línea.
+- Puedes consultar el detalle con tus herramientas: úsalas cuando la pregunta pida datos finos (movimientos, facturas, secciones del plan, licitaciones, simulaciones).
+
+Abajo está tu lectura actual de la empresa.`;
+
+  function herramientas() {
+    const Dt = datos();
+    const cats = Object.entries(D0.finanzas.cats).map(([k, c]) => k + '=' + c.label).join('; ');
+    const avance = t => { const h = $('.msj.aeria:last-child .herr'); if (h) h.textContent = t; };
+    const lista = [
+      { name: 'buscar_movimientos', description: 'Busca movimientos de las cuentas de Aéreo (' + Object.values(M.cuentas(D0.finanzas)).join(' y ') + ', ' + D0.finanzas.serie[0].fecha + ' a ' + D0.finanzas.periodo.hasta + '). Devuelve cuántos hay, la suma con signo (+ ingreso, − egreso) y hasta 30 movimientos ordenados por monto.',
+        inputSchema: { type: 'object', properties: { texto: { type: 'string', description: 'Texto a buscar en glosa, contraparte, nota o categoría (sin importar tildes)' }, categoria: { type: 'string', description: 'Código de categoría. ' + cats }, mes: { type: 'string', description: 'AAAA-MM' }, tipo: { type: 'string', enum: ['ingreso', 'egreso'] }, monto_minimo: { type: 'number' }, limite: { type: 'number' } } },
+        execute: i => { avance('Consultando movimientos bancarios…'); return M.buscarMovimientos(Dt, i || {}); } },
+      { name: 'ver_hallazgo', description: 'Detalle completo y acción de un hallazgo del informe financiero. Ids: ' + D0.finanzas.hallazgos.map(h => h.id).join(', ') + '.',
+        inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        execute: i => { avance('Leyendo el hallazgo…'); const q = F.plano(String(i.id || '')); const h = D0.finanzas.hallazgos.find(x => x.id === i.id || F.plano(x.titulo).includes(q)); if (!h) throw new Error('No existe ese hallazgo'); return h; } },
+      { name: 'facturas_emitidas', description: 'Facturas de venta en el SII (jun–sep 2026) con su estado de cobro y detalle del cruce con el banco. Filtra por texto de cliente o estado.',
+        inputSchema: { type: 'object', properties: { cliente: { type: 'string' }, estado: { type: 'string' } } },
+        execute: i => { avance('Revisando facturas emitidas…'); return D0.finanzas.sii.filter(s => (!i.cliente || F.plano(s.cliente).includes(F.plano(i.cliente))) && (!i.estado || F.plano(s.estado).includes(F.plano(i.estado)))); } },
+      { name: 'facturas_proveedores', description: 'Registro de compras del SII (facturas de proveedores jun–sep 2026) con estado de pago y medio. Filtra por proveedor o por estado de pago (ej. "sin pago").',
+        inputSchema: { type: 'object', properties: { proveedor: { type: 'string' }, pago: { type: 'string' } } },
+        execute: i => { avance('Revisando facturas de proveedores…'); const r = D0.finanzas.compras.filter(c => (!i.proveedor || F.plano(c.prov).includes(F.plano(i.proveedor))) && (!i.pago || F.plano(c.pago).includes(F.plano(i.pago)))); return { n: r.length, total: r.reduce((a, c) => a + c.monto, 0), facturas: r.slice(0, 40) }; } },
+      { name: 'leer_plan_2027', description: 'Devuelve una sección del plan de rentabilidad 2027 con sus párrafos, listas y tablas. Secciones: ' + D0.plan.secciones.map(s => s.titulo).join(' | ') + '.',
+        inputSchema: { type: 'object', properties: { seccion: { type: 'string' } }, required: ['seccion'] },
+        execute: i => { avance('Leyendo el plan 2027…'); const q = F.plano(String(i.seccion || '')); const s = D0.plan.secciones.find(x => F.plano(x.titulo).includes(q)) || D0.plan.secciones.find(x => q.split(' ').some(w => w.length > 3 && F.plano(x.titulo).includes(w))); if (!s) throw new Error('No encontré esa sección'); return s; } },
+      { name: 'licitaciones_abiertas', description: 'Licitaciones y compras ágiles abiertas sobre drones (Mercado Público). Filtra por encaje (capacitacion, asesoria, servicio, equipo, otro) o texto.',
+        inputSchema: { type: 'object', properties: { encaje: { type: 'string' }, texto: { type: 'string' } } },
+        execute: i => { avance('Revisando licitaciones…'); return I.lic.abiertas.filter(l => (!i.encaje || l.encaje === i.encaje) && (!i.texto || F.plano(l.nombre + ' ' + l.organismo).includes(F.plano(i.texto)))).map(l => ({ ...l, cierra: F.horasA(l.cierre, new Date()) })); } },
+      { name: 'simular_2027', description: 'Calcula el resultado anual 2027 con el modelo del plan. Palancas (ids): ' + D0.modelo.palancas.map(p => p.id + ' ' + p.nombre).join('; ') + '. Sin palancas indicadas usa las del plan.',
+        inputSchema: { type: 'object', properties: { b2b_mensual: { type: 'number' }, escuela: { type: 'string', enum: ['realista', 'llena'] }, palancas: { type: 'array', items: { type: 'string' } } }, required: ['b2b_mensual'] },
+        execute: i => { avance('Simulando 2027…'); return M.resultado2027(D0.modelo, Number(i.b2b_mensual), i.escuela === 'llena' ? 'llena' : 'realista', Array.isArray(i.palancas) ? i.palancas.map(String) : undefined); } },
+      { name: 'cotizaciones', description: 'Cotizaciones del dashboard: las importadas (cliente, monto, estado, fecha, línea) o, si no hay, el agregado.',
+        inputSchema: { type: 'object', properties: { texto: { type: 'string' } } },
+        execute: i => { avance('Revisando cotizaciones…'); const Q = I.cot; const it = Q.items.filter(x => !i.texto || F.plano(JSON.stringify(x)).includes(F.plano(i.texto))); return { corte: Q.corte, abiertas_monto: Q.abiertasMonto, tasa_cierre: Q.tasaCierre, esperado: Q.esperado, notas: Q.notas, items: it.slice(0, 60) }; } },
+      { name: 'guardar_nota', description: 'Guarda en la memoria permanente de AerIA una decisión, preferencia o dato que el usuario pidió recordar. Úsala solo si el usuario lo pide o decide algo explícitamente.',
+        inputSchema: { type: 'object', properties: { texto: { type: 'string' } }, required: ['texto'] },
+        execute: async i => { avance('Guardando en la memoria…'); const n = { id: 'n' + Date.now().toString(36), texto: String(i.texto).slice(0, 600), fecha: new Date().toISOString() }; S.notas = S.notas.concat([n]); await guardar('notas'); pintarMemoria(); return { guardada: n.texto }; } },
+    ];
+    return S.tools ? lista.slice(0, S.tools) : [];
+  }
+
+  function md(t) {
+    const L = String(t || '').replace(/\r/g, '').split('\n');
+    const inl = s => esc(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    const esLista = l => /^\s*[-*•]\s+/.test(l), esNum = l => /^\s*\d+[.)]\s+/.test(l), esTabla = l => /^\s*\|/.test(l), esTit = l => /^#{1,4}\s/.test(l);
+    let h = '', i = 0;
+    while (i < L.length) {
+      const l = L[i];
+      if (!l.trim()) { i++; continue; }
+      if (esTit(l)) { h += '<h3>' + inl(l.replace(/^#+\s/, '')) + '</h3>'; i++; continue; }
+      if (esTabla(l)) {
+        const filas = []; while (i < L.length && esTabla(L[i])) filas.push(L[i++]);
+        const celdas = filas.map(f => f.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim()))
+          .filter(c => !c.every(x => /^:?-{2,}:?$/.test(x)));
+        if (celdas.length) h += '<div class="tabla-env"><table><thead><tr>' + celdas[0].map(c => '<th>' + inl(c) + '</th>').join('') + '</tr></thead><tbody>' +
+          celdas.slice(1).map(r => '<tr>' + r.map(c => '<td' + (/^[−+-]?\$?[\d.,]+%?M?$/.test(c) ? ' class="d"' : '') + '>' + inl(c) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+        continue;
+      }
+      if (esLista(l)) { let li = ''; while (i < L.length && esLista(L[i])) li += '<li>' + inl(L[i++].replace(/^\s*[-*•]\s+/, '')) + '</li>'; h += '<ul>' + li + '</ul>'; continue; }
+      if (esNum(l)) { let li = ''; while (i < L.length && esNum(L[i])) li += '<li>' + inl(L[i++].replace(/^\s*\d+[.)]\s+/, '')) + '</li>'; h += '<ol>' + li + '</ol>'; continue; }
+      const p = []; while (i < L.length && L[i].trim() && !esTit(L[i]) && !esTabla(L[i]) && !esLista(L[i]) && !esNum(L[i])) p.push(L[i++]);
+      h += '<p>' + inl(p.join(' ')) + '</p>';
+    }
+    return h;
+  }
+
+  function renderHablar() {
+    const v = $('#v-hablar');
+    if (!$('#mensajes', v)) {
+      v.innerHTML = `<div class="chat">
+        <section class="panel conversa" aria-label="Conversación con AerIA">
+          <div class="mensajes" id="mensajes" aria-live="polite"></div>
+          <form class="componer" id="f-chat">
+            <div id="aviso-ia"></div>
+            <div class="fila"><label class="sr" for="in-chat">Mensaje para AerIA</label>
+              <textarea id="in-chat" rows="2" placeholder="Pregunta, pide un análisis o dile algo que deba recordar…"></textarea>
+              <button class="btn" type="submit" id="b-enviar">Enviar</button>
+              <button class="btn sec" type="button" id="b-parar" data-accion="chat-parar" hidden>Detener</button></div>
+            <div class="opciones"><label class="chk"><input type="checkbox" id="chk-profundo"${S.profundo ? ' checked' : ''}> Análisis profundo (más lento)</label>
+              <button class="enlace-btn" type="button" data-accion="chat-limpiar">Nueva conversación</button>
+              <span id="estado-ia"></span></div>
+          </form>
+        </section>
+        <div class="lado">
+          <section class="panel"><div class="panel-c"><h2>Memoria</h2><span class="bajada">Decisiones y contexto que AerIA tiene en cuenta siempre.</span></div>
+            <div id="memoria"></div>
+            <form class="form-nota" id="f-nota"><label class="sr" for="in-nota">Nueva nota</label><input id="in-nota" placeholder="Ej.: La meta B2B de noviembre es $6M"><button class="btn sm" type="submit">Guardar</button></form></section>
+          <section class="panel"><div class="panel-c"><h2>Lo que AerIA lee</h2></div><div id="fuentes-ia"></div></section>
+        </div></div>`;
+    }
+    pintarMensajes(); pintarMemoria(); pintarFuentes(); pintarAvisoIA();
+  }
+  function pintarAvisoIA() {
+    const a = $('#aviso-ia'), e = $('#estado-ia');
+    if (!a) return;
+    const txt = {
+      cargando: '', lista: '',
+      no: 'La conversación con AerIA funciona cuando abres esta página en claude.ai con tu cuenta. Aquí puedes ver todo el análisis; para preguntarle, ábrela desde claude.ai.',
+      denegada: 'AerIA no tiene permiso para usar Claude en esta vista. Puedes permitirlo la próxima vez que abras la página.',
+    }[S.ia] || '';
+    a.innerHTML = txt ? '<div class="aviso">' + esc(txt) + '</div>' : '';
+    if (e) e.textContent = S.ia === 'lista' ? (S.tools ? 'Con acceso a ' + S.tools + ' herramientas de datos' : 'Responde con el resumen de datos') : S.ia === 'cargando' ? 'Conectando…' : '';
+    const b = $('#b-enviar'); if (b) b.disabled = S.ia !== 'lista' || S.enCurso;
+  }
+  function pintarMensajes() {
+    const c = $('#mensajes'); if (!c) return;
+    if (!S.chat.length) {
+      c.innerHTML = `<div class="vacio-chat"><div class="ceja"><span class="iso tinta chico" aria-hidden="true"></span>AerIA</div>
+        <p>Conozco tus finanzas de ${esc(I.pasado.etiqueta)}, los cursos publicados, las cotizaciones, las licitaciones abiertas y el plan 2027. Pregúntame lo que necesites para dirigir Aéreo: te respondo con cifras, te digo de dónde salen y qué haría yo.</p>
+        <div class="chips">${SUGERENCIAS.map(q => `<button class="chip" type="button" data-accion="preguntar" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div></div>`;
+      return;
+    }
+    c.innerHTML = S.chat.map((m, i) => m.role === 'user'
+      ? `<div class="msj yo">${esc(m.content)}</div>`
+      : `<div class="msj aeria${S.enCurso && i === S.chat.length - 1 ? ' pensando' : ''}"><span class="quien"><span class="iso" aria-hidden="true"></span>AerIA${m.profundo ? ' · análisis profundo' : ''}</span>
+          <span class="herr">${esc(m.herr || '')}</span><div class="md">${m.content ? md(m.content) : ''}</div>${m.error ? '<p class="aviso">' + esc(m.error) + '</p>' : ''}</div>`).join('');
+  }
+  function pintarMemoria() {
+    const c = $('#memoria'); if (!c) return;
+    c.innerHTML = S.notas.length ? S.notas.slice().reverse().map(n => `<div class="nota-mem"><span>${esc(n.texto)}<small>${esc(F.fCorta((n.fecha || '').slice(0, 10)))}</small></span><button type="button" data-accion="nota-borrar" data-id="${esc(n.id)}" aria-label="Borrar nota">×</button></div>`).join('')
+      : '<p class="nota-panel" style="padding-top:12px">Aún no hay notas. Dile a AerIA «recuerda que…» o escribe una aquí.</p>';
+    if (!S.db) c.insertAdjacentHTML('beforeend', '<p class="nota-panel">Se guarda solo en este navegador.</p>');
+  }
+  function pintarFuentes() {
+    const c = $('#fuentes-ia'); if (!c) return;
+    const Q = S.cot || D0.cotizaciones;
+    const f = [
+      ['Pasado', 'Finanzas ' + I.pasado.etiqueta, 'Cartolas, SII y Mercado Pago · corte ' + F.fCorta(I.pasado.fechaCorte)],
+      ['Presente', 'Cursos de aereo.cl', D0.cursos.nivel1.length + ' fechas N1 y ' + D0.cursos.niveles23.length + ' N2+N3 · commit ' + (D0.cursos.commit || '?').split(' ')[0]],
+      ['Presente', 'Cotizaciones', (Q.items && Q.items.length ? Q.items.length + ' importadas' : 'Agregado') + ' · corte ' + F.fCorta(I.cot.corte)],
+      ['Presente', 'Licitaciones', D0.licitaciones.abiertas.length + ' abiertas al ' + (D0.licitaciones.generado_fuente || '').slice(0, 10)],
+      ['Futuro', 'Plan de rentabilidad 2027', D0.plan.secciones.length + ' secciones · modelo v4 del 8-oct'],
+      ['Memoria', 'Notas', S.notas.length + ' guardadas'],
+    ];
+    c.innerHTML = f.map(([t, n, d]) => `<div class="fuente"><span class="f-t">${t}</span><span>${esc(n)}</span><span class="f-d">${esc(d)}</span></div>`).join('');
+  }
+
+  const ERRORES = {
+    rate_limited: 'Demasiadas consultas seguidas o llegaste a tu límite de uso. Intenta de nuevo en un rato.',
+    session_expired: 'Tu sesión de claude.ai expiró. Vuelve a iniciar sesión y pregunta otra vez.',
+    refused: 'Claude no respondió a esa pregunta. Reformúlala.',
+    prompt_too_large: 'La conversación quedó demasiado larga. Empieza una nueva conversación.',
+    empty_completion: 'No llegó respuesta. Pregunta de otra forma o pide menos a la vez.',
+    upstream_error: 'Se cortó la conexión con Claude. Puedes volver a preguntar.',
+  };
+  async function preguntar(texto) {
+    texto = String(texto || '').trim();
+    if (!texto) return;
+    if (S.tab !== 'hablar') irA('hablar');
+    if (S.ia !== 'lista' || S.enCurso) { pintarAvisoIA(); const t = $('#in-chat'); if (t && S.ia !== 'lista') t.value = texto; return; }
+    S.chat.push({ role: 'user', content: texto });
+    const resp = { role: 'assistant', content: '', herr: 'Pensando…', profundo: S.profundo };
+    S.chat.push(resp);
+    S.enCurso = true; S.ctl = new AbortController();
+    $('#b-parar').hidden = false; pintarAvisoIA(); pintarMensajes(); $('#iso-banda').classList.add('gira');
+    $('#mensajes').lastElementChild.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    const contexto = REGLAS + '\n\n' + M.resumenParaIA(datos(), I);
+    let turnos = S.chat.slice(0, -1).filter(m => m.content).map(m => ({ role: m.role, content: m.content }));
+    while (turnos.length > 16) turnos = turnos.slice(2);
+    while (turnos.length && turnos[0].role !== 'user') turnos.shift();
+    const entrada = [{ role: 'user', content: contexto }].concat(turnos);
+    const opciones = { signal: S.ctl.signal, modelTier: S.profundo ? 'complex' : 'default', onText: ({ text }) => { resp.content = text; resp.herr = ''; actualizarUltimo(); } };
+    const tools = herramientas();
+    if (tools.length) opciones.tools = tools; else opciones.cache = false;
+    try {
+      const r = await S.sample(entrada, opciones);
+      resp.content = r.text; resp.herr = r.truncated ? 'Respuesta cortada por largo: pide menos a la vez.' : '';
+    } catch (e) {
+      resp.content = e && e.text ? e.text : resp.content;
+      resp.herr = '';
+      if (e && e.code === 'cancelled') resp.herr = 'Detenida.';
+      else if (e && ['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(e.code)) { S.ia = 'denegada'; resp.error = 'AerIA no tiene permiso para usar Claude en esta vista.'; }
+      else if (e && e.code === 'tools_unavailable') { S.tools = 0; resp.error = 'Esta vista no permite que AerIA consulte el detalle. Vuelve a preguntar: responderá con el resumen.'; }
+      else resp.error = ERRORES[e && e.code] || ERRORES.upstream_error;
+      if (!resp.content) resp.content = '';
+    } finally {
+      S.enCurso = false; S.ctl = null;
+      $('#b-parar').hidden = true; $('#iso-banda').classList.remove('gira');
+      if (!resp.content && !resp.error && !resp.herr) S.chat.pop();
+      LS.set('chat', S.chat.slice(-40).map(m => ({ role: m.role, content: m.content, profundo: m.profundo })));
+      pintarMensajes(); pintarAvisoIA();
+    }
+  }
+  function actualizarUltimo() {
+    const ult = $('#mensajes .msj.aeria:last-child'); const m = S.chat[S.chat.length - 1];
+    if (!ult || !m) return pintarMensajes();
+    $('.md', ult).innerHTML = md(m.content); $('.herr', ult).textContent = m.herr || '';
+  }
+
+  /* ========================================================================
+     EVENTOS
+     ======================================================================== */
+  function pintar() {
+    recalcular(); renderBanda();
+    ({ mando: renderMando, pasado: renderPasado, presente: renderPresente, futuro: renderFuturo, hablar: renderHablar })[S.tab]();
+    renderPie();
+  }
+
+  document.addEventListener('click', async ev => {
+    const t = ev.target.closest('[data-tab],[data-accion]');
+    if (!t) return;
+    if (t.dataset.tab && !t.dataset.accion) { irA(t.dataset.tab); return; }
+    const a = t.dataset.accion, id = t.dataset.id;
+    if (a === 'filtro-alertas') { S.filtroAlertas = t.dataset.valor; renderMando(); }
+    else if (a === 'resolver') {
+      const r = S.alertas[id] && S.alertas[id].estado === 'resuelta';
+      S.alertas = Object.assign({}, S.alertas); if (r) delete S.alertas[id]; else S.alertas[id] = { estado: 'resuelta', fecha: new Date().toISOString() };
+      S.abiertas.delete(id); pintar(); guardar('alertas');
+    } else if (a === 'preguntar') preguntar(t.dataset.q);
+    else if (a === 'preguntar-alerta') {
+      const al = I.alertas.find(x => x.id === id);
+      if (al) preguntar('Explícame la alerta «' + al.titulo + '»: qué significa para Aéreo, qué tan grave es y qué hago exactamente, paso a paso.');
+    } else if (a === 'filtro-lic') { S.filtroLic = t.dataset.valor; renderPresente(); }
+    else if (a === 'sim-set') { simEstado().b2b = Number(t.dataset.valor); const r = $('#sim-b2b'); if (r) r.value = S.sim.b2b; pintarSim(); }
+    else if (a === 'sim-escuela') { simEstado().escuela = t.dataset.valor; for (const b of $$('[data-accion="sim-escuela"]')) b.setAttribute('aria-pressed', String(b === t)); pintarSim(); }
+    else if (a === 'nota-borrar') { S.notas = S.notas.filter(n => n.id !== id); pintarMemoria(); pintarFuentes(); guardar('notas'); }
+    else if (a === 'viene-todo') { S.vieneTodo = true; $('#viene').innerHTML = vieneHtml(); }
+    else if (a === 'agenda-todas') { S.agendaTodas = true; $('#agenda').innerHTML = agendaHtml(); }
+    else if (a === 'chat-parar') { if (S.ctl) S.ctl.abort(); }
+    else if (a === 'chat-limpiar') { if (S.ctl) S.ctl.abort(); S.chat = []; LS.set('chat', []); pintarMensajes(); }
+    else if (a === 'cot-leer') { try { prepararCot(leerTexto($('#cot-texto').value), 'texto pegado'); } catch (e) { prepararCot([], 'texto'); } }
+    else if (a === 'cot-ia') {
+      const txt = $('#cot-texto').value.trim(); const msg = $('#cot-msg');
+      if (!txt) { msg.textContent = 'Pega primero el contenido de tu dashboard.'; return; }
+      msg.textContent = 'AerIA está ordenando las cotizaciones…';
+      try {
+        const arr = await S.sample.json('Convierte este export de un dashboard de cotizaciones de una empresa chilena en un JSON array de objetos {"cliente": string, "monto": number (pesos, sin puntos), "estado": string, "fecha": "AAAA-MM-DD" o "", "linea": string, "folio": string}. Una fila por cotización; ignora totales y encabezados. Responde solo el JSON.\n\n' + txt.slice(0, 40000), { modelTier: 'quick' });
+        prepararCot(mapear(Array.isArray(arr) ? arr : []), 'ordenado por AerIA');
+      } catch (e) { msg.textContent = e && e.code === 'invalid_json' ? 'AerIA no pudo leerlo como tabla. Prueba con el CSV del dashboard.' : (ERRORES[e && e.code] || 'No se pudo ordenar ahora.'); }
+    } else if (a === 'cot-guardar' && S.cotPrevia) {
+      S.cot = { fuente: 'Importado del dashboard (' + S.cotPrevia.origen + ')', corte: hoy(), extraido: new Date().toISOString(), notas: D0.cotizaciones.notas, items: S.cotPrevia.items };
+      S.cotPrevia = null; await guardar('cot'); pintar();
+    } else if (a === 'cot-borrar') { S.cot = null; S.cotPrevia = null; await guardar('cot'); pintar(); }
+  });
+  document.addEventListener('change', async ev => {
+    const t = ev.target;
+    if (t.dataset.accion === 'agenda') {
+      S.agenda = Object.assign({}, S.agenda);
+      if (t.checked) S.agenda[t.dataset.id] = { hecho: true, fecha: new Date().toISOString() }; else delete S.agenda[t.dataset.id];
+      $('#agenda').innerHTML = agendaHtml(); guardar('agenda');
+    } else if (t.dataset.accion === 'sim-palanca') {
+      const sim = simEstado(); sim.palancas = t.checked ? sim.palancas.concat([t.dataset.id]) : sim.palancas.filter(p => p !== t.dataset.id); pintarSim();
+    } else if (t.id === 'chk-profundo') S.profundo = t.checked;
+    else if (t.dataset.accion === 'cot-archivo' && t.files && t.files[0]) {
+      const f = t.files[0]; const txt = await f.text();
+      $('#cot-texto').value = txt.slice(0, 200000);
+      try { prepararCot(leerTexto(txt), f.name); } catch (e) { prepararCot([], f.name); }
+    }
+  });
+  document.addEventListener('input', ev => {
+    if (ev.target.id === 'sim-b2b') { simEstado().b2b = Number(ev.target.value); pintarSim(); }
+  });
+  document.addEventListener('toggle', ev => {
+    const d = ev.target; if (!(d instanceof HTMLDetailsElement) || !d.dataset.id) return;
+    if (d.open) S.abiertas.add(d.dataset.id); else S.abiertas.delete(d.dataset.id);
+  }, true);
+  document.addEventListener('submit', ev => {
+    ev.preventDefault();
+    if (ev.target.id === 'f-pregunta') { const i = $('#in-pregunta'); const q = i.value; i.value = ''; preguntar(q); }
+    else if (ev.target.id === 'f-chat') { const i = $('#in-chat'); const q = i.value; if (S.ia === 'lista' && !S.enCurso) i.value = ''; preguntar(q); }
+    else if (ev.target.id === 'f-nota') {
+      const i = $('#in-nota'); const txt = i.value.trim(); if (!txt) return;
+      S.notas = S.notas.concat([{ id: 'n' + Date.now().toString(36), texto: txt.slice(0, 600), fecha: new Date().toISOString() }]);
+      i.value = ''; pintarMemoria(); pintarFuentes(); guardar('notas');
+    }
+  });
+  document.addEventListener('keydown', ev => {
+    if (ev.target.id === 'in-chat' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('#f-chat').requestSubmit(); }
+  });
+
+  /* ========================================================================
+     ARRANQUE
+     ======================================================================== */
+  const inicial = (location.hash || '').replace('#', '');
+  if (['mando', 'pasado', 'presente', 'futuro', 'hablar'].includes(inicial)) S.tab = inicial;
+  irA(S.tab, false);
+  window.addEventListener('hashchange', () => {
+    const t = (location.hash || '').replace('#', '');
+    if (t !== S.tab && ['mando', 'pasado', 'presente', 'futuro', 'hablar'].includes(t)) irA(t);
+  });
+
+  if (window.claude && typeof window.claude.use === 'function') {
+    window.claude.use('sample').then(async s => {
+      S.sample = s;
+      if (!s) { S.ia = 'no'; pintarAvisoIA(); return; }
+      const lim = await s.limits().catch(() => null);
+      S.tools = lim && lim.tools ? Math.min(lim.tools.maxCount || 0, 9) : 0;
+      S.ia = 'lista'; pintarAvisoIA();
+      if (S.tab === 'presente') renderPresente();
+    }).catch(() => { S.ia = 'no'; pintarAvisoIA(); });
+    window.claude.use('db').then(db => {
+      if (!db) return;
+      S.db = db;
+      for (const [k, ruta] of Object.entries(DOCS)) {
+        db.doc(ruta).onSnapshot(snap => {
+          if (snap.metadata && snap.metadata.hasPendingWrites) return;
+          S[k] = deCuerpo(k, snap.exists ? snap.data() : null);
+          if (k === 'notas') { pintarMemoria(); pintarFuentes(); if (S.tab !== 'hablar') pintar(); }
+          else if (S.tab !== 'hablar') pintar();
+        }, e => console.warn('AerIA: suscripción', k, e && e.code));
+      }
+    });
+  } else { S.ia = 'no'; pintarAvisoIA(); }
+})();

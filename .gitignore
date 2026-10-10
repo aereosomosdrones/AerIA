@@ -1,0 +1,13 @@
+# Datos privados de Aéreo: cartolas, RUT, facturas, sueldos, plan 2027.
+# Este repositorio es PÚBLICO en GitHub: nada de esto puede subirse.
+# La copia de trabajo de estos datos vive dentro de la página AerIA publicada
+# (bloque <script id="aeria-datos">); ver CLAUDE.md para recuperarla.
+datos/privado/
+fuentes/
+dist/
+
+# Sistema y herramientas
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/

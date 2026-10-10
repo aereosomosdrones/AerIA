@@ -1,0 +1,182 @@
+{
+ "fuente": "aereo.cl · datos/cursos-fechas.js y datos/n23-fechas.js (repo aereo-web)",
+ "commit": "8d4cc5b 2026-10-08T16:32:37-03:00",
+ "extraido": "2026-10-10T16:24:16+00:00",
+ "precios_web": {
+  "nivel1": 149000,
+  "nivel23": 189000,
+  "pack": 299000
+ },
+ "meses_agotados_2026": [
+  3,
+  4,
+  5,
+  6,
+  7
+ ],
+ "nivel1": [
+  {
+   "inicio": "2026-09-02",
+   "fin": "2026-09-04",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6,
+   "extra": false
+  },
+  {
+   "inicio": "2026-09-09",
+   "fin": "2026-09-11",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6,
+   "extra": false
+  },
+  {
+   "inicio": "2026-09-23",
+   "fin": "2026-09-25",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6,
+   "extra": false
+  },
+  {
+   "inicio": "2026-09-30",
+   "fin": "2026-10-02",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6,
+   "extra": true
+  },
+  {
+   "inicio": "2026-10-07",
+   "fin": "2026-10-09",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6,
+   "extra": false
+  },
+  {
+   "inicio": "2026-10-14",
+   "fin": "2026-10-16",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6,
+   "extra": false
+  },
+  {
+   "inicio": "2026-10-21",
+   "fin": "2026-10-23",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6,
+   "extra": false
+  },
+  {
+   "inicio": "2026-10-28",
+   "fin": "2026-10-30",
+   "libres": 5,
+   "max": 6,
+   "vendidos": 1,
+   "extra": false
+  },
+  {
+   "inicio": "2026-11-04",
+   "fin": "2026-11-06",
+   "libres": 6,
+   "max": 6,
+   "vendidos": 0,
+   "extra": false
+  },
+  {
+   "inicio": "2026-11-11",
+   "fin": "2026-11-13",
+   "libres": 6,
+   "max": 6,
+   "vendidos": 0,
+   "extra": false
+  },
+  {
+   "inicio": "2026-11-18",
+   "fin": "2026-11-20",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6,
+   "extra": false
+  },
+  {
+   "inicio": "2026-11-25",
+   "fin": "2026-11-27",
+   "libres": 6,
+   "max": 6,
+   "vendidos": 0,
+   "extra": false
+  },
+  {
+   "inicio": "2026-12-02",
+   "fin": "2026-12-04",
+   "libres": 6,
+   "max": 6,
+   "vendidos": 0,
+   "extra": false
+  },
+  {
+   "inicio": "2026-12-16",
+   "fin": "2026-12-18",
+   "libres": 6,
+   "max": 6,
+   "vendidos": 0,
+   "extra": false
+  }
+ ],
+ "niveles23": [
+  {
+   "inicio": "2026-10-05",
+   "fin": "2026-10-06",
+   "libres": 1,
+   "max": 6,
+   "vendidos": 5
+  },
+  {
+   "inicio": "2026-10-19",
+   "fin": "2026-10-20",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6
+  },
+  {
+   "inicio": "2026-10-26",
+   "fin": "2026-10-27",
+   "libres": 3,
+   "max": 6,
+   "vendidos": 3
+  },
+  {
+   "inicio": "2026-11-09",
+   "fin": "2026-11-10",
+   "libres": 6,
+   "max": 6,
+   "vendidos": 0
+  },
+  {
+   "inicio": "2026-11-23",
+   "fin": "2026-11-24",
+   "libres": 0,
+   "max": 6,
+   "vendidos": 6
+  },
+  {
+   "inicio": "2026-12-07",
+   "fin": "2026-12-08",
+   "libres": 6,
+   "max": 6,
+   "vendidos": 0
+  },
+  {
+   "inicio": "2026-12-21",
+   "fin": "2026-12-22",
+   "libres": 6,
+   "max": 6,
+   "vendidos": 0
+  }
+ ]
+}
