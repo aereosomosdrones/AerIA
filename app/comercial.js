@@ -573,7 +573,7 @@
     for (const q of ab.filter(q => q.seguimientoVencido || (q.diasSinContacto != null && q.diasSinContacto > 10 && !esFecha(q.proximo_seguimiento)) || (esFecha(q.proximo_seguimiento) && q.proximo_seguimiento <= sumarDias(hoy, 2)))
       .sort((a, b) => prio(a) - prio(b)).slice(0, 6)) {
       out.push({ id: 'com-seg-' + q.id + '-' + (esFecha(q.proximo_seguimiento) ? q.proximo_seguimiento : 'c' + q.fechaContacto), cuando: q.seguimientoVencido || q.proximo_seguimiento <= hoy ? 'hoy' : 'esta semana', foco: 'comercial', prioridad: q.monto >= 1e6 ? 0 : 1,
-        titulo: 'Seguimiento a ' + (q.cliente || 'cliente') + (q.monto ? ' por ' + mm(q.monto) : '') + (q.descripcion ? ' (' + corto(q.descripcion, 40) + ')' : ''),
+        titulo: 'Seguimiento a ' + (q.cliente || 'cliente') + (q.monto ? ' por ' + mm(q.monto) : '') + (q.descripcion ? ' · ' + corto(q.descripcion, 40) : ''),
         por: q.estadoLabel + (q.diasSinContacto != null ? ' · último contacto hace ' + q.diasSinContacto + ' días' : '') + (q.proximo_seguimiento ? ' · tocaba el ' + q.proximo_seguimiento : ''),
         cotizacion: q.id });
     }
