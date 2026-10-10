@@ -181,7 +181,7 @@ prueba('líneas: cursos institucionales no van a la escuela', () => {
   igual(C.leerLinea('', 'Curso Nivel 1 para 8 funcionarios Municipalidad Ficticia'), 'curso_cerrado');
   igual(C.leerLinea('Curso', 'Pack N1+N2 para 6 funcionarios'), 'curso_cerrado');
   igual(C.leerLinea('', 'Capacitación Nivel 1 in situ, servicio agrícola ficticio'), 'curso_cerrado');
-  igual(C.leerLinea('', 'Curso de vuelo nocturno para Carabineros'), 'curso_cerrado');
+  igual(C.leerLinea('', 'Curso de vuelo nocturno para la Brigada Ficticia'), 'curso_cerrado');
   igual(C.leerLinea('Servicios', 'Vuelo de inspección y curso de uso del informe'), 'servicios');
   igual(C.leerLinea('', '1 cupo Nivel 1'), 'escuela');
 });
@@ -211,15 +211,30 @@ prueba('deshacer: pila, sin rehacer y sin borrar la creación', () => {
   igual(C.deshacer(q, t(6)), null);
   igual(q.cliente, 'Empresa Ficticia');
 });
-prueba('deshacer lo que hizo AerIA en una respuesta (dos cambios a la misma cotización)', () => {
+prueba('deshacer lo que hizo una respuesta del chat (dos cambios a la misma cotización), sin tocar otra respuesta', () => {
+  const R1 = { resp: '2026-10-10T10:00:00Z' }, R2 = { resp: '2026-10-10T10:03:00Z' };
   let q = C.aplicar(null, { cliente: 'Empresa Ficticia', monto: 1000000, estado: 'negociacion' }, 'usuario', '', '2026-10-01T10:00:00Z').cotizacion;
-  q = C.aplicar(q, { estado: 'ganada' }, 'AerIA (chat)', '', '2026-10-10T10:00:01Z').cotizacion;
-  q = C.aplicar(q, { ultimo_contacto: '2026-10-10', proximo_seguimiento: '2026-10-17' }, 'AerIA (chat)', 'Seguimiento: llamé', '2026-10-10T10:00:02Z').cotizacion;
-  const r = C.deshacerPor(q, 'AerIA (chat)', '2026-10-10T10:00:00Z', '2026-10-10T10:05:00Z');
+  q = C.aplicar(q, { estado: 'ganada' }, 'AerIA (chat)', '', '2026-10-10T10:00:01Z', R1).cotizacion;
+  q = C.aplicar(q, { ultimo_contacto: '2026-10-10', proximo_seguimiento: '2026-10-17' }, 'AerIA (chat)', 'Seguimiento: llamé', '2026-10-10T10:00:02Z', R1).cotizacion;
+  const r = C.deshacerPor(q, R1.resp, '2026-10-10T10:05:00Z');
   cierto(r.cotizacion, 'no deshizo');
   igual(r.cotizacion.estado, 'negociacion'); igual(r.cotizacion.fecha_cierre, ''); igual(r.cotizacion.proximo_seguimiento, '');
-  const q2 = C.aplicar(q, { monto: 5 }, 'usuario', '', '2026-10-10T10:01:00Z').cotizacion;
-  cierto(C.deshacerPor(q2, 'AerIA (chat)', '2026-10-10T10:00:00Z', '2026-10-10T10:05:00Z').conflicto, 'debía avisar el conflicto');
+  cierto(C.deshacerPor(r.cotizacion, R1.resp, '2026-10-10T10:06:00Z').nada, 'un reintento no debe contar como conflicto');
+  const q2 = C.aplicar(q, { monto: 2000000 }, 'AerIA (chat)', '', '2026-10-10T10:03:01Z', R2).cotizacion;
+  cierto(C.deshacerPor(q2, R1.resp, '2026-10-10T10:05:00Z').conflicto, 'otra respuesta cambió después: conflicto');
+  const r2 = C.deshacerPor(q2, R2.resp, '2026-10-10T10:04:00Z');
+  const r1 = C.deshacerPor(r2.cotizacion, R1.resp, '2026-10-10T10:05:00Z');
+  cierto(r1.cotizacion, 'deshecha la 2ª respuesta, la 1ª ya se puede deshacer');
+  igual(r1.cotizacion.estado, 'negociacion'); igual(r1.cotizacion.monto, 1000000);
+  const q3 = C.aplicar(q, { monto: 5 }, 'usuario', '', '2026-10-10T10:01:00Z').cotizacion;
+  cierto(C.deshacerPor(q3, R1.resp, '2026-10-10T10:05:00Z').conflicto, 'una persona cambió después: conflicto');
+});
+prueba('deshacer no inventa la fecha de cierre', () => {
+  let q = C.aplicar(null, { cliente: 'Empresa Ficticia', monto: 1000000, estado: 'ganada' }, 'importación', '', '2026-10-01T10:00:00Z').cotizacion;
+  q = C.aplicar(q, { estado: 'perdida' }, 'usuario', '', '2026-10-05T10:00:00Z').cotizacion;
+  igual(q.fecha_cierre, '2026-10-05');
+  q = C.deshacer(q, '2026-10-06T10:00:00Z');
+  igual(q.estado, 'ganada'); igual(q.fecha_cierre, '');
 });
 prueba('importar sin columna de estado ni monto no pisa lo existente', () => {
   const ex = [C.aplicar(null, { folio: '101', cliente: 'Empresa Uno', monto: 1200000, estado: 'ganada', linea: 'aoc', fecha_cierre: '2026-09-20' }, 'usuario', '', '2026-09-01T10:00:00Z').cotizacion];
@@ -309,6 +324,62 @@ prueba('ganadas con confianza baja o sin monto no piden factura', () => {
     { folio: 'U2', cliente: 'Empresa Diez', monto: 0, estado: 'ganada', fecha_cierre: '2026-09-20' }], HOY, {});
   cierto(!R6.alertas.some(a => a.id.startsWith('com-facturar-')), 'no debía pedir factura');
   cierto(!R6.acciones.some(a => a.id.startsWith('com-fac-')), 'no debía haber acción de factura');
+});
+
+console.log('Casos de la segunda revisión');
+prueba('instituciones distintas de la misma ciudad no se unen', () => {
+  const ex = [C.aplicar(null, { id: 'sii-40', cliente: 'Ilustre Municipalidad de Ciudad Alfa', monto: 1200000, estado: 'ganada', factura_folio: '40', fecha_cierre: '2026-09-02' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion,
+    C.aplicar(null, { id: 'plan-x', cliente: 'Municipalidad de Ciudad Beta', monto: 0, estado: 'negociacion' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion];
+  const c = C.conjuntos('N°;Cliente;Monto;Estado;Fecha cierre\n301;Universidad de Ciudad Alfa;1.200.000;Ganada;01-09-2026\n302;Gobierno Regional de Ciudad Beta;4.800.000;Ganada;01-09-2026\n303;Cuerpo de Bomberos de Ciudad Alfa;1.200.000;Ganada;01-09-2026\n')[0];
+  const p = C.planImportacion(C.mapear(c.filas, c.mapeo, 'prueba'), ex);
+  igual(p.crear.length, 3); igual(p.parecidas.length, 0);
+  igual(C.parecido('Universidad de Ciudad Alfa', 'Municipalidad de Ciudad Alfa'), 0);
+  igual(C.parecido('I. Municipalidad de Ciudad Alfa', 'Municipalidad de Ciudad Alfa'), 1);
+});
+prueba('el orden de las filas no cambia el resultado: primero las exactas', () => {
+  const ex = [C.aplicar(null, { id: 'sii-31', cliente: 'Empresa Uno SpA', monto: 1000000, estado: 'ganada', factura_folio: '31', fecha_cierre: '2026-09-21' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion];
+  const c = C.conjuntos('N°;Cliente;Monto;Estado;Factura;Fecha cierre\n40;Empresa Uno;1.000.000;Ganada;;20-09-2026\n15;Empresa Uno;1.000.000;Ganada;31;20-09-2026\n')[0];
+  const p = C.planImportacion(C.mapear(c.filas, c.mapeo, 'prueba'), ex);
+  igual(p.actualizar.length, 1); igual(p.actualizar[0].como, 'exacta'); igual(p.actualizar[0].cambios.folio, '15');
+  igual(p.crear.map(q => q.folio), ['40']);
+});
+prueba('un aparte con sufijo se reencuentra al reimportar (no se duplica ni se pisa)', () => {
+  const ex = [C.limpiar({ folio: '15', cliente: 'Empresa Uno', monto: 100, estado: 'enviada' })];
+  const fila = () => C.mapear(C.conjuntos('N°;Cliente;Monto;Estado\n15;Empresa Dos;2.500.000;En negociación\n')[0].filas, { folio: 'N°', cliente: 'Cliente', monto: 'Monto', estado: 'Estado' }, 'prueba');
+  const p1 = C.planImportacion(fila(), ex);
+  igual(p1.crear.length, 1);
+  const creada = C.aplicar(null, p1.crear[0], 'importación', '', '2026-10-01T10:00:00Z').cotizacion;
+  const p2 = C.planImportacion(fila(), ex.concat([creada]));
+  igual(p2.crear.length, 0); igual(p2.iguales, 1);
+});
+prueba('una ganada con ciclo largo se reconoce por la fecha de cierre', () => {
+  const ex = [C.aplicar(null, { id: 'sii-50', cliente: 'Empresa Delta SpA', monto: 1200000, estado: 'ganada', factura_folio: '50', fecha_cierre: '2026-08-25' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion];
+  const c = C.conjuntos('N°;Cliente;Monto;Estado;Fecha;Fecha cierre\n9;Empresa Delta;1.200.000;Ganada;10-03-2026;20-08-2026\n')[0];
+  const p = C.planImportacion(C.mapear(c.filas, c.mapeo, 'prueba'), ex);
+  igual(p.crear.length, 0); igual(p.actualizar[0].id, 'sii-50');
+});
+prueba('tipo de monto: lo que va pegado al número', () => {
+  igual(C.leerTipoMonto('$1.200.000 neto ($1.428.000 con IVA)'), 'neto');
+  igual(C.leerTipoMonto('$1.200.000 + IVA (total $1.428.000 IVA incluido)'), 'neto');
+  igual(C.leerTipoMonto('Neto $1.200.000 / Bruto $1.428.000'), 'neto');
+  igual(C.leerTipoMonto('$1.428.000 IVA incluido'), 'con_iva');
+  igual(C.leerMonto('1 200 000'), 1200000);
+  igual(C.leerMonto('2 cupos 298.000'), 2);
+});
+prueba('servicios con palabras de curso siguen siendo servicios', () => {
+  igual(C.leerLinea('', 'Pack de 4 vuelos de inspección de techumbre'), 'servicios');
+  igual(C.leerLinea('', 'Piloto y dron para filmación de evento'), 'servicios');
+  igual(C.leerLinea('', 'Entrenamiento de pilotos de la empresa'), 'curso_cerrado');
+});
+prueba('estados pendientes no son pérdidas; ganada esperando OC es ganada', () => {
+  igual(C.leerEstado('Sin adjudicar'), 'enviada');
+  igual(C.leerEstado('Aún no aprobada'), 'enviada');
+  igual(C.leerEstado('No confirmada aún'), 'enviada');
+  igual(C.leerEstado('Ganada, pendiente de OC'), 'ganada');
+});
+prueba('«Total Chile SpA» con estado es un cliente; la fila «Total» sola no', () => {
+  const c = C.conjuntos('Cliente;Monto;Estado\nTotal Ficticia SpA;1.000.000;Enviada\nTotal;1.000.000;\n')[0];
+  igual(C.mapear(c.filas, c.mapeo).map(q => q.cliente), ['Total Ficticia SpA']);
 });
 
 console.log('\n' + ok + ' pruebas bien, ' + mal + ' con error');

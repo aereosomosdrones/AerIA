@@ -27,6 +27,7 @@
       if (!Rc) { v.innerHTML = '<p class="panel-b mudo">El módulo comercial no está disponible en esta versión.</p>'; return; }
       // un cambio que llega de la base repinta todo: se conserva el foco, lo escrito y el importador en curso
       const act = document.activeElement, idAct = act && act.id && v.contains(act) ? act.id : '';
+      const filaAct = act && act.classList && act.classList.contains('fila-cot') && v.contains(act) ? act.dataset.id : '';
       const sel = idAct && typeof act.selectionStart === 'number' ? [act.selectionStart, act.selectionEnd] : null;
       const impVivo = L.imp && L.imp.guardando ? $('#panel-importar') : null;
       const conectado = ctx.M.dashboardConectado(Rc);
@@ -69,6 +70,7 @@
         <section class="panel" id="panel-importar"${L.imp ? '' : ' hidden'}>${L.imp ? importadorHtml() : ''}</section>`;
       if (impVivo) $('#panel-importar').replaceWith(impVivo);
       graficoPronostico($('#g-pronostico'), Rc);
+      if (filaAct) { const f = $$('.fila-cot').find(r => r.dataset.id === filaAct); if (f) f.focus({ preventScroll: true }); }
       if (idAct) {
         const el = document.getElementById(idAct);
         if (el) { el.focus({ preventScroll: true }); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch (e) { /* no todos los campos tienen selección */ } }
@@ -200,9 +202,12 @@
     /* ---------------- editor ---------------- */
     const FONDO = 'body > header, body > nav, body > main, body > footer';
     function abrirEditor(id) {
+      // una cotización que ya no existe (borrada por otro o deshecha) no abre nada
+      if (id && id !== 'nueva' && !ctx.cotizaciones().some(q => q.id === id)) { ctx.avisar('Esa cotización ya no existe.'); return; }
       if (!L.editor) L.volver = document.activeElement;
       L.editor = id || 'nueva'; L.borrar = false;
       pintarEditor();
+      if (!L.editor || !$('#modal-com')) return;
       for (const el of $$(FONDO)) el.inert = true;
       const m = $('#modal-com');
       if (m) { const f = L.editor === 'nueva' ? $('#ce-cliente') : $('#ce-titulo'); if (f) f.focus(); }

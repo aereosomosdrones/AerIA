@@ -672,6 +672,8 @@ Abajo está tu lectura actual de la empresa.`;
     const anotarCambio = (q, tipo, cambios) => { if (resp) (resp.cambios = resp.cambios || []).push({ id: q.id, cliente: q.cliente, tipo, campos: Object.keys(cambios || {}) }); };
     // si el usuario pulsó «Detener», no se escribe nada más
     const vigente = () => { if (signal && signal.aborted) throw new Error('El usuario detuvo la respuesta: no hice el cambio.'); };
+    // cada entrada del historial queda marcada con la respuesta que la hizo: «Deshacer estos cambios» revierte solo esas
+    const marca = resp && resp.inicio ? { resp: resp.inicio } : undefined;
     const EDITABLES = ['estado', 'monto', 'probabilidad', 'fecha_cotizacion', 'fecha_cierre_estimada', 'fecha_cierre', 'fecha_ejecucion', 'proximo_seguimiento', 'ultimo_contacto', 'factura_folio', 'cobrada', 'motivo_perdida', 'descripcion', 'contacto', 'email', 'telefono', 'linea', 'folio', 'cliente', 'rut'];
     const lista = [
       { name: 'cotizaciones_buscar', description: 'Busca en las cotizaciones del dashboard comercial de AerIA. Devuelve total, suma y hasta 40 cotizaciones (id, cliente, monto, estado, probabilidad, fechas, seguimiento, factura). Estados: abiertas, enviada, negociacion, ganada, perdida, vencida, todas.',
@@ -700,7 +702,7 @@ Abajo está tu lectura actual de la empresa.`;
           if (i.cambios && i.cambios.notas_agregar) c.notas = [q.notas, hoy() + ': ' + i.cambios.notas_agregar].filter(Boolean).join('\n');
           if (!Object.keys(c).length) throw new Error('No indicaste campos válidos para cambiar.');
           vigente();
-          const r = C.aplicar(q, c, 'AerIA (chat)', i.nota || '', new Date().toISOString());
+          const r = C.aplicar(q, c, 'AerIA (chat)', i.nota || '', new Date().toISOString(), marca);
           if (!await guardarCot(r.cotizacion, signal)) throw new Error('No se pudo guardar el cambio.');
           anotarCambio(r.cotizacion, 'actualizada', r.cambios); return { id: q.id, cliente: q.cliente, cambios: r.cambios };
         } },
@@ -710,7 +712,7 @@ Abajo está tu lectura actual de la empresa.`;
           avance('Anotando el seguimiento…');
           const q = encontrar(i.id);
           vigente();
-          const r = C.aplicar(q, { ultimo_contacto: hoy(), proximo_seguimiento: i.proximo_seguimiento || q.proximo_seguimiento }, 'AerIA (chat)', 'Seguimiento: ' + String(i.que_paso).slice(0, 400), new Date().toISOString());
+          const r = C.aplicar(q, { ultimo_contacto: hoy(), proximo_seguimiento: i.proximo_seguimiento || q.proximo_seguimiento }, 'AerIA (chat)', 'Seguimiento: ' + String(i.que_paso).slice(0, 400), new Date().toISOString(), marca);
           if (!await guardarCot(r.cotizacion, signal)) throw new Error('No se pudo guardar el seguimiento.');
           anotarCambio(r.cotizacion, 'seguimiento', r.cambios); return { id: q.id, cliente: q.cliente, proximo_seguimiento: r.cotizacion.proximo_seguimiento };
         } },
@@ -722,7 +724,7 @@ Abajo está tu lectura actual de la empresa.`;
           const prov = C.limpiar(datosQ);
           if (cotizacionesActuales().some(x => x.id === prov.id)) datosQ.id = prov.id + '-' + Date.now().toString(36); else datosQ.id = prov.id;
           vigente();
-          const r = C.aplicar(null, datosQ, 'AerIA (chat)', 'Creada desde la conversación', new Date().toISOString());
+          const r = C.aplicar(null, datosQ, 'AerIA (chat)', 'Creada desde la conversación', new Date().toISOString(), marca);
           if (!await guardarCot(r.cotizacion, signal)) throw new Error('No se pudo guardar la cotización.');
           anotarCambio(r.cotizacion, 'creada', r.cambios); return resumenCot(C.normalizar(r.cotizacion, hoy(), 30));
         } },
@@ -838,35 +840,37 @@ Abajo está tu lectura actual de la empresa.`;
     return `<div class="cambios-ia"><b>AerIA ${m.deshecho ? 'había cambiado' : 'cambió'} en Comercial:</b><ul>${m.cambios.map(c => `<li>${txt[c.tipo] || c.tipo} <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(c.id)}">${esc(c.cliente || c.id)}</button>${c.campos && c.campos.length && c.tipo !== 'creada' ? ' (' + esc(c.campos.join(', ')) + ')' : ''}</li>`).join('')}</ul>
       ${m.deshecho ? '<span class="c-sub">Cambios deshechos.</span>' : `<button class="btn sm sec" type="button" data-accion="deshacer-ia" data-i="${i}">Deshacer estos cambios</button>`}</div>`;
   }
-  /* Deshace de una vez todo lo que AerIA cambió en esa respuesta, por cotización (aunque
-     haya tocado dos veces la misma). Si alguien la editó después, no la toca y lo avisa. */
+  /* Deshace de una vez lo que AerIA cambió en esa respuesta (las entradas del historial
+     marcadas con ella), aunque haya tocado dos veces la misma cotización. Si otra respuesta
+     o una persona la cambió después, no la toca y lo avisa. Lo ya deshecho queda anotado
+     en el mensaje (m.hechas): un reintento sigue con lo que faltó. */
   async function deshacerIA(i) {
     const m = S.chat[i]; if (!m || !m.cambios || m.deshecho || m.deshaciendo) return;
+    if (!m.inicio) { avisar('Este mensaje es de una versión anterior de AerIA: revisa los cambios en Comercial → historial de cada cotización.'); return; }
     m.deshaciendo = true;
-    const desde = m.inicio || '';
+    m.hechas = m.hechas || [];
     let conflictos = 0, fallas = 0;
-    const ids = Array.from(new Set(m.cambios.map(c => c.id)));
+    const ids = Array.from(new Set(m.cambios.map(c => c.id))).filter(id => !m.hechas.includes(id));
     for (const id of ids) {
       const actual = cotizacionesActuales().find(q => q.id === id);
-      if (!actual) continue;
-      if (m.cambios.some(c => c.id === id && c.tipo === 'creada')) {
+      if (!actual) { m.hechas.push(id); continue; }
+      const r = C.deshacerPor(actual, m.inicio, new Date().toISOString());
+      if (r.creada) {
         // creada en esta respuesta: deshacerla es borrarla, salvo que alguien más la haya editado
-        const ajenas = (actual.historial || []).some(h => h.por !== 'AerIA (chat)' && !h.deshecha && Object.keys(h.cambios || {}).length);
-        if (ajenas) conflictos++; else if (!await borrarCot(id)) fallas++;
-        continue;
-      }
-      const r = C.deshacerPor(actual, 'AerIA (chat)', desde, new Date().toISOString());
-      if (r.conflicto || r.creada) conflictos++;
-      else if (r.cotizacion && !await guardarCot(r.cotizacion)) fallas++;
+        const ajenas = (actual.historial || []).some(h => h.resp !== m.inicio && !h.deshecha && Object.keys(h.cambios || {}).length);
+        if (ajenas) conflictos++; else if (await borrarCot(id)) m.hechas.push(id); else fallas++;
+      } else if (r.conflicto) conflictos++;
+      else if (r.nada) m.hechas.push(id);
+      else if (await guardarCot(r.cotizacion)) m.hechas.push(id); else fallas++;
     }
     m.deshaciendo = false;
     m.deshecho = !conflictos && !fallas;
     guardarChat();
     pintarMensajes(); recalcular(); if (S.tab !== 'hablar') pintar();
-    avisar(conflictos ? 'Deshice lo que pude; ' + conflictos + (conflictos === 1 ? ' cotización la editó' : ' cotizaciones las editó') + ' alguien más después y no las toqué. Revísalas en Comercial.'
+    avisar(conflictos ? 'Deshice lo que pude; ' + conflictos + (conflictos === 1 ? ' cotización cambió' : ' cotizaciones cambiaron') + ' después (otra respuesta o alguien más) y no las toqué. Revísalas en Comercial.'
       : fallas ? 'No pude guardar ' + fallas + (fallas === 1 ? ' cambio' : ' cambios') + '. Intenta de nuevo.' : 'Listo: deshice los cambios de AerIA.');
   }
-  const guardarChat = () => LS.set('chat', S.chat.slice(-40).map(m => ({ role: m.role, content: m.content, profundo: m.profundo, cambios: m.cambios, deshecho: m.deshecho, inicio: m.inicio })));
+  const guardarChat = () => LS.set('chat', S.chat.slice(-40).map(m => ({ role: m.role, content: m.content, profundo: m.profundo, cambios: m.cambios, deshecho: m.deshecho, inicio: m.inicio, hechas: m.hechas })));
 
   function pintarMemoria() {
     const c = $('#memoria'); if (!c) return;

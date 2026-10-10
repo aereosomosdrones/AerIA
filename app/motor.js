@@ -509,7 +509,7 @@
   /* ---------- AGENDA: lo que AerIA te ordena hacer ---------- */
   function construirAgenda(D, X, alertas, hoy) {
     const items = [];
-    const add = (o) => { if (!items.some(i => i.id === o.id || i.titulo === o.titulo)) items.push(o); };
+    const add = (o) => { if (!items.some(i => i.id === o.id)) items.push(o); };
     const { porCobrar, lic, pasado } = X;
     for (const a of alertas) {
       if (a.id.startsWith('lic-') && a.nivel === 'alta') {

@@ -67,30 +67,50 @@
 
   /* ---------- lectura de valores sueltos (importación y edición) ---------- */
   /* Toma el primer número del texto (o el que sigue al «$»), así «$1.200.000 + IVA»,
-     «$1.200.000.-» o «Total: $1.200.000» se leen bien. */
+     «$1.200.000.-», «Total: $1.200.000» o «1 200 000» se leen bien. */
+  const textoMonto = v => plano(v).replace(/clp|pesos/g, ' ').replace(/\b(\d{1,3})((?: \d{3})+)\b(?![.,]\d)/g, (m, a, b) => a + b.replace(/ /g, ''));
+  function hallarMonto(p) {
+    const re = /(\d[\d.,]*)\s*(mm|millones|millon|mill|m|k|mil)?\b/g, pesos = p.indexOf('$');
+    let m, primero = null;
+    while ((m = re.exec(p))) { if (!primero) primero = m; if (pesos < 0 || m.index > pesos) return m; }
+    return primero;
+  }
   function leerMonto(v) {
     if (typeof v === 'number') return isFinite(v) ? Math.round(v) : 0;
-    const p = plano(v).replace(/clp|pesos/g, ' ');
-    if (!p) return 0;
-    const desde = p.indexOf('$') >= 0 ? p.indexOf('$') : 0;
-    const m = /(-?)\s*(\d[\d.,]*)\s*(mm|millones|millon|mill|m|k|mil)?\b/.exec(p.slice(desde).replace(/\$/g, ''));
+    const p = textoMonto(v);
+    if (!p.trim()) return 0;
+    const m = hallarMonto(p);
     if (!m) return 0;
-    let s = m[2].replace(/[.,]+$/, '');
-    const mult = !m[3] ? 1 : /^(k|mil)$/.test(m[3]) ? 1e3 : 1e6;
+    let s = m[1].replace(/[.,]+$/, '');
+    const mult = !m[2] ? 1 : /^(k|mil)$/.test(m[2]) ? 1e3 : 1e6;
     // «1.234.567» (miles con punto), «1,5» (decimal con coma), «1234567.00» (decimal con punto)
     if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) s = s.replace(/\./g, '').replace(',', '.');
     else if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s = s.replace(/,/g, '');
     else s = s.replace(',', '.');
-    const n = parseFloat(s) * (m[1] ? -1 : 1);
+    const n = parseFloat(s) * (/^\s*[-−]\s*\$?\s*\d/.test(p) ? -1 : 1);
     return isFinite(n) ? Math.round(n * mult) : 0;
   }
-  /* «+ IVA» o «neto» → neto; «IVA incluido» → con_iva; «exento» → exento */
+  /* El tipo lo dice el texto pegado al número leído: «$1.200.000 neto ($1.428.000 con IVA)»
+     es neto. Si no hay nada junto al número, lo que diga el texto completo (si es una sola cosa). */
+  const TIPOS_MONTO = [['con_iva', /iva incl|con iva|iva inc|bruto|c\/iva|total con/], ['neto', /\+\s*iva|mas iva|neto|s\/iva|sin iva|afecto/], ['exento', /exent/]];
   function leerTipoMonto(v) {
-    const s = plano(v);
-    if (/iva incl|con iva|iva inc|bruto|c\/iva/.test(s)) return 'con_iva';
-    if (/\+\s*iva|mas iva|neto|s\/iva|sin iva|afecto/.test(s)) return 'neto';
-    if (/exent/.test(s)) return 'exento';
-    return '';
+    const p = textoMonto(v), m = hallarMonto(p);
+    if (m) {
+      // la señal más cercana al número, antes o después
+      const despues = p.slice(m.index + m[0].length, m.index + m[0].length + 25).split(/\d/)[0];
+      const antes = p.slice(Math.max(0, m.index - 15), m.index).split(/\d/).pop();
+      let mejor = null;
+      for (const [k, re] of TIPOS_MONTO) {
+        const d = despues.search(re);
+        if (d >= 0 && (!mejor || d < mejor.d)) mejor = { k, d };
+        const g = new RegExp(re.source, 'g'); let x, fin = -1;
+        while ((x = g.exec(antes))) fin = x.index + x[0].length;
+        if (fin >= 0 && (!mejor || antes.length - fin < mejor.d)) mejor = { k, d: antes.length - fin };
+      }
+      if (mejor) return mejor.k;
+    }
+    const todos = TIPOS_MONTO.filter(([, re]) => re.test(p)).map(([k]) => k);
+    return todos.length === 1 ? todos[0] : '';
   }
   const MESES = { ene: 1, jan: 1, feb: 2, mar: 3, abr: 4, apr: 4, may: 5, jun: 6, jul: 7, ago: 8, aug: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12, dec: 12 };
   function fechaValida(y, m, d) {
@@ -133,11 +153,14 @@
     if (!s) return '';
     if (ESTADO[s]) return s;
     // primero las negaciones y las esperas: «No aprobada», «Rechazada», «Sin OC», «Pendiente de OC»
+    // «Aún no aprobada», «No confirmada aún», «Sin adjudicar»: todavía no se decide
+    if (/\b(aun|todavia)\s+no\b|\bno\s+\w+\s+(aun|todavia)\b|\b(sin|por)\s+(adjudicar|aprobar|confirmar|decidir|resolver)\b|pendiente de (aprobacion|adjudicacion|confirmacion|respuesta)/.test(s)) return 'enviada';
     if (/\b(no|sin)\s+(fue\s+)?(aprobad|ganad|confirmad|aceptad|adjudic|vendid|exito)/.test(s)) return 'perdida';
     if (/rechaz|desist|cancelad|anulad|descartad|declin|desiert|no acept|^lost/.test(s)) return 'perdida';
-    if (/adjudicad/.test(s)) return 'ganada';
+    // «Ganada, pendiente de OC» es ganada; «Pendiente de OC» sola, negociación
+    if (/adjudicad|ganad|aceptad|aprobad|vendid|confirmad/.test(s)) return 'ganada';
     if (/(espera|esperando|pendiente|aguardando|falta|sin|por recibir|solicitar?)\s+(de\s+)?(la\s+|una\s+)?(oc|o\.c\.?|orden de compra)\b/.test(s)) return 'negociacion';
-    if (/ganad|aceptad|aprobad|vendid|confirmad|orden de compra|\boc\b|ejecutad|pagad|cobrad|facturad|por facturar|a facturar|pendiente de pago|por cobrar|^won/.test(s)) return 'ganada';
+    if (/orden de compra|\boc\b|ejecutad|pagad|cobrad|facturad|por facturar|a facturar|pendiente de pago|por cobrar|^won/.test(s)) return 'ganada';
     if (/perdid/.test(s)) return 'perdida';
     if (/vencid|expirad|caducad|sin respuesta|congelad/.test(s)) return 'vencida';
     if (/negoci|seguimiento|revisi|evaluaci|ajuste|contraoferta|reuni|calient/.test(s)) return 'negociacion';
@@ -148,14 +171,17 @@
   /* Señales de que un curso es para una institución o empresa (curso cerrado, B2B)
      y no un cupo de persona en un curso abierto. */
   const INSTITUCIONAL = /funcionari|municipal|empresa|institucion|grupo|in.?company|cerrad|exclusiv|in situ|para \d+|\d+\s*(personas|participantes|alumnos|pilotos|funcionarios|trabajadores|colaboradores)|ministerio|gobierno|universidad|carabiner|ejercito|armada|bomber|minera|corporaci|fundaci|servicio (agricola|nacional|de salud)|\bspa\b|ltda|s\.a\./;
+  const SERVICIO = /termogra|fotogram|levantamiento|inspecci|ortofoto|ortomosaico|filmaci|video|lidar|topogra|mapeo|servicio|vuelo|registro aereo/;
+  const CURSO_FUERTE = /curso|capacitaci|nivel [123]|\bn[123]\b|credencial|in.?company/;
+  const CURSO_DEBIL = /piloto|taller|formaci|entrenamiento|instrucci|pack|cupo/;   // solo si no hay señal de servicio
   function clasificarLinea(p, contexto) {
     if (/sence|otec|franquicia/.test(p)) return 'sence';
     if (/\baoc\b|asesor|certificacion de operador|dan[\s-]?151|explotador/.test(p)) return 'aoc';
     if (/flota|airdata/.test(p)) return 'flota';
     if (/venta de (dron|equipo)|compra de (dron|equipo)|suministro|bateria|repuesto/.test(p)) return 'venta_equipos';
-    if (/curso|capacitaci|formaci|taller|in.?company|piloto|credencial|entrenamiento|instrucci|cupo|nivel [123]|\bn[123]\b|pack/.test(p))
+    if (CURSO_FUERTE.test(p) || (CURSO_DEBIL.test(p) && !SERVICIO.test(p)))
       return /cupo|curso abierto|nivel 1|\bn1\b|pack/.test(contexto) && !INSTITUCIONAL.test(contexto) ? 'escuela' : 'curso_cerrado';
-    if (/termogra|fotogram|levantamiento|inspecci|ortofoto|ortomosaico|filmaci|video|lidar|topogra|mapeo|servicio|vuelo|registro aereo/.test(p)) return 'servicios';
+    if (SERVICIO.test(p)) return 'servicios';
     return '';
   }
   function leerLinea(v, texto) {
@@ -228,14 +254,15 @@
     return c;
   }
   /* Aplica cambios y deja constancia en el historial */
-  function aplicar(actual, cambios, por, nota, ahoraISO) {
+  /* marca: datos extra para la entrada del historial (p. ej. {resp} = la respuesta del chat que hizo el cambio) */
+  function aplicar(actual, cambios, por, nota, ahoraISO, marca) {
     const base = actual ? Object.assign({}, actual) : {};
     const nueva = limpiar(Object.assign(base, cambios, { id: actual ? actual.id : cambios.id }));
-    // Fecha de cierre automática solo cuando una cotización existente PASA a ganada, perdida o vencida
-    if (actual && cambios.estado && actual.estado !== nueva.estado && ['ganada', 'perdida', 'vencida'].includes(nueva.estado) && !nueva.fecha_cierre) nueva.fecha_cierre = ahoraISO.slice(0, 10);
+    // Fecha de cierre automática solo cuando una cotización existente PASA a ganada, perdida o vencida (y no al deshacer)
+    if (actual && por !== 'deshacer' && cambios.estado && actual.estado !== nueva.estado && ['ganada', 'perdida', 'vencida'].includes(nueva.estado) && !nueva.fecha_cierre) nueva.fecha_cierre = ahoraISO.slice(0, 10);
     const dif = diferencias(actual, nueva);
     nueva.historial = (actual && actual.historial ? actual.historial : []).concat(
-      Object.keys(dif).length || nota ? [{ fecha: ahoraISO, por: por || 'usuario', cambios: dif, nota: nota || '' }] : []).slice(-60);
+      Object.keys(dif).length || nota ? [Object.assign({ fecha: ahoraISO, por: por || 'usuario', cambios: dif, nota: nota || '' }, marca || {})] : []).slice(-60);
     nueva.creada = actual && actual.creada ? actual.creada : ahoraISO;
     nueva.actualizada = ahoraISO;
     return { cotizacion: nueva, cambios: dif };
@@ -270,21 +297,19 @@
     const e = actual.historial[i];
     return revertir(actual, [i], 'Deshace el cambio del ' + String(e.fecha || '').slice(0, 16).replace('T', ' ') + ' (' + (e.por || '?') + ')', ahoraISO);
   }
-  /* Revierte de una vez todo lo que hizo «por» desde «desde» (p. ej. AerIA en una
-     respuesta del chat). Devuelve {cotizacion} o {conflicto} si alguien más cambió
-     la cotización después; {nada} si no hay cambios que revertir. */
-  function deshacerPor(actual, por, desde, ahoraISO) {
+  /* Revierte de una vez lo que hizo una respuesta del chat: las entradas del historial con
+     esa marca ({resp}). Devuelve {cotizacion}; {nada} si ya no queda nada suyo por revertir
+     (p. ej. un reintento); {conflicto} si después hubo cambios de otra respuesta o de una
+     persona; {creada} si la respuesta la creó (deshacer es borrarla). */
+  function deshacerPor(actual, resp, ahoraISO) {
     const h = actual.historial || [];
     const idx = [];
-    for (let i = h.length - 1; i >= 0; i--) {
-      const e = h[i];
-      if (e.deshecha || String(e.fecha || '') < desde) { if (String(e.fecha || '') < desde) break; continue; }
-      if (e.por !== por) { if (conCambios(e)) return { conflicto: true }; continue; }
-      if (conCambios(e)) idx.push(i);
-    }
+    h.forEach((e, i) => { if (e.resp === resp && !e.deshecha && conCambios(e)) idx.push(i); });
     if (!idx.length) return { nada: true };
+    // un «deshacer» solo revierte entradas que quedaron marcadas deshechas: el par se anula y no es conflicto
+    if (h.slice(idx[0]).some(e => e.resp !== resp && !e.deshecha && e.por !== 'deshacer' && conCambios(e))) return { conflicto: true };
     if (idx.some(i => esCreacion(h[i]))) return { creada: true };
-    return { cotizacion: revertir(actual, idx, 'Deshace ' + idx.length + (idx.length === 1 ? ' cambio' : ' cambios') + ' de ' + por, ahoraISO) };
+    return { cotizacion: revertir(actual, idx, 'Deshace ' + idx.length + (idx.length === 1 ? ' cambio' : ' cambios') + ' de ' + (h[idx[0]].por || 'AerIA'), ahoraISO) };
   }
 
   /* ---------- lectura enriquecida ---------- */
@@ -425,18 +450,31 @@
 
   /* ---------- nombres parecidos ----------
      Palabras distintivas en común sobre las del nombre MÁS LARGO: «Municipalidad de
-     San Antonio» y «… de San Bernardo» no calzan; «Empresa Uno» y «Empresa Uno SpA» sí. */
+     San Alfa» y «… de San Beta» no calzan; «Empresa Uno» y «Empresa Uno SpA» sí.
+     Además, si alguno de los dos nombra un tipo de institución (universidad,
+     municipalidad, bomberos…), los dos deben ser del mismo tipo: «Universidad de X» y
+     «Municipalidad de X» son clientes distintos aunque compartan la ciudad. */
   const VACIAS = new Set(['municipalidad', 'ilustre', 'i', 'de', 'del', 'la', 'las', 'los', 'el', 'y', 'spa', 'ltda', 'limitada', 'sa', 's', 'a', 'eirl', 'universidad', 'cuerpo', 'servicio', 'servicios', 'empresa', 'empresas', 'sociedad', 'comercial', 'ingenieria', 'chile', 'consultores', 'compania', 'san', 'santa', 'santo']);
   const fichas = t => Array.from(new Set(plano(t).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !VACIAS.has(w))));
+  const TIPOS_INST = [['universidad', /\buniversidad|\buniv\b/], ['municipalidad', /municipal|\bmuni\b|\bilustre\b|\bi\. ?m\./], ['gobierno', /gobierno regional|\bgore\b|delegaci/],
+    ['bomberos', /bomber/], ['salud', /^servicio de salud|hospital|cesfam|\bsalud\b/], ['educacion', /\bliceo|colegio|escuela\b|\binstituto\b|\bcft\b|\bip\b/],
+    ['policia', /carabiner|\bpdi\b|investigaciones/], ['ffaa', /ejercito|armada|fuerza aerea|\bfach\b/], ['ministerio', /ministerio|seremi|subsecretar/],
+    ['servicio', /^servicio (nacional|agricola|de vivienda|electoral|medico|civil|de impuestos)/], ['direccion', /^direccion/], ['corporacion', /corporaci/]];
+  const tiposDe = t => { const p = plano(t); return new Set(TIPOS_INST.filter(([, re]) => re.test(p)).map(([k]) => k)); };
+  function mismoTipo(a, b) {
+    const A = tiposDe(a), B = tiposDe(b);
+    if (!A.size && !B.size) return true;
+    return [...A].some(k => B.has(k));
+  }
   function parecido(a, b) {
     const A = new Set(fichas(a)), B = fichas(b);
-    if (!A.size || !B.length) return 0;
+    if (!A.size || !B.length || !mismoTipo(a, b)) return 0;
     return B.filter(w => A.has(w)).length / Math.max(A.size, B.length);
   }
   // todas las palabras distintivas del nombre más corto están en el otro («Empresa Alfa» ⊂ «Alfa Ingeniería Ambiental SpA»)
   function contenido(a, b) {
     const A = fichas(a), B = fichas(b);
-    if (!A.length || !B.length) return false;
+    if (!A.length || !B.length || !mismoTipo(a, b)) return false;
     const [corto2, largo] = A.length <= B.length ? [A, new Set(B)] : [B, new Set(A)];
     return corto2.every(w => largo.has(w)) && corto2.some(w => w.length >= 5);
   }
@@ -748,7 +786,8 @@
       q.origen = origen || 'importación';
       const o = limpiar(q);
       o._presentes = pres;
-      o._total = TOTAL.test(plano(primera)) || TOTAL.test(plano(o.cliente)) || TOTAL.test(plano(o.folio));
+      // fila de totales: dice «Total»/«Suma» y no trae estado reconocido ni descripción («Total Chile SpA, Enviada» sí es un cliente)
+      o._total = (TOTAL.test(plano(primera)) || TOTAL.test(plano(o.cliente)) || TOTAL.test(plano(o.folio))) && !leerEstado(q.estado) && !String(q.descripcion || '').trim();
       return o;
     }).filter(q => !q._total && (q.cliente || q.descripcion)).map(q => { delete q._total; return q; });
   }
@@ -757,6 +796,16 @@
      monto (±3 %, con o sin IVA) + fecha cercana: así lo sembrado desde el SII, el banco o
      el plan no se duplica al importar el dashboard. Solo compara los campos que venían. */
   const grupo = e => e === 'ganada' ? 'ganada' : (ESTADO[e] || ESTADO.enviada).abierta ? 'abierta' : 'cerrada';
+  /* Fechas comparables: cierre con cierre, cotización con cotización; si solo hay una de
+     cada, la cotización debe ser anterior al cierre y a menos de un año. */
+  function fechasCompatibles(n, e) {
+    if (esFecha(n.fecha_cierre) && esFecha(e.fecha_cierre)) return Math.abs(dias(n.fecha_cierre, e.fecha_cierre)) <= 120;
+    if (esFecha(n.fecha_cotizacion) && esFecha(e.fecha_cotizacion)) return Math.abs(dias(n.fecha_cotizacion, e.fecha_cotizacion)) <= 120;
+    const cot = esFecha(n.fecha_cotizacion) ? n.fecha_cotizacion : e.fecha_cotizacion;
+    const cie = esFecha(n.fecha_cierre) ? n.fecha_cierre : e.fecha_cierre;
+    if (esFecha(cot) && esFecha(cie)) { const d = dias(cot, cie); return d >= -15 && d <= 365; }
+    return true;
+  }
   function candidatoParecido(n, existentes, tomadas) {
     const pres = n._presentes || CAMPOS;
     let mejor = null;
@@ -769,46 +818,67 @@
       if (nombre < 0.6) continue;
       // el estado puede avanzar (abierta → ganada o perdida), no retroceder: una ganada no es una cotización abierta nueva
       if (pres.includes('estado') && grupo(e.estado) !== grupo(n.estado) && grupo(e.estado) !== 'abierta') continue;
-      const fn = n.fecha_cotizacion || n.fecha_cierre, fe = e.fecha_cotizacion || e.fecha_cierre;
-      if (esFecha(fn) && esFecha(fe) && Math.abs(dias(fn, fe)) > 120) continue;
+      if (!fechasCompatibles(n, e)) continue;
       const puntaje = nombre - (e.monto ? difMonto(n.monto, e.monto) : 0.5);
       if (!mejor || puntaje > mejor.puntaje) mejor = { e, puntaje };
     }
     return mejor && mejor.e;
   }
+  /* Qué crear y qué actualizar frente a lo que ya existe. Primera pasada: coincidencias
+     exactas (id, folio, folio de factura) de TODAS las filas. Segunda pasada: para las que
+     quedaron sueltas, cliente parecido + monto (±3 %, con o sin IVA) + fechas compatibles,
+     solo entre las existentes que nadie tomó. Así lo sembrado desde el SII, el banco o el
+     plan no se duplica, y el orden de las filas no cambia el resultado. Solo se comparan
+     los campos que venían en la fila. */
   function planImportacion(nuevas, existentes, opciones) {
     existentes = existentes || [];
     const unir = !opciones || opciones.unirParecidas !== false;
     const porId = new Map(existentes.map(q => [q.id, q]));
     const porClave = new Map(existentes.map(q => [claveDuplicado(q), q]));
     const porFactura = new Map(existentes.filter(q => q.factura_folio).map(q => [folioN(q.factura_folio), q]));
-    const crear = [], actualizar = [], parecidas = [], repetidas = [];
-    let iguales = 0;
-    const vistas = new Map(), tomadas = new Set();
+    const sufijo = n => n.id + '-' + hash(plano(n.cliente)).slice(0, 4);
+    const otroCliente = (e, n) => e.cliente && n.cliente && parecido(e.cliente, n.cliente) < 0.3 && !contenido(e.cliente, n.cliente) && !(n.rut && mismoRut(n.rut, e.rut));
+    const filas = [], vistas = new Map(), repetidas = [];
     for (const n0 of nuevas) {
       const n = Object.assign({}, n0);
-      const k = claveDuplicado(n);
-      const previa = vistas.get(k);
+      const k = claveDuplicado(n), previa = vistas.get(k);
       if (previa) {
         // misma clave en el mismo archivo: si es otro cliente, es otra cotización con el folio escrito parecido
-        if (previa.cliente && n.cliente && parecido(previa.cliente, n.cliente) < 0.6 && !contenido(previa.cliente, n.cliente)) { n.id = n.id + '-' + hash(plano(n.cliente)).slice(0, 4); repetidas.push(n); }
+        if (previa.cliente && n.cliente && parecido(previa.cliente, n.cliente) < 0.6 && !contenido(previa.cliente, n.cliente)) { n.id = sufijo(n); repetidas.push(n); }
         else continue;
-      }
-      vistas.set(k, n);
-      let e = porId.get(n.id) || porClave.get(k) || (n.factura_folio && porFactura.get(folioN(n.factura_folio))) || null;
-      let como = e ? 'exacta' : '';
-      // el id de AerIA (de un CSV exportado desde aquí) identifica sin dudas; un folio repetido con otro cliente no se pisa: se crea aparte
+      } else vistas.set(k, n);
+      filas.push(n);
+    }
+    // 1) coincidencias exactas
+    const tomadas = new Set(), par = new Map();
+    for (const n of filas) {
+      let e = porId.get(n.id) || porClave.get(claveDuplicado(n)) || (n.factura_folio && porFactura.get(folioN(n.factura_folio))) || null;
+      // el id de AerIA (de un CSV exportado desde aquí) identifica sin dudas; un folio repetido con otro cliente no se pisa
       const porIdAerIA = e && e.id === n.id && (n._presentes || []).includes('id');
-      if (e && !porIdAerIA && e.cliente && n.cliente && parecido(e.cliente, n.cliente) < 0.3 && !contenido(e.cliente, n.cliente) && !(n.rut && mismoRut(n.rut, e.rut))) {
-        n.id = n.id + '-' + hash(plano(n.cliente)).slice(0, 4); repetidas.push(n); e = null; como = '';
+      if (e && !porIdAerIA && otroCliente(e, n)) {
+        if (!repetidas.includes(n)) { n.id = sufijo(n); repetidas.push(n); }
+        e = porId.get(n.id) || null;   // el aparte de una importación anterior
       }
-      if (!e && unir) { e = candidatoParecido(n, existentes, tomadas); if (e) como = 'parecida'; }
-      if (e && tomadas.has(e.id)) { e = null; como = ''; }
-      if (!e) {
-        if (porId.has(n.id) || crear.some(c => c.id === n.id)) n.id = n.id + '-' + hash(JSON.stringify([n.cliente, n.monto, n.descripcion])).slice(0, 4);
+      if (e && !tomadas.has(e.id)) { tomadas.add(e.id); par.set(n, { e, como: 'exacta' }); }
+    }
+    // 2) parecidas, solo para las filas sueltas y entre las existentes libres
+    if (unir) for (const n of filas) {
+      if (par.has(n)) continue;
+      const e = candidatoParecido(n, existentes, tomadas);
+      if (e) { tomadas.add(e.id); par.set(n, { e, como: 'parecida' }); }
+    }
+    const crear = [], actualizar = [], parecidas = [];
+    let iguales = 0;
+    const ocupados = new Set(existentes.map(q => q.id));
+    for (const n of filas) {
+      const m = par.get(n);
+      if (!m) {
+        // nunca crear con un id que ya existe: se le agrega un sufijo estable
+        if (ocupados.has(n.id)) n.id = n.id + '-' + hash(JSON.stringify([plano(n.cliente), n.monto, plano(n.descripcion)])).slice(0, 4);
+        ocupados.add(n.id);
         crear.push(n); continue;
       }
-      tomadas.add(e.id);
+      const { e, como } = m;
       const pres = n._presentes || CAMPOS;
       const cambios = {};
       for (const c of CAMPOS) {
