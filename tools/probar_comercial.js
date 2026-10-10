@@ -15,8 +15,8 @@ console.log('Lectura de valores');
 prueba('montos chilenos', () => {
   igual(C.leerMonto('$1.234.567'), 1234567);
   igual(C.leerMonto('1.234.567,50'), 1234568);
-  igual(C.leerMonto('3,3M'), 3300000);
-  igual(C.leerMonto('3,3 MM'), 3300000);
+  igual(C.leerMonto('4,7M'), 4700000);
+  igual(C.leerMonto('4,7 MM'), 4700000);
   igual(C.leerMonto('450 mil'), 450000);
   igual(C.leerMonto('1234567.00'), 1234567);
   igual(C.leerMonto('1,234,567'), 1234567);
@@ -107,15 +107,15 @@ const lista = [
   { folio: 'A1', cliente: 'Empresa Uno', linea: 'curso_cerrado', monto: 1200000, estado: 'ganada', fecha_cotizacion: '2026-08-01', fecha_cierre: '2026-08-20' },
   { folio: 'A2', cliente: 'Muni Dos', linea: 'servicios', monto: 2000000, estado: 'ganada', fecha_cotizacion: '2026-09-01', fecha_cierre: '2026-10-02', factura_folio: '' },
   { folio: 'A3', cliente: 'Empresa Tres', linea: 'aoc', monto: 3000000, estado: 'negociacion', fecha_cotizacion: '2026-09-15', fecha_cierre_estimada: '2026-10-25', proximo_seguimiento: '2026-10-08' },
-  { folio: 'A4', cliente: 'Empresa Cuatro', linea: 'sence', monto: 2688000, estado: 'enviada', fecha_cotizacion: '2026-09-01' },
+  { folio: 'A4', cliente: 'Empresa Cuatro', linea: 'sence', monto: 2400000, estado: 'enviada', fecha_cotizacion: '2026-09-01' },
   { folio: 'A5', cliente: 'Empresa Cinco', linea: 'curso_cerrado', monto: 900000, estado: 'perdida', fecha_cotizacion: '2026-07-01', fecha_cierre: '2026-07-20' },
   { folio: 'A6', cliente: 'Persona Seis', linea: 'escuela', monto: 298000, estado: 'ganada', fecha_cotizacion: '2026-10-01', fecha_cierre: '2026-10-03' },
 ];
 const sii = [{ folio: 501, fecha: '2026-08-21', cliente: 'Empresa Uno SpA', monto: 1200000, estado: 'Cobrada', tipo: 'Factura exenta' }];
-const R = C.analizar(lista, HOY, { meta: 6078000, equilibrio: 5296000, minimo: 4000000, sii, siiCorte: '2026-09-30' });
+const R = C.analizar(lista, HOY, { meta: 5000000, equilibrio: 4500000, minimo: 3000000, sii, siiCorte: '2026-09-30' });
 prueba('totales, ganado y tasa de cierre', () => {
-  igual(R.abiertas.n, 2); igual(R.abiertas.monto, 5688000);
-  igual(Math.round(R.abiertas.ponderado), Math.round(3000000 * 0.6 + 2688000 * 0.3));
+  igual(R.abiertas.n, 2); igual(R.abiertas.monto, 5400000);
+  igual(Math.round(R.abiertas.ponderado), Math.round(3000000 * 0.6 + 2400000 * 0.3));
   igual(R.ganadas.monto, 3498000); igual(R.ganadas.mes, 2298000);
   igual(Math.round(R.tasa.monto * 1000), Math.round(3498000 / 4398000 * 1000));
   igual(Math.round(R.ciclo), Math.round((19 + 31 + 2) / 3));
@@ -132,16 +132,183 @@ prueba('cruce con el SII sugiere la factura de la venta sin folio', () => {
 });
 prueba('alertas comerciales y acciones', () => {
   const ids = R.alertas.map(a => a.id);
-  cierto(ids.includes('com-seguimientos'), 'falta seguimiento vencido');
-  cierto(ids.includes('com-frias'), 'falta cotización sin contacto');
-  cierto(ids.includes('com-facturar'), 'falta ganada sin factura');
+  cierto(ids.some(i => i.startsWith('com-seguimientos-')), 'falta seguimiento vencido');
+  cierto(ids.some(i => i.startsWith('com-frias-')), 'falta cotización sin contacto');
+  cierto(ids.some(i => i.startsWith('com-facturar-')), 'falta ganada sin factura');
   cierto(ids.includes('com-pronostico-2026-10') || ids.includes('com-pronostico-2026-11'), 'falta pronóstico bajo el equilibrio');
-  cierto(R.acciones.some(a => a.id === 'com-seg-f-a3' && a.cuando === 'hoy'), 'falta la acción de seguimiento de A3');
+  cierto(R.acciones.some(a => a.id === 'com-seg-f-a3-2026-10-08' && a.cuando === 'hoy'), 'falta la acción de seguimiento de A3 (con la fecha en el id)');
   cierto(R.eventos.length >= 1, 'faltan eventos');
 });
 prueba('resumen para el chat', () => {
   const t = C.resumenParaIA(R);
   cierto(/COMERCIAL/.test(t) && /Pronóstico/.test(t), 'resumen incompleto');
+});
+
+console.log('Casos de la revisión');
+prueba('montos con texto alrededor y tipo de monto', () => {
+  igual(C.leerMonto('$1.200.000 + IVA'), 1200000);
+  igual(C.leerMonto('$1.200.000.-'), 1200000);
+  igual(C.leerMonto('1.200.000 neto'), 1200000);
+  igual(C.leerMonto('$ 1.200.000 IVA incluido'), 1200000);
+  igual(C.leerMonto('Total: $1.200.000'), 1200000);
+  igual(C.leerMonto('Cotización 15 por $980.000'), 980000);
+  igual(C.leerTipoMonto('$1.200.000 + IVA'), 'neto');
+  igual(C.leerTipoMonto('$1.428.000 IVA incluido'), 'con_iva');
+  igual(C.limpiar({ cliente: 'X', monto: '$1.428.000 IVA incluido' }).monto_tipo, 'con_iva');
+});
+prueba('fechas: más formatos y fechas imposibles', () => {
+  igual(C.leerFecha('28 de septiembre de 2026'), '2026-09-28');
+  igual(C.leerFecha('28-sep-26'), '2026-09-28');
+  igual(C.leerFecha('2026/09/28'), '2026-09-28');
+  igual(C.leerFecha('sep 28, 2026'), '2026-09-28');
+  igual(C.leerFecha('9/28/2026'), '2026-09-28');
+  igual(C.leerFecha(new Date(2026, 8, 28, 12).getTime()), '2026-09-28');
+  igual(C.leerFecha('46293.5'), '2026-09-28');
+  igual(C.leerFecha('31-02-2026'), '');
+  igual(C.leerFecha('2026-13-01'), '');
+});
+prueba('estados: negaciones, órdenes de compra y facturación', () => {
+  igual(C.leerEstado('No aprobada'), 'perdida');
+  igual(C.leerEstado('No ganada'), 'perdida');
+  igual(C.leerEstado('Pendiente de OC'), 'negociacion');
+  igual(C.leerEstado('Sin OC'), 'negociacion');
+  igual(C.leerEstado('Por facturar'), 'ganada');
+  igual(C.leerEstado('Desistida'), 'perdida');
+  igual(C.leerEstado('Rechazada'), 'perdida');
+  igual(C.leerEstado('Adjudicada, pendiente de OC'), 'ganada');
+});
+prueba('líneas: cursos institucionales no van a la escuela', () => {
+  igual(C.leerLinea('', 'Curso Nivel 1 para 8 funcionarios Municipalidad Ficticia'), 'curso_cerrado');
+  igual(C.leerLinea('Curso', 'Pack N1+N2 para 6 funcionarios'), 'curso_cerrado');
+  igual(C.leerLinea('', 'Capacitación Nivel 1 in situ, servicio agrícola ficticio'), 'curso_cerrado');
+  igual(C.leerLinea('', 'Curso de vuelo nocturno para Carabineros'), 'curso_cerrado');
+  igual(C.leerLinea('Servicios', 'Vuelo de inspección y curso de uso del informe'), 'servicios');
+  igual(C.leerLinea('', '1 cupo Nivel 1'), 'escuela');
+});
+prueba('cobro y probabilidad', () => {
+  igual(C.leerCobro('No cobrada'), 'no');
+  igual(C.leerCobro('No pagada'), 'no');
+  igual(C.leerCobro('Sí'), 'si');
+  igual(C.leerProb(0.6), 60);
+  igual(C.leerProb('0,6'), 60);
+  igual(C.leerProb('60%'), 60);
+  igual(C.leerProb('Alta'), 80);
+  igual(C.leerProb('???'), '');
+});
+prueba('notas largas: se conserva lo más nuevo', () => {
+  const q = C.limpiar({ cliente: 'X', notas: 'x'.repeat(4000) });
+  const r = C.aplicar(q, { notas: q.notas + '\n2026-10-10: llamé' }, 'usuario', '', '2026-10-10T10:00:00Z');
+  cierto(r.cotizacion.notas.endsWith('llamé'), 'se perdió la nota nueva');
+});
+prueba('deshacer: pila, sin rehacer y sin borrar la creación', () => {
+  const t = i => '2026-10-0' + i + 'T10:00:00Z';
+  let q = C.aplicar(null, { cliente: 'Empresa Ficticia', monto: 1000000, estado: 'enviada' }, 'usuario', 'Creada', t(1)).cotizacion;
+  cierto(!C.puedeDeshacer(q), 'no se debe ofrecer deshacer la creación');
+  q = C.aplicar(q, { estado: 'negociacion' }, 'usuario', '', t(2)).cotizacion;
+  q = C.aplicar(q, { monto: 2000000 }, 'usuario', '', t(3)).cotizacion;
+  q = C.deshacer(q, t(4)); igual(q.monto, 1000000); igual(q.estado, 'negociacion');
+  q = C.deshacer(q, t(5)); igual(q.monto, 1000000); igual(q.estado, 'enviada');
+  igual(C.deshacer(q, t(6)), null);
+  igual(q.cliente, 'Empresa Ficticia');
+});
+prueba('deshacer lo que hizo AerIA en una respuesta (dos cambios a la misma cotización)', () => {
+  let q = C.aplicar(null, { cliente: 'Empresa Ficticia', monto: 1000000, estado: 'negociacion' }, 'usuario', '', '2026-10-01T10:00:00Z').cotizacion;
+  q = C.aplicar(q, { estado: 'ganada' }, 'AerIA (chat)', '', '2026-10-10T10:00:01Z').cotizacion;
+  q = C.aplicar(q, { ultimo_contacto: '2026-10-10', proximo_seguimiento: '2026-10-17' }, 'AerIA (chat)', 'Seguimiento: llamé', '2026-10-10T10:00:02Z').cotizacion;
+  const r = C.deshacerPor(q, 'AerIA (chat)', '2026-10-10T10:00:00Z', '2026-10-10T10:05:00Z');
+  cierto(r.cotizacion, 'no deshizo');
+  igual(r.cotizacion.estado, 'negociacion'); igual(r.cotizacion.fecha_cierre, ''); igual(r.cotizacion.proximo_seguimiento, '');
+  const q2 = C.aplicar(q, { monto: 5 }, 'usuario', '', '2026-10-10T10:01:00Z').cotizacion;
+  cierto(C.deshacerPor(q2, 'AerIA (chat)', '2026-10-10T10:00:00Z', '2026-10-10T10:05:00Z').conflicto, 'debía avisar el conflicto');
+});
+prueba('importar sin columna de estado ni monto no pisa lo existente', () => {
+  const ex = [C.aplicar(null, { folio: '101', cliente: 'Empresa Uno', monto: 1200000, estado: 'ganada', linea: 'aoc', fecha_cierre: '2026-09-20' }, 'usuario', '', '2026-09-01T10:00:00Z').cotizacion];
+  const c = C.conjuntos('Folio;Cliente;Detalle;Monto\n101;Empresa Uno;Proyecto especial;\n')[0];
+  const p = C.planImportacion(C.mapear(c.filas, c.mapeo, 'prueba'), ex);
+  igual(p.crear.length, 0);
+  igual(p.actualizar.length, 1); igual(p.actualizar[0].cambios, { descripcion: 'Proyecto especial' });
+});
+prueba('importar el dashboard no duplica lo sembrado (SII, plan sin folio, monto con IVA)', () => {
+  const ex = [
+    C.aplicar(null, { id: 'sii-31', cliente: 'Empresa Uno SpA', monto: 1428000, monto_tipo: 'con_iva', estado: 'ganada', factura_folio: '31', fecha_cierre: '2026-09-21' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion,
+    C.aplicar(null, { id: 'plan-tres', cliente: 'Constructora Ficticia Ambiental SpA', monto: 3000000, estado: 'negociacion' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion,
+    C.aplicar(null, { id: 'web-cuatro', cliente: 'Empresa Cuatro', monto: 0, estado: 'ganada', fecha_cierre: '2026-09-15' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion,
+    C.aplicar(null, { id: 'sii-40', cliente: 'Municipalidad de San Ficticio', monto: 1450000, estado: 'ganada', factura_folio: '40', fecha_cierre: '2026-09-02' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion,
+  ];
+  const csv = 'N°;Cliente;Detalle;Monto;Estado;Fecha\n15;Empresa Uno;Curso cerrado;1.200.000;Ganada;01-09-2026\n215;Constructora Ficticia;AOC;3.000.000;Ganada;15-09-2026\n216;Empresa Cuatro;Servicio;850.000;Ganada;10-09-2026\n217;Municipalidad de San Otro;Curso;1.450.000;Ganada;01-09-2026\n';
+  const c = C.conjuntos(csv)[0];
+  const p = C.planImportacion(C.mapear(c.filas, c.mapeo, 'prueba'), ex);
+  igual(p.crear.map(q => q.cliente), ['Municipalidad de San Otro']);
+  const u = Object.fromEntries(p.actualizar.map(x => [x.id, x.cambios]));
+  igual(u['sii-31'].folio, '15'); igual(u['sii-31'].monto, undefined, 'no debía pisar el monto de la factura');
+  igual(u['plan-tres'].estado, 'ganada');
+  igual(u['web-cuatro'].monto, 850000, 'la sembrada sin monto toma el del dashboard');
+});
+prueba('folio repetido con otro cliente no pisa: se crea aparte', () => {
+  const ex = [C.limpiar({ folio: 'COT-2026-15', cliente: 'Empresa Uno', monto: 100, estado: 'enviada' })];
+  const p = C.planImportacion([C.limpiar({ folio: 'COT 2026/15', cliente: 'Empresa Dos', monto: 200, estado: 'enviada' })], ex);
+  igual(p.actualizar.length, 0); igual(p.crear.length, 1);
+  cierto(p.crear[0].id !== ex[0].id, 'el id nuevo choca con el existente');
+});
+prueba('sin folio, dos cotizaciones con distinto detalle no se descartan', () => {
+  const c = C.conjuntos('Cliente;Detalle;Monto;Estado;Fecha\nMuni Dos;Curso N1 grupo A;1.200.000;Enviada;01-09-2026\nMuni Dos;Curso N1 grupo B;1.200.000;Enviada;01-09-2026')[0];
+  const q = C.mapear(c.filas, c.mapeo, 'prueba');
+  igual(C.planImportacion(q, []).crear.length, 2);
+});
+prueba('exportar CSV y volver a importarlo no duplica', () => {
+  const qs = [C.aplicar(null, { folio: '1001', cliente: 'Empresa Uno', monto: 100, estado: 'enviada', notas: 'línea 1\nlínea 2; "con comillas"' }, 'usuario', '', '2026-10-01T10:00:00Z').cotizacion,
+    C.aplicar(null, { cliente: 'Empresa Dos', monto: 200, estado: 'ganada' }, 'usuario', '', '2026-10-01T10:00:00Z').cotizacion];
+  const campos = ['id'].concat(C.CAMPOS);
+  const cel = v => { const s = String(v == null ? '' : v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const csv = '﻿' + [campos.join(';')].concat(qs.map(q => campos.map(k => cel(q[k])).join(';'))).join('\n');
+  const c = C.conjuntos(csv)[0];
+  igual(c.filas.length, 2); igual(c.mapeo.id, 'id'); igual(c.mapeo.folio, 'folio');
+  const p = C.planImportacion(C.mapear(c.filas, c.mapeo, 'prueba'), qs);
+  igual(p.crear.length, 0); igual(p.actualizar.length, 0); igual(p.iguales, 2);
+});
+prueba('la fila de totales no se importa', () => {
+  const payload = JSON.stringify({ fuente: 'aeria-extractor', tablas: [{ titulo: 'Cotizaciones', filas: [['N°', 'Cliente', 'Monto', 'Estado'], ['1', 'Empresa A', '1.000.000', 'Enviada'], ['2', 'Empresa B', '2.000.000', 'Ganada'], ['Total', '', '3.000.000', '']] }], almacenamiento: {}, globales: {} });
+  const c = C.conjuntos(payload)[0];
+  igual(C.mapear(c.filas, c.mapeo).map(q => q.cliente), ['Empresa A', 'Empresa B']);
+});
+prueba('cierre estimado vencido cuenta este mes; viejas sin fecha quedan estancadas', () => {
+  const R1 = C.analizar([{ folio: 'B1', cliente: 'Empresa Uno', linea: 'aoc', monto: 6000000, estado: 'negociacion', fecha_cotizacion: '2026-08-01', fecha_cierre_estimada: '2026-09-30', ultimo_contacto: '2026-10-01' }], HOY, { equilibrio: 5e6, conectado: true });
+  igual(Math.round(R1.pronostico.meses[0].esperado), 3600000);
+  const R2 = C.analizar([{ folio: 'V1', cliente: 'Empresa Dos', monto: 5000000, estado: 'enviada', fecha_cotizacion: '2026-02-01', linea: 'curso_cerrado' }], HOY, { equilibrio: 5e6, conectado: true });
+  igual(R2.pronostico.meses[0].esperado, 0); igual(R2.abiertas.estancadas, 1);
+});
+prueba('SII: sin falsos positivos por nombre parecido ni facturas anteriores', () => {
+  const g = [{ folio: 'G1', cliente: 'Municipalidad de San Alfa Ficticio', monto: 1450000, estado: 'ganada', fecha_cotizacion: '2026-09-01', fecha_cierre: '2026-09-10' },
+    { folio: 'G2', cliente: 'Minera Alfa', monto: 900000, estado: 'ganada', fecha_cotizacion: '2026-09-01', fecha_cierre: '2026-09-10' },
+    { folio: 'G3', cliente: 'Empresa Cinco', monto: 500000, estado: 'ganada', fecha_cotizacion: '2026-09-01', fecha_cierre: '2026-09-10' }];
+  const s = [{ folio: 77, fecha: '2026-09-12', cliente: 'Ilustre Municipalidad de San Beta Ficticio', monto: 1450000, estado: 'Cobrada', tipo: 'Factura exenta' },
+    { folio: 78, fecha: '2026-09-12', cliente: 'Minera Beta', monto: 900000, estado: 'Cobrada', tipo: 'Factura exenta' },
+    { folio: 79, fecha: '2026-03-02', cliente: 'Empresa Cinco SpA', monto: 500000, estado: 'Cobrada', tipo: 'Factura exenta' }];
+  const R3 = C.analizar(g, HOY, { sii: s, siiCorte: '2026-09-30' });
+  igual(R3.sii.map(x => x.como), ['sin-factura', 'sin-factura', 'sin-factura']);
+  cierto(R3.alertas.some(a => a.id.startsWith('com-facturar-') && a.nivel === 'alta'), 'debían quedar por facturar');
+});
+prueba('cobro: «No pagada» avisa y lo cobrado según el SII no', () => {
+  const g = [{ folio: 'P1', cliente: 'Empresa Seis', monto: 800000, estado: 'ganada', factura_folio: '77', cobrada: '', fecha_cierre: '2026-08-01' },
+    { folio: 'P2', cliente: 'Empresa Siete', monto: 700000, estado: 'ganada', factura_folio: '78', cobrada: 'No pagada', fecha_cierre: '2026-08-01' }];
+  const s = [{ folio: 77, fecha: '2026-08-02', cliente: 'Empresa Seis', monto: 800000, estado: 'Cobrada', tipo: 'Factura exenta' },
+    { folio: 78, fecha: '2026-08-02', cliente: 'Empresa Siete', monto: 700000, estado: 'Por cobrar al 30-09', tipo: 'Factura exenta' }];
+  const R4 = C.analizar(g, HOY, { sii: s });
+  igual(R4.ganadas.porCobrar.map(q => q.folio), ['P2']);
+});
+prueba('sin fecha de cotización, la carga no cuenta como contacto; montos 0 sin «$0»', () => {
+  const sem = C.aplicar(null, { cliente: 'Empresa Ocho', monto: 0, estado: 'enviada', fecha_cierre_estimada: '2026-09-01', proximo_seguimiento: '2026-10-20' }, 'AerIA (siembra)', '', '2026-10-10T10:00:00Z').cotizacion;
+  const R5 = C.analizar([sem], HOY, {});
+  igual(R5.cotizaciones[0].diasSinContacto, null);
+  const textos = R5.acciones.map(a => a.titulo).concat(R5.eventos.map(e => e.titulo)).join(' | ');
+  cierto(!/\$0/.test(textos), 'quedó un «$0»: ' + textos);
+  cierto(/monto por completar/.test(textos), 'falta «monto por completar»: ' + textos);
+});
+prueba('ganadas con confianza baja o sin monto no piden factura', () => {
+  const R6 = C.analizar([{ folio: 'U1', cliente: 'Empresa Nueve', monto: 130000, estado: 'ganada', fecha_cierre: '2026-09-20', confianza: 'baja' },
+    { folio: 'U2', cliente: 'Empresa Diez', monto: 0, estado: 'ganada', fecha_cierre: '2026-09-20' }], HOY, {});
+  cierto(!R6.alertas.some(a => a.id.startsWith('com-facturar-')), 'no debía pedir factura');
+  cierto(!R6.acciones.some(a => a.id.startsWith('com-fac-')), 'no debía haber acción de factura');
 });
 
 console.log('\n' + ok + ' pruebas bien, ' + mal + ' con error');

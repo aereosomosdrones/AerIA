@@ -66,82 +66,151 @@
   const corto = (t, n) => { t = String(t || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t; };
 
   /* ---------- lectura de valores sueltos (importación y edición) ---------- */
+  /* Toma el primer número del texto (o el que sigue al «$»), así «$1.200.000 + IVA»,
+     «$1.200.000.-» o «Total: $1.200.000» se leen bien. */
   function leerMonto(v) {
     if (typeof v === 'number') return isFinite(v) ? Math.round(v) : 0;
-    let s = plano(v).replace(/clp|\$|pesos|\s/g, '');
-    if (!s) return 0;
-    let mult = 1;
-    const suf = /(mm|m|mill(?:ones?)?|k|mil)$/.exec(s);
-    if (suf) { mult = /^k|mil$/.test(suf[1]) ? 1e3 : 1e6; s = s.slice(0, -suf[1].length); }
+    const p = plano(v).replace(/clp|pesos/g, ' ');
+    if (!p) return 0;
+    const desde = p.indexOf('$') >= 0 ? p.indexOf('$') : 0;
+    const m = /(-?)\s*(\d[\d.,]*)\s*(mm|millones|millon|mill|m|k|mil)?\b/.exec(p.slice(desde).replace(/\$/g, ''));
+    if (!m) return 0;
+    let s = m[2].replace(/[.,]+$/, '');
+    const mult = !m[3] ? 1 : /^(k|mil)$/.test(m[3]) ? 1e3 : 1e6;
     // «1.234.567» (miles con punto), «1,5» (decimal con coma), «1234567.00» (decimal con punto)
-    if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) s = s.replace(/\./g, '').replace(',', '.');
-    else if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s = s.replace(/,/g, '');
+    if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) s = s.replace(/\./g, '').replace(',', '.');
+    else if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s = s.replace(/,/g, '');
     else s = s.replace(',', '.');
-    const n = parseFloat(s);
+    const n = parseFloat(s) * (m[1] ? -1 : 1);
     return isFinite(n) ? Math.round(n * mult) : 0;
+  }
+  /* «+ IVA» o «neto» → neto; «IVA incluido» → con_iva; «exento» → exento */
+  function leerTipoMonto(v) {
+    const s = plano(v);
+    if (/iva incl|con iva|iva inc|bruto|c\/iva/.test(s)) return 'con_iva';
+    if (/\+\s*iva|mas iva|neto|s\/iva|sin iva|afecto/.test(s)) return 'neto';
+    if (/exent/.test(s)) return 'exento';
+    return '';
+  }
+  const MESES = { ene: 1, jan: 1, feb: 2, mar: 3, abr: 4, apr: 4, may: 5, jun: 6, jul: 7, ago: 8, aug: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12, dec: 12 };
+  function fechaValida(y, m, d) {
+    y = Number(String(y).length === 2 ? '20' + y : y); m = Number(m); d = Number(d);
+    if (!(y >= 1990 && y <= 2100) || !(m >= 1 && m <= 12) || !(d >= 1 && d <= 31)) return '';
+    const t = new Date(y, m - 1, d);
+    return t.getMonth() === m - 1 ? iso(t) : '';
   }
   function leerFecha(v) {
     if (v == null || v === '') return '';
-    if (typeof v === 'number' && v > 20000 && v < 80000) { // número de serie de Excel
-      const d = new Date(Date.UTC(1899, 11, 30) + v * DIA);
-      return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+    if (v instanceof Date) return isNaN(v) ? '' : iso(v);
+    if (typeof v === 'number') {
+      if (!isFinite(v)) return '';
+      if (v > 1e11) { const d = new Date(v); return isNaN(d) ? '' : iso(d); }  // milisegundos (JavaScript)
+      if (v > 20000 && v < 80000) {                                         // número de serie de Excel
+        const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(v) * DIA);
+        return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+      }
+      return '';
     }
-    const s = String(v).trim();
-    let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
-    if (m) return m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
-    m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/.exec(s);
-    if (m) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return y + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'); }
-    m = /^(\d{1,2})[\s-]+([a-záéíóú]{3,})\.?[\s-]+(\d{4})/i.exec(s);
-    if (m) { const i = MES3.indexOf(plano(m[2]).slice(0, 3)); if (i >= 0) return m[3] + '-' + String(i + 1).padStart(2, '0') + '-' + m[1].padStart(2, '0'); }
-    if (/^\d{5}$/.test(s)) return leerFecha(Number(s));
+    const s = plano(v);
+    let m;
+    if ((m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s))) return fechaValida(m[1], m[2], m[3]);
+    if ((m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2})(?!\d)/.exec(s))) {
+      let d = m[1], mes = m[2];
+      if (Number(mes) > 12 && Number(d) <= 12) [d, mes] = [mes, d];   // 9/28/2026 (orden de EE. UU.)
+      return fechaValida(m[3], mes, d);
+    }
+    const mesDeTexto = t => MESES[t.slice(0, 3)] || 0;
+    // «28 de septiembre de 2026», «28 sep 2026», «28-sep-26», «28 sept. 2026»
+    if ((m = /^(\d{1,2})(?:\s+de\s+|[\s-]+)([a-z]{3,})\.?(?:\s+de\s+|[\s-]+|,\s*)(\d{4}|\d{2})(?!\d)/.exec(s)) && mesDeTexto(m[2])) return fechaValida(m[3], mesDeTexto(m[2]), m[1]);
+    // «sep 28, 2026», «septiembre 28 2026»
+    if ((m = /^([a-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{4})(?!\d)/.exec(s)) && mesDeTexto(m[1])) return fechaValida(m[3], mesDeTexto(m[1]), m[2]);
+    if (/^\d{5}(\.\d+)?$/.test(s)) return leerFecha(Number(s));
+    if (/^\d{12,13}$/.test(s)) return leerFecha(Number(s));
     return '';
   }
   function leerEstado(v) {
     const s = plano(v);
     if (!s) return '';
     if (ESTADO[s]) return s;
-    if (/no adjudic|rechaz|perdid|desiert|cancelad|descartad|no acept|declin|anulad/.test(s)) return 'perdida';
-    if (/ganad|aceptad|adjudic|aprobad|vendid|facturad|confirmad|orden de compra|\boc\b|ejecutad|pagad|cobrad|cerrad[ao] ganad|^won/.test(s)) return 'ganada';
+    // primero las negaciones y las esperas: «No aprobada», «Rechazada», «Sin OC», «Pendiente de OC»
+    if (/\b(no|sin)\s+(fue\s+)?(aprobad|ganad|confirmad|aceptad|adjudic|vendid|exito)/.test(s)) return 'perdida';
+    if (/rechaz|desist|cancelad|anulad|descartad|declin|desiert|no acept|^lost/.test(s)) return 'perdida';
+    if (/adjudicad/.test(s)) return 'ganada';
+    if (/(espera|esperando|pendiente|aguardando|falta|sin|por recibir|solicitar?)\s+(de\s+)?(la\s+|una\s+)?(oc|o\.c\.?|orden de compra)\b/.test(s)) return 'negociacion';
+    if (/ganad|aceptad|aprobad|vendid|confirmad|orden de compra|\boc\b|ejecutad|pagad|cobrad|facturad|por facturar|a facturar|pendiente de pago|por cobrar|^won/.test(s)) return 'ganada';
+    if (/perdid/.test(s)) return 'perdida';
     if (/vencid|expirad|caducad|sin respuesta|congelad/.test(s)) return 'vencida';
     if (/negoci|seguimiento|revisi|evaluaci|ajuste|contraoferta|reuni|calient/.test(s)) return 'negociacion';
-    if (/borrador|preparaci|por enviar|redactand/.test(s)) return 'borrador';
+    if (/borrador|preparaci|por enviar|no enviad|redactand/.test(s)) return 'borrador';
     if (/enviad|emitid|pendiente|abiert|presentad|cotizad|curso|nuev|contactad|espera/.test(s)) return 'enviada';
+    return '';
+  }
+  /* Señales de que un curso es para una institución o empresa (curso cerrado, B2B)
+     y no un cupo de persona en un curso abierto. */
+  const INSTITUCIONAL = /funcionari|municipal|empresa|institucion|grupo|in.?company|cerrad|exclusiv|in situ|para \d+|\d+\s*(personas|participantes|alumnos|pilotos|funcionarios|trabajadores|colaboradores)|ministerio|gobierno|universidad|carabiner|ejercito|armada|bomber|minera|corporaci|fundaci|servicio (agricola|nacional|de salud)|\bspa\b|ltda|s\.a\./;
+  function clasificarLinea(p, contexto) {
+    if (/sence|otec|franquicia/.test(p)) return 'sence';
+    if (/\baoc\b|asesor|certificacion de operador|dan[\s-]?151|explotador/.test(p)) return 'aoc';
+    if (/flota|airdata/.test(p)) return 'flota';
+    if (/venta de (dron|equipo)|compra de (dron|equipo)|suministro|bateria|repuesto/.test(p)) return 'venta_equipos';
+    if (/curso|capacitaci|formaci|taller|in.?company|piloto|credencial|entrenamiento|instrucci|cupo|nivel [123]|\bn[123]\b|pack/.test(p))
+      return /cupo|curso abierto|nivel 1|\bn1\b|pack/.test(contexto) && !INSTITUCIONAL.test(contexto) ? 'escuela' : 'curso_cerrado';
+    if (/termogra|fotogram|levantamiento|inspecci|ortofoto|ortomosaico|filmaci|video|lidar|topogra|mapeo|servicio|vuelo|registro aereo/.test(p)) return 'servicios';
     return '';
   }
   function leerLinea(v, texto) {
     const s = plano(v), t = plano(texto);
     if (LINEA[s]) return s;
-    const p = s + ' ' + t;
-    if (/sence|otec|franquicia/.test(p)) return 'sence';
-    if (/\baoc\b|asesor|certificaci[oó]n de operador|dan[\s-]?151|explotador/.test(p)) return 'aoc';
-    if (/flota|airdata/.test(p)) return 'flota';
-    if (/venta de (dron|equipo)|compra de (dron|equipo)|suministro|bateria|repuesto/.test(p)) return 'venta_equipos';
-    if (/termogra|fotogram|levantamiento|inspecci|ortofoto|ortomosaico|filmaci|video|lidar|topogra|mapeo|servicio|vuelo|registro aereo/.test(p)) return 'servicios';
-    if (/cupo|curso abierto|nivel 1|n1\b|pack/.test(p) && !/cerrad|in.?company|exclusiv/.test(p)) return 'escuela';
-    if (/curso|capacitaci|formaci|taller|in.?company|cerrad|piloto|credencial|entrenamiento|instrucci/.test(p)) return 'curso_cerrado';
-    return s ? 'otro' : '';
+    // la columna de línea manda; el detalle solo decide entre cupo abierto y curso cerrado
+    return (s && clasificarLinea(s, s + ' ' + t)) || clasificarLinea(t, t) || (s ? 'otro' : '');
   }
-  const leerCobro = v => { const s = plano(v); if (!s) return ''; if (/parcial|abono/.test(s)) return 'parcial'; if (/^(si|sí|yes|true|1)$|cobrad|pagad/.test(s)) return 'si'; if (/^(no|false|0)$|pendiente|por cobrar|impag/.test(s)) return 'no'; return ''; };
+  const leerCobro = v => {
+    const s = plano(v); if (!s) return '';
+    if (/parcial|abono/.test(s)) return 'parcial';
+    if (/^(no|false|0)$|\b(no|sin)\s+(cobrad|pagad|cobro|pago)|impag|pendiente|por cobrar|por pagar/.test(s)) return 'no';
+    if (/^(si|yes|true|1)$|cobrad|pagad/.test(s)) return 'si';
+    return '';
+  };
+  /* Probabilidad en %: acepta 60, «60%», 0,6 y textos como «Alta» */
+  function leerProb(v) {
+    if (v === '' || v == null) return '';
+    const s = plano(v);
+    const txt = [[/muy alta/, 90], [/muy baja/, 10], [/alta|high/, 80], [/media|medium/, 50], [/baja|low/, 20]].find(([re]) => re.test(s));
+    if (txt && !/\d/.test(s)) return txt[1];
+    const n = typeof v === 'number' ? v : Number(s.replace('%', '').replace(',', '.').trim());
+    if (!isFinite(n) || s === '') return '';
+    const pct = n > 0 && n < 1 && !/%/.test(s) ? n * 100 : n;
+    return Math.max(0, Math.min(100, Math.round(pct)));
+  }
   const slug = t => plano(t).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
   function hash(t) { let h = 2166136261; for (const c of String(t)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
+  const ID_AERIA = /^(f|q|sii|banco|plan|web|n)-/;
   function idPara(q) {
     if (q.id && /^[A-Za-z0-9_\-.~:@+]{1,200}$/.test(q.id)) return q.id;
     if (q.folio) return 'f-' + (slug(q.folio) || hash(q.folio));
     return 'q-' + hash([plano(q.cliente), q.monto || 0, q.fecha_cotizacion || '', plano(q.descripcion).slice(0, 40)].join('|'));
   }
-  const claveDuplicado = q => q.folio ? 'f:' + plano(q.folio) : 'c:' + plano(q.cliente) + '|' + (q.monto || 0) + '|' + (q.fecha_cotizacion || '');
+  // misma normalización que idPara: dos filas con la misma clave son la misma cotización
+  const claveDuplicado = q => q.folio ? 'f:' + (slug(q.folio) || hash(q.folio))
+    : 'c:' + plano(q.cliente) + '|' + (q.monto || 0) + '|' + (q.fecha_cotizacion || '') + '|' + plano(q.descripcion).slice(0, 40);
+  const folioN = f => { const s = String(f == null ? '' : f).trim(); return /^\d+$/.test(s) ? String(Number(s)) : plano(s); };
 
   /* Deja una cotización con todos sus campos y tipos en orden */
   function limpiar(q) {
     const o = {};
     for (const k of CAMPOS) o[k] = q[k] == null ? '' : q[k];
+    if (!o.monto_tipo && typeof o.monto === 'string') o.monto_tipo = leerTipoMonto(o.monto);
     o.monto = leerMonto(o.monto);
     o.estado = leerEstado(o.estado) || 'enviada';
     o.linea = leerLinea(o.linea, (q.descripcion || '') + ' ' + (q.cliente || '')) || 'otro';
     o.cobrada = leerCobro(o.cobrada) || (o.cobrada === '' ? '' : 'desconocido');
-    o.probabilidad = o.probabilidad === '' || o.probabilidad == null ? '' : Math.max(0, Math.min(100, Number(String(o.probabilidad).replace('%', '').replace(',', '.')) || 0));
+    o.probabilidad = leerProb(o.probabilidad);
     for (const k of CAMPOS_FECHA) o[k] = leerFecha(o[k]);
-    for (const k of ['folio', 'cliente', 'rut', 'contacto', 'email', 'telefono', 'descripcion', 'factura_folio', 'motivo_perdida', 'notas', 'origen', 'evidencia', 'confianza', 'monto_tipo']) o[k] = String(o[k]).trim().slice(0, k === 'notas' || k === 'evidencia' || k === 'descripcion' ? 4000 : 300);
+    for (const k of ['folio', 'cliente', 'rut', 'contacto', 'email', 'telefono', 'descripcion', 'factura_folio', 'motivo_perdida', 'notas', 'origen', 'evidencia', 'confianza', 'monto_tipo']) {
+      const t = String(o[k]).trim();
+      // las notas crecen al final (seguimientos): si se pasan del largo, se conserva lo más nuevo
+      o[k] = k === 'notas' ? t.slice(-4000) : t.slice(0, k === 'evidencia' || k === 'descripcion' ? 4000 : 300);
+    }
     o.id = idPara(Object.assign({}, q, o));
     o.historial = Array.isArray(q.historial) ? q.historial.slice(-60) : [];
     o.creada = q.creada || '';
@@ -171,15 +240,51 @@
     nueva.actualizada = ahoraISO;
     return { cotizacion: nueva, cambios: dif };
   }
-  /* Revierte el último cambio registrado */
-  function deshacer(actual, ahoraISO) {
-    const h = (actual.historial || []).slice();
-    const ult = h.pop();
-    if (!ult || !Object.keys(ult.cambios || {}).length) return null;
+  /* ---------- deshacer ----------
+     El historial funciona como una pila: «deshacer» revierte la última entrada con
+     cambios que no esté deshecha ni sea otro «deshacer», y la marca deshecha (no la
+     borra), así repetirlo sigue hacia atrás en vez de rehacer. La entrada de creación
+     no se deshace: para eso está «Eliminar». */
+  const esCreacion = e => !!(e && e.cambios && e.cambios.estado && e.cambios.estado[0] === '');
+  const conCambios = e => !!(e && e.cambios && Object.keys(e.cambios).length);
+  function ultimaDeshacible(q) {
+    const h = (q && q.historial) || [];
+    for (let i = h.length - 1; i >= 0; i--) {
+      const e = h[i];
+      if (e.deshecha || e.por === 'deshacer' || !conCambios(e)) continue;
+      return esCreacion(e) ? -1 : i;
+    }
+    return -1;
+  }
+  const puedeDeshacer = q => ultimaDeshacible(q) >= 0;
+  function revertir(actual, indices, nota, ahoraISO) {
+    const h = (actual.historial || []).map((e, i) => indices.includes(i) ? Object.assign({}, e, { deshecha: true }) : e);
     const vuelta = {};
-    for (const [k, [a]] of Object.entries(ult.cambios)) vuelta[k] = a;
-    const r = aplicar(Object.assign({}, actual, { historial: h }), vuelta, 'deshacer', 'Deshace el cambio del ' + ult.fecha.slice(0, 16).replace('T', ' ') + ' (' + ult.por + ')', ahoraISO);
-    return r.cotizacion;
+    // de la más nueva a la más antigua: el valor «antes» más antiguo es el que queda
+    for (const i of indices.slice().sort((a, b) => b - a)) for (const [k, [a]] of Object.entries(actual.historial[i].cambios || {})) vuelta[k] = a;
+    return aplicar(Object.assign({}, actual, { historial: h }), vuelta, 'deshacer', nota, ahoraISO).cotizacion;
+  }
+  function deshacer(actual, ahoraISO) {
+    const i = ultimaDeshacible(actual);
+    if (i < 0) return null;
+    const e = actual.historial[i];
+    return revertir(actual, [i], 'Deshace el cambio del ' + String(e.fecha || '').slice(0, 16).replace('T', ' ') + ' (' + (e.por || '?') + ')', ahoraISO);
+  }
+  /* Revierte de una vez todo lo que hizo «por» desde «desde» (p. ej. AerIA en una
+     respuesta del chat). Devuelve {cotizacion} o {conflicto} si alguien más cambió
+     la cotización después; {nada} si no hay cambios que revertir. */
+  function deshacerPor(actual, por, desde, ahoraISO) {
+    const h = actual.historial || [];
+    const idx = [];
+    for (let i = h.length - 1; i >= 0; i--) {
+      const e = h[i];
+      if (e.deshecha || String(e.fecha || '') < desde) { if (String(e.fecha || '') < desde) break; continue; }
+      if (e.por !== por) { if (conCambios(e)) return { conflicto: true }; continue; }
+      if (conCambios(e)) idx.push(i);
+    }
+    if (!idx.length) return { nada: true };
+    if (idx.some(i => esCreacion(h[i]))) return { creada: true };
+    return { cotizacion: revertir(actual, idx, 'Deshace ' + idx.length + (idx.length === 1 ? ' cambio' : ' cambios') + ' de ' + por, ahoraISO) };
   }
 
   /* ---------- lectura enriquecida ---------- */
@@ -187,23 +292,32 @@
     const e = ESTADO[q.estado] || ESTADO.enviada;
     const l = LINEA[q.linea] || LINEA.otro;
     const prob = e.abierta ? (q.probabilidad !== '' && q.probabilidad != null ? Number(q.probabilidad) / 100 : e.prob) : e.prob;
-    const base = q.fecha_cotizacion || (q.creada || '').slice(0, 10);
+    // La fecha de creación solo cuenta como cotización o contacto si la creó una persona en
+    // AerIA; si vino de una siembra o de una importación, es la fecha de carga, no de contacto.
+    const creador = ((q.historial || [])[0] || {}).por || '';
+    const base = q.fecha_cotizacion || (/^(usuario|AerIA \(chat\))$/.test(creador) ? (q.creada || '').slice(0, 10) : '');
     const contacto = [q.ultimo_contacto, ...(q.historial || []).filter(h => /seguimiento|contacto|llam|correo|reuni/i.test(h.nota || '')).map(h => (h.fecha || '').slice(0, 10))]
       .filter(esFecha).sort().pop() || base;
+    const edad = esFecha(base) ? dias(base, hoy) : null;
+    const diasSinContacto = esFecha(contacto) ? dias(contacto, hoy) : null;
     let cierreEst = q.fecha_cierre_estimada;
     let cierreSupuesto = false;
     if (e.abierta && !esFecha(cierreEst)) {
       cierreEst = esFecha(base) ? sumarDias(base, Math.round(ciclo || 30)) : hoy;
-      if (cierreEst < hoy) cierreEst = hoy;
       cierreSupuesto = true;
     }
+    // un cierre estimado que ya pasó se cuenta este mes (y la alerta pide actualizarlo)
+    if (e.abierta && cierreEst < hoy) cierreEst = hoy;
+    // Estancada: sin contacto hace más de 90 días, o sin cierre estimado y más vieja que 3 ciclos
+    // de venta (mínimo 90 días). No cuenta en el pronóstico ni en lo ponderado.
+    const estancada = e.abierta && ((diasSinContacto != null && diasSinContacto > 90) ||
+      (!esFecha(q.fecha_cierre_estimada) && edad != null && edad > Math.max(90, 3 * (ciclo || 30))));
     // valor = venta sin IVA (lo que cuenta para la meta B2B); monto queda tal como se escribió
     const valor = q.monto_tipo === 'con_iva' ? Math.round((q.monto || 0) / 1.19) : (q.monto || 0);
     return Object.assign({}, q, {
-      estadoLabel: e.label, lineaLabel: l.label, b2b: l.b2b, abierta: e.abierta, prob, valor,
-      ponderado: e.abierta ? valor * prob : 0,
-      edad: esFecha(base) ? dias(base, hoy) : null,
-      diasSinContacto: esFecha(contacto) ? dias(contacto, hoy) : null,
+      estadoLabel: e.label, lineaLabel: l.label, b2b: l.b2b, abierta: e.abierta, prob, valor, estancada,
+      ponderado: e.abierta && !estancada ? valor * prob : 0,
+      edad, diasSinContacto, fechaContacto: esFecha(contacto) ? contacto : '',
       seguimientoVencido: e.abierta && esFecha(q.proximo_seguimiento) && q.proximo_seguimiento < hoy,
       cierreVencido: e.abierta && esFecha(q.fecha_cierre_estimada) && q.fecha_cierre_estimada < hoy,
       cierreEstimado: cierreEst, cierreSupuesto,
@@ -246,7 +360,8 @@
     const mayorCliente = Object.entries(conc).sort((a, b) => b[1] - a[1])[0] || null;
     const R = {
       hoy, total: qs.length, cotizaciones: qs, ciclo, cicloMuestra: ciclos.length,
-      abiertas: { n: abiertas.length, monto: totalAbierto, ponderado: suma(abiertas, 'ponderado'), b2bPonderado: suma(abiertas.filter(q => q.b2b), 'ponderado') },
+      abiertas: { n: abiertas.length, monto: totalAbierto, ponderado: suma(abiertas, 'ponderado'), b2bPonderado: suma(abiertas.filter(q => q.b2b), 'ponderado'),
+        estancadas: abiertas.filter(q => q.estancada).length, montoEstancadas: suma(abiertas.filter(q => q.estancada), 'valor') },
       ganadas: {
         n: ganadas.length, monto: suma(ganadas, 'valor'),
         mes: suma(ganadas.filter(q => mesDe(q.fecha_cierre) === mesActual), 'valor'),
@@ -272,6 +387,13 @@
     R.clientes = ctx.clientes || [];
     R.pronostico = pronostico(qs, hoy, ctx);
     R.sii = conciliarSII(ganadas, ctx.sii || [], ctx.siiCorte);
+    // Cobro: lo que diga la cotización; si no lo dice, lo que diga el SII de ese folio
+    for (const q of ganadas) {
+      const s = R.sii.find(x => x.id === q.id);
+      q.cobroSII = s && s.como === 'registrada' ? s.cobro : '';
+      q.porCobrar = !!q.factura_folio && (q.cobrada === 'no' || q.cobrada === 'parcial' || ((q.cobrada === '' || q.cobrada === 'desconocido') && q.cobroSII !== 'si'));
+    }
+    R.ganadas.porCobrar = ganadas.filter(q => q.porCobrar);
     R.alertas = alertas(R, hoy, ctx);
     R.acciones = acciones(R, hoy);
     R.eventos = eventos(R, hoy);
@@ -286,7 +408,7 @@
     for (let i = 0; i < meses; i++) {
       const mes = sumarMeses(m0, i);
       const gan = qs.filter(q => q.b2b && q.estado === 'ganada' && mesDe(q.fecha_cierre) === mes);
-      const esp = qs.filter(q => q.b2b && q.abierta && q.mesCierre === mes);
+      const esp = qs.filter(q => q.b2b && q.abierta && !q.estancada && q.mesCierre === mes);
       const ganado = gan.reduce((a, q) => a + q.valor, 0), esperado = esp.reduce((a, q) => a + q.ponderado, 0);
       filas.push({ mes, etiqueta: nombreMes(mes), ganado, esperado, total: ganado + esperado, nGanadas: gan.length, nAbiertas: esp.length,
         meta: ctx.meta || null, equilibrio: ctx.equilibrio || null, supuestas: esp.filter(q => q.cierreSupuesto).length });
@@ -295,48 +417,83 @@
     return {
       meses: filas,
       promedio3: prox3.reduce((a, f) => a + f.total, 0) / Math.max(1, prox3.length),
-      sinFechaEstimada: qs.filter(q => q.b2b && q.abierta && q.cierreSupuesto).length,
+      sinFechaEstimada: qs.filter(q => q.b2b && q.abierta && !q.estancada && q.cierreSupuesto).length,
+      estancadas: qs.filter(q => q.b2b && q.estancada).length,
       mas: qs.filter(q => q.b2b && q.abierta && q.mesCierre > sumarMeses(m0, meses - 1)).reduce((a, q) => a + q.ponderado, 0),
     };
   }
 
-  /* Cruce de lo ganado con las facturas del SII (por nombre y monto) */
-  const VACIAS = new Set(['municipalidad', 'ilustre', 'i', 'de', 'del', 'la', 'las', 'los', 'el', 'y', 'spa', 'ltda', 'limitada', 'sa', 's', 'a', 'eirl', 'universidad', 'cuerpo', 'servicio', 'servicios', 'empresa', 'sociedad', 'comercial', 'ingenieria', 'chile', 'consultores', 'compania']);
-  const fichas = t => plano(t).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !VACIAS.has(w));
+  /* ---------- nombres parecidos ----------
+     Palabras distintivas en común sobre las del nombre MÁS LARGO: «Municipalidad de
+     San Antonio» y «… de San Bernardo» no calzan; «Empresa Uno» y «Empresa Uno SpA» sí. */
+  const VACIAS = new Set(['municipalidad', 'ilustre', 'i', 'de', 'del', 'la', 'las', 'los', 'el', 'y', 'spa', 'ltda', 'limitada', 'sa', 's', 'a', 'eirl', 'universidad', 'cuerpo', 'servicio', 'servicios', 'empresa', 'empresas', 'sociedad', 'comercial', 'ingenieria', 'chile', 'consultores', 'compania', 'san', 'santa', 'santo']);
+  const fichas = t => Array.from(new Set(plano(t).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !VACIAS.has(w))));
   function parecido(a, b) {
     const A = new Set(fichas(a)), B = fichas(b);
     if (!A.size || !B.length) return 0;
-    const comunes = B.filter(w => A.has(w)).length;
-    return comunes / Math.min(A.size, B.length);
+    return B.filter(w => A.has(w)).length / Math.max(A.size, B.length);
   }
+  // todas las palabras distintivas del nombre más corto están en el otro («Empresa Alfa» ⊂ «Alfa Ingeniería Ambiental SpA»)
+  function contenido(a, b) {
+    const A = fichas(a), B = fichas(b);
+    if (!A.length || !B.length) return false;
+    const [corto2, largo] = A.length <= B.length ? [A, new Set(B)] : [B, new Set(A)];
+    return corto2.every(w => largo.has(w)) && corto2.some(w => w.length >= 5);
+  }
+  const rutN = r => String(r || '').replace(/[^0-9kK]/g, '').toUpperCase();
+  const mismoRut = (a, b) => rutN(a).length >= 7 && rutN(a) === rutN(b);
+  // diferencia relativa de montos, admitiendo que uno incluya IVA y el otro no
+  function difMonto(a, b) {
+    if (!a || !b) return 1;
+    return Math.min(Math.abs(a - b), Math.abs(a - b * 1.19), Math.abs(a * 1.19 - b)) / Math.max(a, b);
+  }
+  const cobroSII = estado => /^cobrada|factoring/i.test(estado || '') ? 'si' : /por cobrar|pendiente/i.test(estado || '') ? 'no' : '';
+
+  /* Cruce de lo ganado con las facturas del SII: por RUT si ambos lo tienen, si no por
+     nombre (parecido ≥ 0,6) y monto (±3 %, con o sin IVA), con la factura posterior a la
+     cotización. Las sugeridas siguen pendientes hasta que el folio se anote. */
   function conciliarSII(ganadas, sii, corte) {
     const facturas = (sii || []).filter(s => !/nota de cr|anulad/i.test((s.tipo || '') + ' ' + (s.estado || '')));
-    const usadas = new Set();
+    const porFolio = new Map(facturas.map(s => [folioN(s.folio), s]));
+    const usadas = new Set(ganadas.filter(q => q.factura_folio).map(q => folioN(q.factura_folio)));
     const res = [];
     for (const q of ganadas) {
-      if (q.factura_folio) { res.push({ id: q.id, folio: q.factura_folio, como: 'registrada' }); usadas.add(String(q.factura_folio)); continue; }
+      if (q.factura_folio) {
+        const s = porFolio.get(folioN(q.factura_folio));
+        res.push({ id: q.id, folio: q.factura_folio, como: 'registrada', estadoSII: s ? s.estado : '', cobro: s ? cobroSII(s.estado) : '' });
+        continue;
+      }
       if (corte && esFecha(q.fecha_cierre) && q.fecha_cierre > corte) continue; // el SII cargado no llega a esa fecha
-      const cand = facturas.filter(s => !usadas.has(String(s.folio)) && parecido(q.cliente, s.cliente) >= 0.5)
-        .map(s => ({ s, dif: q.monto ? Math.min(Math.abs(s.monto - q.monto), Math.abs(s.monto - q.monto * 1.19), Math.abs(s.monto * 1.19 - q.monto)) / q.monto : 1 }))
+      const desde = esFecha(q.fecha_cotizacion) ? q.fecha_cotizacion : esFecha(q.fecha_cierre) ? sumarDias(q.fecha_cierre, -15) : '';
+      const cand = facturas.filter(s => !usadas.has(folioN(s.folio)) && (!desde || !esFecha(s.fecha) || s.fecha >= desde) &&
+          (q.rut && s.rut ? mismoRut(q.rut, s.rut) : parecido(q.cliente, s.cliente) >= 0.6))
+        .map(s => ({ s, dif: difMonto(q.monto, s.monto) }))
         .sort((a, b) => a.dif - b.dif);
       if (cand.length && cand[0].dif <= 0.03) {
-        const s = cand[0].s; usadas.add(String(s.folio));
-        res.push({ id: q.id, folio: s.folio, como: 'sugerida', cobro: /^cobrada/i.test(s.estado) ? 'si' : /por cobrar|pendiente/i.test(s.estado) ? 'no' : '', estadoSII: s.estado, fechaFactura: s.fecha });
+        const s = cand[0].s; usadas.add(folioN(s.folio));
+        res.push({ id: q.id, folio: s.folio, como: 'sugerida', cobro: cobroSII(s.estado), estadoSII: s.estado, fechaFactura: s.fecha });
       } else res.push({ id: q.id, folio: '', como: 'sin-factura' });
     }
     return res;
   }
 
-  /* ---------- alertas (mismo formato que motor.js) ---------- */
+  /* ---------- alertas (mismo formato que motor.js) ----------
+     Las alertas que agrupan varias cotizaciones llevan en el id una huella del grupo:
+     si se resolvió y después entra otra cotización al grupo, vuelve a aparecer. */
+  const huella = l => hash(l.map(q => q.id).sort().join('|')).slice(0, 6);
+  const montoTxt = q => q.monto ? mm(q.monto) : 'monto por completar';
+  // lo que hay que facturar: ganado y ejecutado en los últimos 120 días (o sin fecha), con monto y con dato confiable
+  const porFacturar = (R, hoy) => R.ganadas.sinFactura.filter(q => q.monto > 0 && plano(q.confianza) !== 'baja' &&
+    (!esFecha(q.fecha_ejecucion) || q.fecha_ejecucion <= hoy) && (!esFecha(q.fecha_cierre) || dias(q.fecha_cierre, hoy) <= 120));
   function alertas(R, hoy, ctx) {
     const A = [];
     const ab = R.cotizaciones.filter(q => q.abierta);
     const top = (l, n) => l.slice().sort((a, b) => (b.monto || 0) - (a.monto || 0)).slice(0, n || 5);
-    const nombre = q => (q.cliente || 'Sin cliente') + (q.descripcion ? ' · ' + corto(q.descripcion, 50) : '') + ' (' + (q.monto ? mm(q.monto) : 'monto por completar') + ')';
+    const nombre = q => (q.cliente || 'Sin cliente') + (q.descripcion ? ' · ' + corto(q.descripcion, 50) : '') + ' (' + montoTxt(q) + ')';
     const seg = ab.filter(q => q.seguimientoVencido);
     if (seg.length) {
       const m = seg.reduce((a, q) => a + q.valor, 0);
-      A.push({ id: 'com-seguimientos', nivel: m >= 3e6 ? 'alta' : 'media', foco: 'comercial', monto: m,
+      A.push({ id: 'com-seguimientos-' + huella(seg), nivel: m >= 3e6 ? 'alta' : 'media', foco: 'comercial', monto: m,
         titulo: seg.length + (seg.length === 1 ? ' cotización con el seguimiento vencido' : ' cotizaciones con el seguimiento vencido'),
         detalle: 'Las más grandes: ' + top(seg, 4).map(q => nombre(q) + ', debía ser el ' + q.proximo_seguimiento.slice(8, 10) + '-' + MES3[Number(q.proximo_seguimiento.slice(5, 7)) - 1]).join('; ') + '.',
         accion: 'Llamar o escribir hoy y anotar el resultado y la próxima fecha en Comercial.', fuente: 'Comercial' });
@@ -345,51 +502,49 @@
     if (frias.length) {
       const m = frias.reduce((a, q) => a + q.valor, 0);
       const muy = frias.filter(q => q.diasSinContacto > 45).length;
-      A.push({ id: 'com-frias', nivel: m >= 5e6 ? 'alta' : 'media', foco: 'comercial', monto: m,
-        titulo: frias.length + ' cotizaciones abiertas sin contacto hace más de 2 semanas',
+      A.push({ id: 'com-frias-' + huella(frias), nivel: m >= 5e6 ? 'alta' : 'media', foco: 'comercial', monto: m,
+        titulo: frias.length + (frias.length === 1 ? ' cotización abierta' : ' cotizaciones abiertas') + ' sin contacto hace más de 2 semanas',
         detalle: 'Suman ' + mm(m) + (muy ? '; ' + muy + ' llevan más de 45 días y probablemente estén perdidas' : '') + '. Las mayores: ' + top(frias, 4).map(q => nombre(q) + ', ' + q.diasSinContacto + ' días').join('; ') + '.',
         accion: 'Contactar las más grandes, ponerles próxima fecha de seguimiento y cerrar como perdidas las que ya no van.', fuente: 'Comercial' });
     }
     const cierres = ab.filter(q => q.cierreVencido);
     if (cierres.length) {
-      A.push({ id: 'com-cierres', nivel: 'media', foco: 'comercial', monto: cierres.reduce((a, q) => a + q.valor, 0),
-        titulo: cierres.length + ' cotizaciones pasaron su fecha estimada de cierre',
-        detalle: top(cierres, 5).map(q => nombre(q) + ', estimada ' + q.fecha_cierre_estimada).join('; ') + '. El pronóstico las cuenta como si cerraran este mes.',
+      const est = cierres.filter(q => q.estancada).length;
+      A.push({ id: 'com-cierres-' + huella(cierres), nivel: 'media', foco: 'comercial', monto: cierres.reduce((a, q) => a + q.valor, 0),
+        titulo: cierres.length + (cierres.length === 1 ? ' cotización pasó su fecha estimada de cierre' : ' cotizaciones pasaron su fecha estimada de cierre'),
+        detalle: top(cierres, 5).map(q => nombre(q) + ', estimada ' + q.fecha_cierre_estimada).join('; ') + '. El pronóstico las cuenta como si cerraran este mes' +
+          (est ? ', salvo ' + (est === 1 ? 'una que lleva' : est + ' que llevan') + ' más de 90 días sin contacto' : '') + '.',
         accion: 'Actualizar el estado (ganada, perdida) o mover la fecha estimada de cierre.', fuente: 'Comercial' });
     }
-    // Facturar: lo ya ejecutado y ganado en los últimos 120 días (o sin fecha). Lo más antiguo sin folio es un dato por completar, no una urgencia.
-    const sinFac = R.ganadas.sinFactura.filter(q => (!esFecha(q.fecha_ejecucion) || q.fecha_ejecucion <= hoy) && (!esFecha(q.fecha_cierre) || dias(q.fecha_cierre, hoy) <= 120));
-    const sugeridas = R.sii.filter(s => s.como === 'sugerida');
-    const sinFacReal = sinFac.filter(q => !sugeridas.some(s => s.id === q.id));
-    if (sinFacReal.length) {
-      A.push({ id: 'com-facturar', nivel: 'alta', foco: 'comercial', monto: sinFacReal.reduce((a, q) => a + q.valor, 0),
-        titulo: sinFacReal.length + (sinFacReal.length === 1 ? ' venta ganada sin factura' : ' ventas ganadas sin factura'),
-        detalle: top(sinFacReal, 5).map(nombre).join('; ') + '.',
-        accion: 'Facturar el día en que termina cada curso o servicio y registrar el folio en Comercial.', fuente: 'Comercial × SII' });
-    }
-    if (sugeridas.length) {
-      A.push({ id: 'com-sii-sugeridas', nivel: 'baja', foco: 'comercial',
-        titulo: sugeridas.length + ' ventas ganadas calzan con facturas del SII y no tienen el folio anotado',
-        detalle: sugeridas.slice(0, 6).map(s => { const q = R.cotizaciones.find(x => x.id === s.id); return (q ? q.cliente : s.id) + ' → factura ' + s.folio; }).join('; ') + '.',
-        accion: 'Confirmar el folio en cada cotización (Comercial → editar).', fuente: 'Comercial × SII' });
+    // Facturar: lo ganado y ejecutado sin folio. Las que calzan con una factura del SII siguen aquí hasta que se anote el folio.
+    const sinFac = porFacturar(R, hoy);
+    if (sinFac.length) {
+      const sug = id => R.sii.find(s => s.id === id && s.como === 'sugerida');
+      const nSug = sinFac.filter(q => sug(q.id)).length, nSin = sinFac.length - nSug;
+      A.push({ id: 'com-facturar-' + huella(sinFac), nivel: nSin ? 'alta' : 'media', foco: 'comercial', monto: sinFac.reduce((a, q) => a + q.valor, 0),
+        titulo: sinFac.length + (sinFac.length === 1 ? ' venta ganada sin factura registrada' : ' ventas ganadas sin factura registrada') +
+          (nSug ? ' (' + nSug + (nSug === 1 ? ' calza' : ' calzan') + ' con una factura del SII)' : ''),
+        detalle: top(sinFac, 6).map(q => { const s = sug(q.id); return nombre(q) + (s ? ': ¿es la factura ' + s.folio + (s.fechaFactura ? ' del ' + s.fechaFactura : '') + '?' : ''); }).join('; ') + '.',
+        accion: (nSin ? 'Facturar el día en que termina cada curso o servicio y registrar el folio en Comercial.' : '') +
+          (nSug ? (nSin ? ' ' : '') + 'Confirmar el folio de las que calzan con el SII (Comercial → editar).' : ''), fuente: 'Comercial × SII' });
     }
     // Lo facturado que viene del SII ya lo sigue el informe financiero (Presente → Por cobrar): aquí solo lo registrado en Comercial
     const cobrar = R.ganadas.porCobrar.filter(q => esFecha(q.fecha_cierre) && dias(q.fecha_cierre, hoy) > 30 && !/SII/.test(q.origen || ''));
     if (cobrar.length) {
-      A.push({ id: 'com-cobrar', nivel: 'media', foco: 'comercial', monto: cobrar.reduce((a, q) => a + q.valor, 0),
-        titulo: cobrar.length + ' ventas facturadas sin cobro hace más de 30 días',
+      A.push({ id: 'com-cobrar-' + huella(cobrar), nivel: 'media', foco: 'comercial', monto: cobrar.reduce((a, q) => a + q.valor, 0),
+        titulo: cobrar.length + (cobrar.length === 1 ? ' venta facturada sin cobro' : ' ventas facturadas sin cobro') + ' hace más de 30 días',
         detalle: top(cobrar, 5).map(q => nombre(q) + ', factura ' + q.factura_folio).join('; ') + '.',
         accion: 'Llamar a cobranza de cada cliente y anotar la fecha comprometida.', fuente: 'Comercial' });
     }
-    // El pronóstico solo alerta cuando ve el pipeline completo (dashboard conectado o cotizaciones cargadas a mano)
+    // El pronóstico solo alerta cuando ve el pipeline completo (dashboard conectado)
     if (ctx.equilibrio && ctx.conectado !== false) {
       for (const f of R.pronostico.meses.slice(0, 2)) {
         if (f.total < ctx.equilibrio) {
           A.push({ id: 'com-pronostico-' + f.mes, nivel: f.total < (ctx.minimo || 0) ? 'alta' : 'media', foco: 'cruce', monto: f.total, fecha_limite: f.mes + '-28',
             titulo: 'Venta B2B esperada para ' + f.etiqueta + ': ' + mm(f.total) + ', bajo el equilibrio de ' + mm(ctx.equilibrio),
-            detalle: 'Ganado ' + mm(f.ganado) + ' + esperable de lo abierto ' + mm(f.esperado) + ' (' + f.nAbiertas + ' cotizaciones, ponderadas por probabilidad)' +
+            detalle: 'Ganado ' + mm(f.ganado) + ' + esperable de lo abierto ' + mm(f.esperado) + ' (' + f.nAbiertas + (f.nAbiertas === 1 ? ' cotización, ponderada' : ' cotizaciones, ponderadas') + ' por probabilidad)' +
               (f.supuestas ? '; ' + f.supuestas + ' sin fecha estimada de cierre, calculada con el ciclo histórico' : '') + '. La meta del plan es ' + mm(ctx.meta || 0) + '.',
-            accion: 'Cotizar más B2B este mes (SENCE, cursos cerrados, AOC, servicios) y empujar las negociaciones más avanzadas.', fuente: 'Comercial × Plan 2027' });
+            accion: 'Cotizar más B2B con cierre en ' + f.etiqueta + ' (SENCE, cursos cerrados, AOC, servicios) y empujar las negociaciones más avanzadas.', fuente: 'Comercial × Plan 2027' });
         }
       }
     }
@@ -399,7 +554,7 @@
         detalle: 'Si ese negocio se cae, el pronóstico pierde ' + mm(R.concentracion.monto) + ' de base.',
         accion: 'Diversificar: sumar cotizaciones de otros clientes en la misma línea.', fuente: 'Comercial' });
     }
-    for (const q of top(ab.filter(x => x.estado === 'negociacion' && x.monto > 0), 3)) {
+    for (const q of top(ab.filter(x => x.estado === 'negociacion' && x.monto > 0 && !x.estancada), 3)) {
       A.push({ id: 'com-empujar-' + q.id, nivel: 'oportunidad', foco: 'comercial', monto: q.monto,
         titulo: 'En negociación: ' + (q.cliente || 'sin cliente') + (q.descripcion ? ', ' + corto(q.descripcion, 60) : ''),
         detalle: mm(q.monto) + ' con ' + Math.round(q.prob * 100) + '% de probabilidad' + (q.diasSinContacto != null ? '; último contacto hace ' + q.diasSinContacto + ' días' : '') + '.',
@@ -408,27 +563,29 @@
     return A;
   }
 
-  /* ---------- acciones para la agenda ---------- */
+  /* ---------- acciones para la agenda ----------
+     El id lleva la fecha que la dispara (seguimiento, último contacto o cierre estimado):
+     marcarla hecha no esconde el siguiente vencimiento de la misma cotización. */
   function acciones(R, hoy) {
     const out = [];
-    const ab = R.cotizaciones.filter(q => q.abierta);
+    const ab = R.cotizaciones.filter(q => q.abierta && !q.estancada);
     const prio = q => (q.seguimientoVencido ? 0 : 1) * 1e12 - (q.monto || 0);
     for (const q of ab.filter(q => q.seguimientoVencido || (q.diasSinContacto != null && q.diasSinContacto > 10 && !esFecha(q.proximo_seguimiento)) || (esFecha(q.proximo_seguimiento) && q.proximo_seguimiento <= sumarDias(hoy, 2)))
       .sort((a, b) => prio(a) - prio(b)).slice(0, 6)) {
-      out.push({ id: 'com-seg-' + q.id, cuando: q.seguimientoVencido || q.proximo_seguimiento <= hoy ? 'hoy' : 'esta semana', foco: 'comercial', prioridad: q.monto >= 1e6 ? 0 : 1,
+      out.push({ id: 'com-seg-' + q.id + '-' + (esFecha(q.proximo_seguimiento) ? q.proximo_seguimiento : 'c' + q.fechaContacto), cuando: q.seguimientoVencido || q.proximo_seguimiento <= hoy ? 'hoy' : 'esta semana', foco: 'comercial', prioridad: q.monto >= 1e6 ? 0 : 1,
         titulo: 'Seguimiento a ' + (q.cliente || 'cliente') + (q.monto ? ' por ' + mm(q.monto) : '') + (q.descripcion ? ' (' + corto(q.descripcion, 40) + ')' : ''),
         por: q.estadoLabel + (q.diasSinContacto != null ? ' · último contacto hace ' + q.diasSinContacto + ' días' : '') + (q.proximo_seguimiento ? ' · tocaba el ' + q.proximo_seguimiento : ''),
         cotizacion: q.id });
     }
-    for (const q of R.ganadas.sinFactura.filter(q => (!esFecha(q.fecha_ejecucion) || q.fecha_ejecucion <= hoy) && (!esFecha(q.fecha_cierre) || dias(q.fecha_cierre, hoy) <= 120)).slice(0, 4)) {
+    for (const q of porFacturar(R, hoy).slice(0, 4)) {
       const sug = R.sii.find(s => s.id === q.id && s.como === 'sugerida');
       out.push({ id: 'com-fac-' + q.id, cuando: 'esta semana', foco: 'comercial', prioridad: 1,
-        titulo: sug ? 'Anotar la factura ' + sug.folio + ' en la venta a ' + q.cliente : 'Facturar la venta a ' + (q.cliente || 'cliente') + (q.monto ? ' por ' + mm(q.monto) : ' (monto por completar)'),
-        por: sug ? 'Calza por nombre y monto con el SII.' : 'Ganada' + (q.fecha_cierre ? ' el ' + q.fecha_cierre : '') + ', sin folio registrado.', cotizacion: q.id });
+        titulo: sug ? 'Confirmar si la factura ' + sug.folio + ' es de la venta a ' + q.cliente : 'Facturar la venta a ' + (q.cliente || 'cliente') + ' por ' + montoTxt(q),
+        por: sug ? 'Calza por nombre y monto con el SII; si es, anota el folio.' : 'Ganada' + (q.fecha_cierre ? ' el ' + q.fecha_cierre : '') + ', sin folio registrado.', cotizacion: q.id });
     }
     for (const q of ab.filter(q => q.cierreVencido).sort((a, b) => b.monto - a.monto).slice(0, 3)) {
-      out.push({ id: 'com-cierre-' + q.id, cuando: 'esta semana', foco: 'comercial', prioridad: 2,
-        titulo: 'Definir si se gana o se pierde: ' + (q.cliente || 'cliente') + ' (' + mm(q.monto) + ')', por: 'El cierre estimado era el ' + q.fecha_cierre_estimada + '.', cotizacion: q.id });
+      out.push({ id: 'com-cierre-' + q.id + '-' + q.fecha_cierre_estimada, cuando: 'esta semana', foco: 'comercial', prioridad: 2,
+        titulo: 'Definir si se gana o se pierde: ' + (q.cliente || 'cliente') + ' (' + montoTxt(q) + ')', por: 'El cierre estimado era el ' + q.fecha_cierre_estimada + '.', cotizacion: q.id });
     }
     return out;
   }
@@ -438,7 +595,7 @@
     const ev = [];
     for (const q of R.cotizaciones) {
       if (q.abierta && esFecha(q.proximo_seguimiento) && q.proximo_seguimiento >= hoy)
-        ev.push({ fecha: q.proximo_seguimiento, tipo: 'comercial', titulo: 'Seguimiento: ' + (q.cliente || 'cliente') + ' · ' + mm(q.monto), estado: q.estado, cotizacion: q.id });
+        ev.push({ fecha: q.proximo_seguimiento, tipo: 'comercial', titulo: 'Seguimiento: ' + (q.cliente || 'cliente') + ' · ' + montoTxt(q), estado: q.estado, cotizacion: q.id });
       else if (q.abierta && esFecha(q.fecha_cierre_estimada) && q.fecha_cierre_estimada >= hoy && q.monto >= 1e6)
         ev.push({ fecha: q.fecha_cierre_estimada, tipo: 'comercial', titulo: 'Cierre estimado: ' + (q.cliente || 'cliente') + ' · ' + mm(q.monto), estado: q.estado, cotizacion: q.id });
       if (q.estado === 'ganada' && esFecha(q.fecha_ejecucion) && q.fecha_ejecucion >= hoy)
@@ -449,7 +606,8 @@
 
   /* ---------- importación ---------- */
   const ALIAS = {
-    folio: ['folio', 'n°', 'nº', 'no', 'nro', 'numero', 'número', 'id', 'codigo', 'código', 'cotizacion', 'cotización', 'n cotizacion', 'numero cotizacion', 'num'],
+    id: ['id', 'id aeria'],
+    folio: ['folio', 'n°', 'nº', 'no', 'nro', 'numero', 'número', 'codigo', 'código', 'cotizacion', 'cotización', 'n cotizacion', 'numero cotizacion', 'num'],
     cliente: ['cliente', 'empresa', 'razon social', 'razón social', 'razon', 'nombre cliente', 'institucion', 'institución', 'organismo', 'cuenta', 'mandante', 'nombre'],
     rut: ['rut', 'rut cliente'],
     contacto: ['contacto', 'persona', 'solicitante', 'nombre contacto'],
@@ -493,11 +651,30 @@
     return filas.slice(i + 1).filter(f => f.some(c => String(c).trim()))
       .map(f => Object.fromEntries(cab.map((h, j) => [h, f[j] == null ? '' : f[j]])));
   }
+  /* CSV, TSV o «;» respetando comillas (un campo entre comillas puede traer saltos de línea) */
   function partirCSV(texto) {
-    const lineas = texto.replace(/\r/g, '').split('\n').filter(l => l.trim());
-    if (!lineas.length) return [];
-    const sep = ['\t', ';', ','].map(s => [s, (lineas[0].match(new RegExp(s === '\t' ? '\t' : '\\' + s, 'g')) || []).length]).sort((a, b) => b[1] - a[1])[0][0];
-    return lineas.map(l => { const out = []; let cur = '', q = false; for (let i = 0; i < l.length; i++) { const ch = l[i]; if (ch === '"') { if (q && l[i + 1] === '"') { cur += '"'; i++; } else q = !q; } else if (ch === sep && !q) { out.push(cur); cur = ''; } else cur += ch; } out.push(cur); return out.map(s => s.trim()); });
+    texto = texto.replace(/^\uFEFF/, '');
+    const primera = (texto.match(/^[^\n]*/) || [''])[0];
+    const sep = ['\t', ';', ','].map(s => [s, primera.split(s).length - 1]).sort((a, b) => b[1] - a[1])[0][0];
+    const filas = [];
+    let fila = [], cur = '', q = false;
+    for (let i = 0; i < texto.length; i++) {
+      const ch = texto[i];
+      if (q) {
+        if (ch === '"') { if (texto[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+        else cur += ch;
+      } else if (ch === '"' && !cur.trim()) { q = true; cur = ''; }
+      else if (ch === sep) { fila.push(cur.trim()); cur = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && texto[i + 1] === '\n') i++;
+        fila.push(cur.trim()); cur = '';
+        if (fila.some(c => c !== '')) filas.push(fila);
+        fila = [];
+      } else cur += ch;
+    }
+    fila.push(cur.trim());
+    if (fila.some(c => c !== '')) filas.push(fila);
+    return filas;
   }
   function arreglosDe(v, ruta, out) {   // busca arreglos de objetos dentro de cualquier JSON
     if (Array.isArray(v)) {
@@ -535,39 +712,116 @@
       .map(c => { const cols = Object.keys(c.filas[0] || {}); return Object.assign(c, { columnas: cols, puntaje: puntaje(cols), mapeo: sugerirMapeo(cols) }); })
       .sort((a, b) => b.puntaje - a.puntaje || b.filas.length - a.filas.length);
   }
-  /* Filas + mapeo → cotizaciones limpias */
+  /* Filas + mapeo → cotizaciones limpias. Cada cotización lleva en _presentes los campos
+     que de verdad venían en la fila (para no pisar lo existente con valores por defecto). */
+  const TOTAL = /^(sub)?\s*total(es)?\b|^suma\b|^totales?\s*:/;
+  function presentes(q) {
+    const p = [];
+    for (const [k, v] of Object.entries(q)) {
+      const s = String(v == null ? '' : v).trim();
+      if (!s || k === 'notas' || k === 'origen') continue;
+      if (k === 'estado' && !leerEstado(v)) continue;
+      if (k === 'linea' && !(LINEA[plano(v)] || clasificarLinea(plano(v), plano(v)))) continue;
+      if (k === 'monto' && !/\d/.test(s)) continue;
+      if (k === 'probabilidad' && leerProb(v) === '') continue;
+      if (k === 'cobrada' && !leerCobro(v)) continue;
+      if (CAMPOS_FECHA.includes(k) && !leerFecha(v)) continue;
+      p.push(k);
+    }
+    if (q.monto != null && typeof q.monto === 'string' && leerTipoMonto(q.monto) && !p.includes('monto_tipo')) p.push('monto_tipo');
+    return p;
+  }
   function mapear(filas, mapeo, origen) {
+    const usadas = Object.values(mapeo || {}).filter(Boolean);
     return filas.map(f => {
+      const primera = String(Object.values(f)[0] == null ? '' : Object.values(f)[0]).trim();
       const q = {};
       for (const [campo, col] of Object.entries(mapeo || {})) if (col) q[campo] = f[col];
-      const extra = Object.entries(f).filter(([k, v]) => !Object.values(mapeo || {}).includes(k) && String(v).trim()).map(([k, v]) => k + ': ' + v);
+      // un «id» que no es de AerIA (p. ej. el número interno del dashboard) es un folio
+      if (q.id != null && !ID_AERIA.test(String(q.id).trim())) { if (!String(q.folio || '').trim()) q.folio = q.id; delete q.id; }
+      if (q.id != null) q.id = String(q.id).trim();
+      if (!q.id) delete q.id;
+      const extra = Object.entries(f).filter(([k, v]) => !usadas.includes(k) && String(v).trim()).map(([k, v]) => k + ': ' + v);
       if (extra.length) q.notas = [q.notas, extra.join(' · ')].filter(Boolean).join(' · ');
-      q.origen = origen || 'importación';
       if (!leerEstado(q.estado) && q.estado) q.notas = [q.notas, 'Estado original: ' + q.estado].filter(Boolean).join(' · ');
-      return limpiar(q);
-    }).filter(q => q.cliente || q.monto || q.descripcion);
+      const pres = presentes(q);
+      q.origen = origen || 'importación';
+      const o = limpiar(q);
+      o._presentes = pres;
+      o._total = TOTAL.test(plano(primera)) || TOTAL.test(plano(o.cliente)) || TOTAL.test(plano(o.folio));
+      return o;
+    }).filter(q => !q._total && (q.cliente || q.descripcion)).map(q => { delete q._total; return q; });
   }
-  /* Qué crear y qué actualizar frente a lo que ya existe */
-  function planImportacion(nuevas, existentes) {
-    const idx = new Map((existentes || []).map(q => [claveDuplicado(q), q]));
-    const porId = new Map((existentes || []).map(q => [q.id, q]));
-    const crear = [], actualizar = [];
+  /* Qué crear y qué actualizar frente a lo que ya existe. Busca la cotización existente
+     por id, por folio, por folio de factura y, si nada de eso calza, por cliente parecido +
+     monto (±3 %, con o sin IVA) + fecha cercana: así lo sembrado desde el SII, el banco o
+     el plan no se duplica al importar el dashboard. Solo compara los campos que venían. */
+  const grupo = e => e === 'ganada' ? 'ganada' : (ESTADO[e] || ESTADO.enviada).abierta ? 'abierta' : 'cerrada';
+  function candidatoParecido(n, existentes, tomadas) {
+    const pres = n._presentes || CAMPOS;
+    let mejor = null;
+    for (const e of existentes) {
+      if (tomadas.has(e.id) || !n.monto) continue;
+      if (e.folio && n.folio && claveDuplicado(e) !== claveDuplicado(n)) continue; // folios distintos: son otras
+      // la existente sin monto (sembrada «por completar») calza solo por nombre; con monto, debe calzar el monto
+      if (e.monto && difMonto(n.monto, e.monto) > 0.03) continue;
+      const nombre = n.rut && e.rut ? (mismoRut(n.rut, e.rut) ? 1 : 0) : Math.max(parecido(n.cliente, e.cliente), contenido(n.cliente, e.cliente) ? 0.6 : 0);
+      if (nombre < 0.6) continue;
+      // el estado puede avanzar (abierta → ganada o perdida), no retroceder: una ganada no es una cotización abierta nueva
+      if (pres.includes('estado') && grupo(e.estado) !== grupo(n.estado) && grupo(e.estado) !== 'abierta') continue;
+      const fn = n.fecha_cotizacion || n.fecha_cierre, fe = e.fecha_cotizacion || e.fecha_cierre;
+      if (esFecha(fn) && esFecha(fe) && Math.abs(dias(fn, fe)) > 120) continue;
+      const puntaje = nombre - (e.monto ? difMonto(n.monto, e.monto) : 0.5);
+      if (!mejor || puntaje > mejor.puntaje) mejor = { e, puntaje };
+    }
+    return mejor && mejor.e;
+  }
+  function planImportacion(nuevas, existentes, opciones) {
+    existentes = existentes || [];
+    const unir = !opciones || opciones.unirParecidas !== false;
+    const porId = new Map(existentes.map(q => [q.id, q]));
+    const porClave = new Map(existentes.map(q => [claveDuplicado(q), q]));
+    const porFactura = new Map(existentes.filter(q => q.factura_folio).map(q => [folioN(q.factura_folio), q]));
+    const crear = [], actualizar = [], parecidas = [], repetidas = [];
     let iguales = 0;
-    const vistas = new Set();
-    for (const n of nuevas) {
+    const vistas = new Map(), tomadas = new Set();
+    for (const n0 of nuevas) {
+      const n = Object.assign({}, n0);
       const k = claveDuplicado(n);
-      if (vistas.has(k)) continue;
-      vistas.add(k);
-      const e = idx.get(k) || porId.get(n.id);
-      if (!e) { crear.push(n); continue; }
+      const previa = vistas.get(k);
+      if (previa) {
+        // misma clave en el mismo archivo: si es otro cliente, es otra cotización con el folio escrito parecido
+        if (previa.cliente && n.cliente && parecido(previa.cliente, n.cliente) < 0.6 && !contenido(previa.cliente, n.cliente)) { n.id = n.id + '-' + hash(plano(n.cliente)).slice(0, 4); repetidas.push(n); }
+        else continue;
+      }
+      vistas.set(k, n);
+      let e = porId.get(n.id) || porClave.get(k) || (n.factura_folio && porFactura.get(folioN(n.factura_folio))) || null;
+      let como = e ? 'exacta' : '';
+      // el id de AerIA (de un CSV exportado desde aquí) identifica sin dudas; un folio repetido con otro cliente no se pisa: se crea aparte
+      const porIdAerIA = e && e.id === n.id && (n._presentes || []).includes('id');
+      if (e && !porIdAerIA && e.cliente && n.cliente && parecido(e.cliente, n.cliente) < 0.3 && !contenido(e.cliente, n.cliente) && !(n.rut && mismoRut(n.rut, e.rut))) {
+        n.id = n.id + '-' + hash(plano(n.cliente)).slice(0, 4); repetidas.push(n); e = null; como = '';
+      }
+      if (!e && unir) { e = candidatoParecido(n, existentes, tomadas); if (e) como = 'parecida'; }
+      if (e && tomadas.has(e.id)) { e = null; como = ''; }
+      if (!e) {
+        if (porId.has(n.id) || crear.some(c => c.id === n.id)) n.id = n.id + '-' + hash(JSON.stringify([n.cliente, n.monto, n.descripcion])).slice(0, 4);
+        crear.push(n); continue;
+      }
+      tomadas.add(e.id);
+      const pres = n._presentes || CAMPOS;
       const cambios = {};
       for (const c of CAMPOS) {
-        if (['notas', 'origen', 'evidencia', 'historial'].includes(c)) continue;
+        if (['notas', 'origen', 'evidencia', 'confianza', 'historial'].includes(c) || !pres.includes(c)) continue;
+        // en una coincidencia por parecido se conserva el nombre y el monto que ya estaban (vienen de la factura o del plan)
+        if (como === 'parecida' && ['cliente', 'monto', 'monto_tipo', 'rut'].includes(c) && (c === 'monto' ? e.monto > 0 : c === 'monto_tipo' ? e.monto > 0 && !!e.monto_tipo : String(e[c] == null ? '' : e[c]) !== '')) continue;
         if (n[c] !== '' && n[c] != null && String(n[c]) !== String(e[c] == null ? '' : e[c])) cambios[c] = n[c];
       }
-      if (Object.keys(cambios).length) actualizar.push({ id: e.id, antes: e, cambios }); else iguales++;
+      if (como === 'parecida') parecidas.push({ id: e.id, antes: e, nueva: n });
+      if (Object.keys(cambios).length) actualizar.push({ id: e.id, antes: e, cambios, como }); else iguales++;
     }
-    return { crear, actualizar, iguales };
+    for (const q of crear) delete q._presentes;
+    return { crear, actualizar, iguales, parecidas, repetidas };
   }
 
   /* Código del extractor para correr en el dashboard local (marcador o consola) */
@@ -577,7 +831,8 @@
   function resumenParaIA(R) {
     if (!R || !R.total) return '## COMERCIAL\n- No hay cotizaciones cargadas todavía en AerIA.';
     const L = ['## COMERCIAL (cotizaciones en AerIA: ' + R.total + ')'];
-    L.push('- Abiertas: ' + R.abiertas.n + ' por ' + clp(R.abiertas.monto) + ' (ponderado ' + clp(R.abiertas.ponderado) + '; B2B ponderado ' + clp(R.abiertas.b2bPonderado) + ').');
+    L.push('- Abiertas: ' + R.abiertas.n + ' por ' + clp(R.abiertas.monto) + ' (ponderado ' + clp(R.abiertas.ponderado) + '; B2B ponderado ' + clp(R.abiertas.b2bPonderado) + ').' +
+      (R.abiertas.estancadas ? ' De ellas, ' + R.abiertas.estancadas + ' por ' + clp(R.abiertas.montoEstancadas) + ' están estancadas (más de 90 días sin contacto, o viejas y sin cierre estimado): no cuentan en el ponderado ni en el pronóstico.' : ''));
     L.push('- Ganadas: ' + R.ganadas.n + ' por ' + clp(R.ganadas.monto) + '; este mes ' + clp(R.ganadas.mes) + '; últimos 90 días ' + clp(R.ganadas.ultimos90) + '; año ' + clp(R.ganadas.anio) + (R.ganadas.ticket ? '; ticket promedio ' + clp(R.ganadas.ticket) : '') + '.');
     L.push('- Perdidas o vencidas: ' + R.perdidas.n + ' por ' + clp(R.perdidas.monto) + '. Tasa de cierre 12 meses: ' +
       (R.tasa.referencia ? 'usa la del dashboard, ' + Math.round(R.tasa.referencia.valor * 100) + '% por monto al ' + R.tasa.referencia.corte + ' (la calculada con lo cargado está sesgada: casi solo se conocen las ganadas facturadas)'
@@ -585,7 +840,7 @@
     L.push('- Por línea: ' + R.porLinea.map(l => l.label + ': abierto ' + clp(l.abierto) + ', ganado ' + clp(l.ganado) + (l.tasa != null ? ', cierre ' + Math.round(l.tasa * 100) + '%' : '')).join('; ') + '.');
     L.push('- Pronóstico de venta B2B por mes (ganado + esperado ponderado): ' + R.pronostico.meses.map(f => f.etiqueta + ' ' + clp(f.total) + ' (ganado ' + clp(f.ganado) + ', esperado ' + clp(f.esperado) + ')').join('; ') + '. Promedio próximos 3 meses ' + clp(R.pronostico.promedio3) + '.');
     const ab = R.cotizaciones.filter(q => q.abierta).sort((a, b) => b.monto - a.monto).slice(0, 15);
-    if (ab.length) L.push('- Mayores abiertas: ' + ab.map(q => '[' + q.id + '] ' + (q.cliente || '?') + ' · ' + corto(q.descripcion, 50) + ' · ' + clp(q.monto) + ' · ' + q.estadoLabel + ' · prob ' + Math.round(q.prob * 100) + '%' + (q.proximo_seguimiento ? ' · seguimiento ' + q.proximo_seguimiento : '') + (q.diasSinContacto != null ? ' · sin contacto ' + q.diasSinContacto + 'd' : '')).join(' | '));
+    if (ab.length) L.push('- Mayores abiertas: ' + ab.map(q => '[' + q.id + '] ' + (q.cliente || '?') + ' · ' + corto(q.descripcion, 50) + ' · ' + clp(q.monto) + ' · ' + q.estadoLabel + (q.estancada ? ' · estancada' : ' · prob ' + Math.round(q.prob * 100) + '%') + (q.proximo_seguimiento ? ' · seguimiento ' + q.proximo_seguimiento : '') + (q.diasSinContacto != null ? ' · sin contacto ' + q.diasSinContacto + 'd' : '')).join(' | '));
     const gan = R.cotizaciones.filter(q => q.estado === 'ganada').sort((a, b) => String(b.fecha_cierre).localeCompare(String(a.fecha_cierre))).slice(0, 12);
     if (gan.length) L.push('- Últimas ganadas: ' + gan.map(q => (q.fecha_cierre || '?') + ' ' + (q.cliente || '?') + ' ' + clp(q.monto) + (q.monto_tipo === 'con_iva' ? ' con IVA' : '') + ' [' + q.lineaLabel + ']' + (q.factura_folio ? ' f.' + q.factura_folio : ' sin factura')).join(' | '));
     if (R.clientes && R.clientes.length) L.push('- Clientes 2026 sin monto registrado (de cartas, blog y Notion): ' + R.clientes.map(c => c.cliente + (c.detalle ? ' (' + corto(c.detalle, 90) + ')' : '')).join('; ') + '.');
@@ -594,8 +849,9 @@
 
   const API = {
     ESTADOS, LINEAS, ESTADO, LINEA, CAMPOS, EXTRACTOR,
-    limpiar, aplicar, deshacer, diferencias, normalizar, analizar, pronostico, conciliarSII,
-    conjuntos, sugerirMapeo, mapear, planImportacion, leerMonto, leerFecha, leerEstado, leerLinea, idPara, claveDuplicado,
+    limpiar, aplicar, deshacer, deshacerPor, puedeDeshacer, diferencias, normalizar, analizar, pronostico, conciliarSII,
+    conjuntos, sugerirMapeo, mapear, planImportacion, leerMonto, leerTipoMonto, leerFecha, leerEstado, leerLinea, leerCobro, leerProb,
+    idPara, claveDuplicado, parecido,
     resumenParaIA,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

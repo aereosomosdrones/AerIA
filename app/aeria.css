@@ -461,3 +461,7 @@ details.historial ol { margin-top: 8px; font-size: 12.5px; display: flex; flex-d
 .progreso { height: 6px; background: var(--sup-3); border-radius: 3px; overflow: hidden; }
 .progreso i { display: block; height: 100%; width: 0; background: var(--s-3); transition: width .2s; }
 label.chk { display: inline-flex; gap: 8px; align-items: center; font-size: 13.5px; }
+.aviso-imp { border-left: 3px solid var(--s-1); background: var(--sup-2); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.aviso-imp ul { margin: 0; padding-left: 18px; }
+details.historial li.deshecha { opacity: .6; }
+.ce-borrar { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }

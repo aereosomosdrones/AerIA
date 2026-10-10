@@ -60,9 +60,10 @@
     return paqueteCot();
   }
   const espera = ms => new Promise(r => setTimeout(r, ms));
-  async function guardarCot(q) {
+  async function guardarCot(q, signal) {
     if (S.db) {
       for (let i = 0; i < 5; i++) {
+        if (signal && signal.aborted) return false;
         try { await S.db.doc('cotizaciones/' + q.id).set(q); S.comDocs.set(q.id, q); return true; }
         catch (e) {
           if (!e || !['resource_exhausted', 'unavailable'].includes(e.code)) { console.warn('AerIA: no se pudo guardar la cotización', e); return false; }
@@ -91,7 +92,7 @@
 
   /* ---------- cálculo ---------- */
   const hoy = () => F.iso(new Date());
-  const datos = () => Object.assign({}, D0, { notas: S.notas, comercial: { cotizaciones: cotizacionesActuales() } });
+  const datos = () => Object.assign({}, D0, { notas: S.notas, comercial: Object.assign({}, D0.comercial, { cotizaciones: cotizacionesActuales() }) });
   function recalcular() { I = M.analizar(datos(), hoy(), new Date()); }
   const resuelta = a => S.alertas[a.id] && S.alertas[a.id].estado === 'resuelta';
   const fuerte = t => esc(t).replace(/(−?\$[\d.,]+M?)/g, '<b>$1</b>');
@@ -650,7 +651,7 @@ Cómo respondes:
 
 Abajo está tu lectura actual de la empresa.`;
 
-  function herramientas() {
+  function herramientas(resp, signal) {
     const Dt = datos();
     const cats = Object.entries(D0.finanzas.cats).map(([k, c]) => k + '=' + c.label).join('; ');
     const avance = t => { const h = $('.msj.aeria:last-child .herr'); if (h) h.textContent = t; };
@@ -667,7 +668,10 @@ Abajo está tu lectura actual de la empresa.`;
       if (c.length === 1) return c[0];
       throw new Error(c.length ? 'Hay ' + c.length + ' cotizaciones que calzan con «' + t + '»: ' + c.slice(0, 8).map(x => x.id + ' (' + x.cliente + ', ' + F.clp(x.monto || 0) + ')').join('; ') + '. Usa el id exacto.' : 'No encontré la cotización «' + t + '».');
     };
-    const anotarCambio = (q, tipo, cambios) => { const r = S.respActual; if (r) (r.cambios = r.cambios || []).push({ id: q.id, cliente: q.cliente, tipo, campos: Object.keys(cambios || {}) }); };
+    // cada cambio queda en la respuesta que lo hizo (para mostrarlo y poder deshacerlo)
+    const anotarCambio = (q, tipo, cambios) => { if (resp) (resp.cambios = resp.cambios || []).push({ id: q.id, cliente: q.cliente, tipo, campos: Object.keys(cambios || {}) }); };
+    // si el usuario pulsó «Detener», no se escribe nada más
+    const vigente = () => { if (signal && signal.aborted) throw new Error('El usuario detuvo la respuesta: no hice el cambio.'); };
     const EDITABLES = ['estado', 'monto', 'probabilidad', 'fecha_cotizacion', 'fecha_cierre_estimada', 'fecha_cierre', 'fecha_ejecucion', 'proximo_seguimiento', 'ultimo_contacto', 'factura_folio', 'cobrada', 'motivo_perdida', 'descripcion', 'contacto', 'email', 'telefono', 'linea', 'folio', 'cliente', 'rut'];
     const lista = [
       { name: 'cotizaciones_buscar', description: 'Busca en las cotizaciones del dashboard comercial de AerIA. Devuelve total, suma y hasta 40 cotizaciones (id, cliente, monto, estado, probabilidad, fechas, seguimiento, factura). Estados: abiertas, enviada, negociacion, ganada, perdida, vencida, todas.',
@@ -695,8 +699,9 @@ Abajo está tu lectura actual de la empresa.`;
           for (const [k, v] of Object.entries(i.cambios || {})) if (EDITABLES.includes(k)) c[k] = v;
           if (i.cambios && i.cambios.notas_agregar) c.notas = [q.notas, hoy() + ': ' + i.cambios.notas_agregar].filter(Boolean).join('\n');
           if (!Object.keys(c).length) throw new Error('No indicaste campos válidos para cambiar.');
+          vigente();
           const r = C.aplicar(q, c, 'AerIA (chat)', i.nota || '', new Date().toISOString());
-          if (!await guardarCot(r.cotizacion)) throw new Error('No se pudo guardar el cambio.');
+          if (!await guardarCot(r.cotizacion, signal)) throw new Error('No se pudo guardar el cambio.');
           anotarCambio(r.cotizacion, 'actualizada', r.cambios); return { id: q.id, cliente: q.cliente, cambios: r.cambios };
         } },
       { name: 'cotizacion_seguimiento', description: 'Anota un seguimiento en una cotización: qué pasó y la próxima fecha. Pone hoy como último contacto. Úsala cuando el usuario cuente que habló con un cliente.',
@@ -704,8 +709,9 @@ Abajo está tu lectura actual de la empresa.`;
         execute: async i => {
           avance('Anotando el seguimiento…');
           const q = encontrar(i.id);
+          vigente();
           const r = C.aplicar(q, { ultimo_contacto: hoy(), proximo_seguimiento: i.proximo_seguimiento || q.proximo_seguimiento }, 'AerIA (chat)', 'Seguimiento: ' + String(i.que_paso).slice(0, 400), new Date().toISOString());
-          if (!await guardarCot(r.cotizacion)) throw new Error('No se pudo guardar el seguimiento.');
+          if (!await guardarCot(r.cotizacion, signal)) throw new Error('No se pudo guardar el seguimiento.');
           anotarCambio(r.cotizacion, 'seguimiento', r.cambios); return { id: q.id, cliente: q.cliente, proximo_seguimiento: r.cotizacion.proximo_seguimiento };
         } },
       { name: 'cotizacion_crear', description: 'Crea una cotización nueva en el dashboard comercial. Úsala solo cuando el usuario lo pida. Monto en pesos. Líneas: ' + C.LINEAS.map(l => l.id).join(', ') + '.',
@@ -715,10 +721,14 @@ Abajo está tu lectura actual de la empresa.`;
           const datosQ = Object.assign({ estado: 'enviada', fecha_cotizacion: hoy(), origen: 'chat' }, i);
           const prov = C.limpiar(datosQ);
           if (cotizacionesActuales().some(x => x.id === prov.id)) datosQ.id = prov.id + '-' + Date.now().toString(36); else datosQ.id = prov.id;
+          vigente();
           const r = C.aplicar(null, datosQ, 'AerIA (chat)', 'Creada desde la conversación', new Date().toISOString());
-          if (!await guardarCot(r.cotizacion)) throw new Error('No se pudo guardar la cotización.');
+          if (!await guardarCot(r.cotizacion, signal)) throw new Error('No se pudo guardar la cotización.');
           anotarCambio(r.cotizacion, 'creada', r.cambios); return resumenCot(C.normalizar(r.cotizacion, hoy(), 30));
         } },
+      { name: 'guardar_nota', description: 'Guarda en la memoria permanente de AerIA una decisión, preferencia o dato que el usuario pidió recordar. Úsala solo si el usuario lo pide o decide algo explícitamente.',
+        inputSchema: { type: 'object', properties: { texto: { type: 'string' } }, required: ['texto'] },
+        execute: async i => { avance('Guardando en la memoria…'); vigente(); const n = { id: 'n' + Date.now().toString(36), texto: String(i.texto).slice(0, 600), fecha: new Date().toISOString() }; S.notas = S.notas.concat([n]); await guardar('notas'); pintarMemoria(); return { guardada: n.texto }; } },
       { name: 'buscar_movimientos', description: 'Busca movimientos de las cuentas de Aéreo (' + Object.values(M.cuentas(D0.finanzas)).join(' y ') + ', ' + D0.finanzas.serie[0].fecha + ' a ' + D0.finanzas.periodo.hasta + '). Devuelve cuántos hay, la suma con signo (+ ingreso, − egreso) y hasta 30 movimientos ordenados por monto.',
         inputSchema: { type: 'object', properties: { texto: { type: 'string', description: 'Texto a buscar en glosa, contraparte, nota o categoría (sin importar tildes)' }, categoria: { type: 'string', description: 'Código de categoría. ' + cats }, mes: { type: 'string', description: 'AAAA-MM' }, tipo: { type: 'string', enum: ['ingreso', 'egreso'] }, monto_minimo: { type: 'number' }, limite: { type: 'number' } } },
         execute: i => { avance('Consultando movimientos bancarios…'); return M.buscarMovimientos(Dt, i || {}); } },
@@ -740,11 +750,8 @@ Abajo está tu lectura actual de la empresa.`;
       { name: 'simular_2027', description: 'Calcula el resultado anual 2027 con el modelo del plan. Palancas (ids): ' + D0.modelo.palancas.map(p => p.id + ' ' + p.nombre).join('; ') + '. Sin palancas indicadas usa las del plan.',
         inputSchema: { type: 'object', properties: { b2b_mensual: { type: 'number' }, escuela: { type: 'string', enum: ['realista', 'llena'] }, palancas: { type: 'array', items: { type: 'string' } } }, required: ['b2b_mensual'] },
         execute: i => { avance('Simulando 2027…'); return M.resultado2027(D0.modelo, Number(i.b2b_mensual), i.escuela === 'llena' ? 'llena' : 'realista', Array.isArray(i.palancas) ? i.palancas.map(String) : undefined); } },
-      { name: 'guardar_nota', description: 'Guarda en la memoria permanente de AerIA una decisión, preferencia o dato que el usuario pidió recordar. Úsala solo si el usuario lo pide o decide algo explícitamente.',
-        inputSchema: { type: 'object', properties: { texto: { type: 'string' } }, required: ['texto'] },
-        execute: async i => { avance('Guardando en la memoria…'); const n = { id: 'n' + Date.now().toString(36), texto: String(i.texto).slice(0, 600), fecha: new Date().toISOString() }; S.notas = S.notas.concat([n]); await guardar('notas'); pintarMemoria(); return { guardada: n.texto }; } },
     ];
-    // Orden de prioridad por si la vista permite menos herramientas: comercial, finanzas, memoria, plan
+    // Orden de prioridad por si la vista permite menos herramientas: comercial, memoria, finanzas, plan
     return S.tools ? lista.slice(0, S.tools) : [];
   }
 
@@ -831,23 +838,35 @@ Abajo está tu lectura actual de la empresa.`;
     return `<div class="cambios-ia"><b>AerIA ${m.deshecho ? 'había cambiado' : 'cambió'} en Comercial:</b><ul>${m.cambios.map(c => `<li>${txt[c.tipo] || c.tipo} <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(c.id)}">${esc(c.cliente || c.id)}</button>${c.campos && c.campos.length && c.tipo !== 'creada' ? ' (' + esc(c.campos.join(', ')) + ')' : ''}</li>`).join('')}</ul>
       ${m.deshecho ? '<span class="c-sub">Cambios deshechos.</span>' : `<button class="btn sm sec" type="button" data-accion="deshacer-ia" data-i="${i}">Deshacer estos cambios</button>`}</div>`;
   }
+  /* Deshace de una vez todo lo que AerIA cambió en esa respuesta, por cotización (aunque
+     haya tocado dos veces la misma). Si alguien la editó después, no la toca y lo avisa. */
   async function deshacerIA(i) {
-    const m = S.chat[i]; if (!m || !m.cambios || m.deshecho) return;
-    let fallas = 0;
-    for (const c of m.cambios.slice().reverse()) {
-      const actual = cotizacionesActuales().find(q => q.id === c.id);
+    const m = S.chat[i]; if (!m || !m.cambios || m.deshecho || m.deshaciendo) return;
+    m.deshaciendo = true;
+    const desde = m.inicio || '';
+    let conflictos = 0, fallas = 0;
+    const ids = Array.from(new Set(m.cambios.map(c => c.id)));
+    for (const id of ids) {
+      const actual = cotizacionesActuales().find(q => q.id === id);
       if (!actual) continue;
-      if (c.tipo === 'creada') { if (!await borrarCot(c.id)) fallas++; continue; }
-      const ult = (actual.historial || [])[actual.historial.length - 1];
-      if (!ult || ult.por !== 'AerIA (chat)') { fallas++; continue; }
-      const d = C.deshacer(actual, new Date().toISOString());
-      if (!d || !await guardarCot(d)) fallas++;
+      if (m.cambios.some(c => c.id === id && c.tipo === 'creada')) {
+        // creada en esta respuesta: deshacerla es borrarla, salvo que alguien más la haya editado
+        const ajenas = (actual.historial || []).some(h => h.por !== 'AerIA (chat)' && !h.deshecha && Object.keys(h.cambios || {}).length);
+        if (ajenas) conflictos++; else if (!await borrarCot(id)) fallas++;
+        continue;
+      }
+      const r = C.deshacerPor(actual, 'AerIA (chat)', desde, new Date().toISOString());
+      if (r.conflicto || r.creada) conflictos++;
+      else if (r.cotizacion && !await guardarCot(r.cotizacion)) fallas++;
     }
-    m.deshecho = !fallas;
-    LS.set('chat', S.chat.slice(-40));
-    pintarMensajes(); recalcular();
-    avisar(fallas ? 'No pude deshacer ' + fallas + ' cambios: alguien los editó después. Revísalos en Comercial.' : 'Listo: deshice los cambios de AerIA.');
+    m.deshaciendo = false;
+    m.deshecho = !conflictos && !fallas;
+    guardarChat();
+    pintarMensajes(); recalcular(); if (S.tab !== 'hablar') pintar();
+    avisar(conflictos ? 'Deshice lo que pude; ' + conflictos + (conflictos === 1 ? ' cotización la editó' : ' cotizaciones las editó') + ' alguien más después y no las toqué. Revísalas en Comercial.'
+      : fallas ? 'No pude guardar ' + fallas + (fallas === 1 ? ' cambio' : ' cambios') + '. Intenta de nuevo.' : 'Listo: deshice los cambios de AerIA.');
   }
+  const guardarChat = () => LS.set('chat', S.chat.slice(-40).map(m => ({ role: m.role, content: m.content, profundo: m.profundo, cambios: m.cambios, deshecho: m.deshecho, inicio: m.inicio })));
 
   function pintarMemoria() {
     const c = $('#memoria'); if (!c) return;
@@ -883,8 +902,7 @@ Abajo está tu lectura actual de la empresa.`;
     if (S.tab !== 'hablar') irA('hablar');
     if (S.ia !== 'lista' || S.enCurso) { pintarAvisoIA(); const t = $('#in-chat'); if (t && S.ia !== 'lista') t.value = texto; return; }
     S.chat.push({ role: 'user', content: texto });
-    const resp = { role: 'assistant', content: '', herr: 'Pensando…', profundo: S.profundo };
-    S.respActual = resp;
+    const resp = { role: 'assistant', content: '', herr: 'Pensando…', profundo: S.profundo, inicio: new Date().toISOString() };
     S.chat.push(resp);
     S.enCurso = true; S.ctl = new AbortController();
     $('#b-parar').hidden = false; pintarAvisoIA(); pintarMensajes(); $('#iso-banda').classList.add('gira');
@@ -895,7 +913,7 @@ Abajo está tu lectura actual de la empresa.`;
     while (turnos.length && turnos[0].role !== 'user') turnos.shift();
     const entrada = [{ role: 'user', content: contexto }].concat(turnos);
     const opciones = { signal: S.ctl.signal, modelTier: S.profundo ? 'complex' : 'default', onText: ({ text }) => { resp.content = text; resp.herr = ''; actualizarUltimo(); } };
-    const tools = herramientas();
+    const tools = herramientas(resp, S.ctl.signal);
     if (tools.length) opciones.tools = tools; else opciones.cache = false;
     try {
       const r = await S.sample(entrada, opciones);
@@ -912,8 +930,7 @@ Abajo está tu lectura actual de la empresa.`;
       S.enCurso = false; S.ctl = null;
       $('#b-parar').hidden = true; $('#iso-banda').classList.remove('gira');
       if (!resp.content && !resp.error && !resp.herr) S.chat.pop();
-      S.respActual = null;
-      LS.set('chat', S.chat.slice(-40).map(m => ({ role: m.role, content: m.content, profundo: m.profundo, cambios: m.cambios, deshecho: m.deshecho })));
+      guardarChat();
       if (resp.cambios && resp.cambios.length) recalcular();
       pintarMensajes(); pintarAvisoIA();
     }
@@ -996,7 +1013,14 @@ Abajo está tu lectura actual de la empresa.`;
     cotizaciones: cotizacionesActuales, guardarCot, borrarCot,
     persistencia: () => S.db ? 'db' : (window.claude ? 'conectando con la base…' : 'se guarda solo en este navegador'),
     preguntar: q => preguntar(q), puedeIA: () => S.ia === 'lista' && !!S.sample,
-    iaJSON: async prompt => { try { return await S.sample.json(prompt, { modelTier: 'quick' }); } catch (e) { throw new Error(e && e.code === 'invalid_json' ? 'AerIA no pudo leerlo como tabla. Prueba con el CSV del dashboard.' : (ERRORES[e && e.code] || 'No se pudo ordenar ahora.')); } },
+    iaJSON: async prompt => {
+      try { return await S.sample.json(prompt, { modelTier: 'quick' }); }
+      catch (e) {
+        const c = e && e.code;
+        if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(c)) { S.ia = 'denegada'; pintarAvisoIA(); throw new Error('AerIA no tiene permiso para usar Claude en esta vista. Usa «Leer»: no lo necesita.'); }
+        throw new Error(c === 'invalid_json' ? 'AerIA no pudo leerlo como tabla. Prueba con el CSV del dashboard.' : (ERRORES[c] || 'No se pudo ordenar ahora.'));
+      }
+    },
     descargas: async () => (window.claude && typeof window.claude.use === 'function') ? window.claude.use('downloads') : null,
   }) : null;
   const inicial = (location.hash || '').replace('#', '');

@@ -64,13 +64,30 @@ Luego `python3 tools/construir.py --revisar` y publicar `dist/aeria.html` en la 
 
 Los ids de alertas y acciones son estables (`fin-<hallazgo>`, `lic-<código>`,
 `feriado-<nivel>-<fecha>`, `vender-<nivel>-<fecha>`, `caja`, `cobrar`, `com-*`…): no
-cambiarlos sin migrar `estado/*`.
+cambiarlos sin migrar `estado/*`. Los comerciales llevan lo que los dispara, para que
+marcarlos no esconda el siguiente vencimiento: `com-seg-<cotización>-<próximo seguimiento
+o c+último contacto>`, `com-cierre-<cotización>-<cierre estimado>`, `com-fac-<cotización>`,
+`com-empujar-<cotización>`, `com-pronostico-<AAAA-MM>`, y las que agrupan varias
+(`com-seguimientos-`, `com-frias-`, `com-cierres-`, `com-facturar-`, `com-cobrar-`) una
+huella del grupo: si entra otra cotización al grupo, la alerta vuelve a aparecer.
 
 Ids de cotizaciones: `f-<folio>` (importadas con folio), `q-<hash>` (sin folio),
 `sii-<folio>` y `banco-*` (sembradas desde facturas y cobros), `plan-*`, `web-*` y
 `n-<folio>` (sembradas desde el plan 2027, aereo.cl y el CRM de Notion). El dashboard
-cuenta como «conectado» cuando alguna cotización tiene `origen` con «dashboard» o
-«import».
+cuenta como «conectado» cuando al menos 3 cotizaciones vienen de él: `origen` que empieza
+con «dashboard» (lo pone el importador con la casilla «Son las cotizaciones de mi
+dashboard», marcada sola con el extractor) o una entrada del historial `por: "dashboard"`
+(las sembradas que el dashboard actualizó). Al importar, una fila que no calza por id,
+folio ni folio de factura se une a la existente con cliente parecido y el mismo monto
+(±3 %, con o sin IVA): así lo sembrado no se duplica.
+
+El historial es una pila: «deshacer» revierte la última entrada con cambios no deshecha
+(la marca `deshecha: true`) y nunca la de creación. `AeriaComercial.deshacerPor` revierte
+todo lo que hizo AerIA en una respuesta del chat.
+
+Severidad de los hallazgos financieros: la del informe; los ids listados en
+`hallazgos_criticos` de `datos/privado/modelo2027.json` suben a crítica (el código no
+nombra hallazgos concretos).
 
 ## Probar
 

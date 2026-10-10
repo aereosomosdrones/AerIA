@@ -25,6 +25,10 @@
       const v = $('#v-comercial');
       const Rc = R();
       if (!Rc) { v.innerHTML = '<p class="panel-b mudo">El módulo comercial no está disponible en esta versión.</p>'; return; }
+      // un cambio que llega de la base repinta todo: se conserva el foco, lo escrito y el importador en curso
+      const act = document.activeElement, idAct = act && act.id && v.contains(act) ? act.id : '';
+      const sel = idAct && typeof act.selectionStart === 'number' ? [act.selectionStart, act.selectionEnd] : null;
+      const impVivo = L.imp && L.imp.guardando ? $('#panel-importar') : null;
       const conectado = ctx.M.dashboardConectado(Rc);
       const cot = ctx.I().cot;
       const kp = (l, val, s, cls) => `<div class="panel kpi"><span class="k-l">${l}</span><span class="k-v ${cls || ''}">${val}</span><span class="k-s">${s}</span></div>`;
@@ -44,7 +48,8 @@
           <section class="panel"><div class="panel-c"><h2>Pronóstico de venta B2B</h2><span class="bajada">Por mes: lo ganado más lo esperable de lo abierto (monto × probabilidad, por fecha estimada de cierre). Las líneas son el equilibrio y la meta del plan 2027.</span></div>
             <div class="panel-b"><div class="grafico" id="g-pronostico"></div></div>
             ${conectado ? '' : '<p class="nota-panel"><b>Pronóstico parcial.</b> Solo ve las cotizaciones cargadas aquí; las de tu dashboard todavía no. Por eso no lo uso para alertas ni para el escenario 2027 hasta que lo conectes.</p>'}
-            ${Rc.pronostico.sinFechaEstimada ? `<p class="nota-panel">${Rc.pronostico.sinFechaEstimada} cotizaciones abiertas no tienen fecha estimada de cierre: las ubico con el ciclo de venta${Rc.ciclo != null ? ' histórico (' + Math.round(Rc.ciclo) + ' días)' : ' supuesto de 30 días'}.</p>` : ''}</section>
+            ${Rc.pronostico.sinFechaEstimada ? `<p class="nota-panel">${Rc.pronostico.sinFechaEstimada} cotizaciones abiertas no tienen fecha estimada de cierre: las ubico con el ciclo de venta${Rc.ciclo != null ? ' histórico (' + Math.round(Rc.ciclo) + ' días)' : ' supuesto de 30 días'}.</p>` : ''}
+            ${Rc.abiertas.estancadas ? `<p class="nota-panel">${Rc.abiertas.estancadas === 1 ? 'Una cotización abierta está estancada' : Rc.abiertas.estancadas + ' cotizaciones abiertas están estancadas'} (${F.mm(Rc.abiertas.montoEstancadas)}): más de 90 días sin contacto, o viejas y sin cierre estimado. No las cuento en el pronóstico hasta que las retomes.</p>` : ''}</section>
           <section class="panel"><div class="panel-c"><h2>Embudo</h2><span class="bajada">Cantidad y monto por estado.</span></div>
             <div class="panel-b ras">${embudoHtml(Rc)}</div>
             <div class="panel-b ras">${lineasHtml(Rc)}</div></section>
@@ -62,7 +67,12 @@
           </div>
         </div>
         <section class="panel" id="panel-importar"${L.imp ? '' : ' hidden'}>${L.imp ? importadorHtml() : ''}</section>`;
+      if (impVivo) $('#panel-importar').replaceWith(impVivo);
       graficoPronostico($('#g-pronostico'), Rc);
+      if (idAct) {
+        const el = document.getElementById(idAct);
+        if (el) { el.focus({ preventScroll: true }); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch (e) { /* no todos los campos tienen selección */ } }
+      }
       if (L.editor && !$('#modal-com')) pintarEditor();
     }
 
@@ -122,16 +132,16 @@
       const l = filtradas(Rc);
       if (!l.length) return `<p class="panel-b mudo">${Rc.total ? 'No hay cotizaciones en este filtro.' : 'Todavía no hay cotizaciones. Créalas con «Nueva cotización» o tráelas desde tu dashboard con «Importar».'}</p>`;
       const vis = l.slice(0, L.ver);
-      const total = l.reduce((a, q) => a + (q.monto || 0), 0);
+      const total = l.reduce((a, q) => a + (q.valor || 0), 0); // neto, igual que los KPI
       return `<div class="tabla-env"><table class="tabla-cot"><thead><tr><th>Cliente y detalle</th><th class="d">Monto</th><th>Estado</th><th>Seguimiento</th></tr></thead><tbody>
         ${vis.map(q => `<tr class="fila-cot" data-com="abrir" data-id="${esc(q.id)}" tabindex="0">
           <td class="ancho"><div class="c-main">${esc(q.cliente || 'Sin cliente')}</div><div class="c-sub">${esc([q.folio ? 'N° ' + q.folio : '', q.lineaLabel, q.descripcion].filter(Boolean).join(' · ').slice(0, 160))}</div></td>
-          <td class="d">${F.clp(q.monto || 0)}${q.monto_tipo === 'con_iva' ? '<div class="c-sub">con IVA</div>' : ''}${q.abierta ? `<div class="c-sub">${Math.round(q.prob * 100)}% · ${F.mm(q.ponderado)}</div>` : ''}${!q.monto ? '<div class="c-sub">monto por completar</div>' : ''}</td>
+          <td class="d">${F.clp(q.monto || 0)}${q.monto_tipo === 'con_iva' ? '<div class="c-sub">con IVA</div>' : ''}${q.abierta ? `<div class="c-sub">${q.estancada ? 'estancada · no cuenta' : Math.round(q.prob * 100) + '% · ' + F.mm(q.ponderado)}</div>` : ''}${!q.monto ? '<div class="c-sub">monto por completar</div>' : ''}</td>
           <td class="nw"><label class="sr" for="est-${esc(q.id)}">Estado de ${esc(q.cliente)}</label><select id="est-${esc(q.id)}" class="sel-estado ${ESTADO_PILL[q.estado] || ''}" data-com-estado="${esc(q.id)}">${opciones(C.ESTADOS, q.estado)}</select>
             ${q.estado === 'ganada' ? `<div class="c-sub">${q.factura_folio ? 'Factura ' + esc(q.factura_folio) + (q.cobrada === 'si' ? ' · cobrada' : '') : 'Sin factura'}</div>` : ''}</td>
           <td class="nw">${q.abierta ? (q.proximo_seguimiento ? `<span class="pill${q.seguimientoVencido ? ' critica' : ''}">${esc(fechaCorta(q.proximo_seguimiento))}</span>` : '<span class="c-sub">sin fecha</span>') +
             (q.diasSinContacto != null ? `<div class="c-sub">contacto hace ${q.diasSinContacto} d</div>` : '') : `<span class="c-sub">${esc(fechaCorta(q.fecha_cierre))}</span>`}</td></tr>`).join('')}
-        </tbody><tfoot><tr><td style="font-weight:700">${l.length} cotizaciones</td><td class="d" style="font-weight:700">${F.clp(total)}</td><td colspan="2"></td></tr></tfoot></table></div>
+        </tbody><tfoot><tr><td style="font-weight:700">${l.length} cotizaciones</td><td class="d" style="font-weight:700">${F.clp(total)}<div class="c-sub">sin IVA</div></td><td colspan="2"></td></tr></tfoot></table></div>
         ${l.length > L.ver ? `<div class="pie-lista"><button class="enlace-btn" type="button" data-com="ver-mas">Ver ${Math.min(40, l.length - L.ver)} más (quedan ${l.length - L.ver})</button></div>` : ''}`;
     }
     function accionesHtml(Rc) {
@@ -188,9 +198,33 @@
     }
 
     /* ---------------- editor ---------------- */
-    function abrirEditor(id) { L.editor = id || 'nueva'; L.borrar = false; pintarEditor(); }
-    function cerrarEditor() { L.editor = null; L.borrar = false; const m = $('#modal-com'); if (m) m.remove(); }
-    function pintarEditor() {
+    const FONDO = 'body > header, body > nav, body > main, body > footer';
+    function abrirEditor(id) {
+      if (!L.editor) L.volver = document.activeElement;
+      L.editor = id || 'nueva'; L.borrar = false;
+      pintarEditor();
+      for (const el of $$(FONDO)) el.inert = true;
+      const m = $('#modal-com');
+      if (m) { const f = L.editor === 'nueva' ? $('#ce-cliente') : $('#ce-titulo'); if (f) f.focus(); }
+    }
+    function cerrarEditor() {
+      const id = L.editor;
+      L.editor = null; L.borrar = false; L.inicial = null;
+      const m = $('#modal-com'); if (m) m.remove();
+      for (const el of $$(FONDO)) el.inert = false;
+      // devolver el foco a lo que abrió el editor (o a su fila, si la tabla se repintó)
+      const v = L.volver; L.volver = null;
+      const destino = v && document.contains(v) ? v : id ? $$('.fila-cot').find(r => r.dataset.id === id) : null;
+      if (destino && destino.focus) destino.focus();
+    }
+    /* Lo que el usuario cambió en el formulario respecto de como se pintó */
+    function cambiosFormulario() {
+      const d = leerFormulario(), ini = L.inicial || {}, o = {};
+      for (const k of Object.keys(d)) if (d[k] !== ini[k]) o[k] = d[k];
+      return o;
+    }
+    function pintarEditor(conservar) {
+      const previos = conservar && $('#f-cot') ? cambiosFormulario() : null;
       const raw = L.editor === 'nueva' ? null : ctx.cotizaciones().find(q => q.id === L.editor);
       if (L.editor !== 'nueva' && !raw) { cerrarEditor(); return; }
       const q = raw ? C.normalizar(C.limpiar(raw), hoy(), R() ? R().ciclo || 30 : 30) : C.limpiar({ estado: 'enviada', fecha_cotizacion: hoy(), linea: 'curso_cerrado' });
@@ -202,7 +236,7 @@
       const hist = (raw && raw.historial ? raw.historial.slice().reverse() : []);
       m.innerHTML = `<div class="modal-fondo" data-com="cerrar"></div>
         <div class="modal-caja" role="dialog" aria-modal="true" aria-labelledby="ce-titulo">
-          <div class="modal-cab"><h2 id="ce-titulo">${raw ? esc(q.cliente || 'Cotización') : 'Nueva cotización'}</h2>
+          <div class="modal-cab"><h2 id="ce-titulo" tabindex="-1">${raw ? esc(q.cliente || 'Cotización') : 'Nueva cotización'}</h2>
             ${raw ? `<span class="pill ${ESTADO_PILL[q.estado] || ''}">${esc(q.estadoLabel)}</span>` : ''}
             <button class="cerrar" type="button" data-com="cerrar" aria-label="Cerrar">×</button></div>
           <form class="modal-cuerpo" id="f-cot" novalidate>
@@ -237,31 +271,42 @@
               <button class="btn" type="submit">${raw ? 'Guardar cambios' : 'Crear cotización'}</button>
               <button class="btn sec" type="button" data-com="cerrar">Cancelar</button>
               ${raw ? `<button class="btn sec" type="button" data-com="preguntar">Preguntar a AerIA</button>
-                <span class="sep"></span>${L.borrar ? `<span class="peligro">¿Eliminarla para siempre?</span><button class="btn sm peligro" type="button" data-com="borrar-si">Sí, eliminar</button><button class="enlace-btn" type="button" data-com="borrar-no">No</button>` : '<button class="enlace-btn peligro" type="button" data-com="borrar">Eliminar</button>'}` : ''}
+                <span class="sep"></span><span id="ce-borrar" class="ce-borrar">${borrarHtml()}</span>` : ''}
             </div>
-            ${hist.length ? `<details class="historial"><summary>Historial (${hist.length})</summary>
-              ${hist[0] && Object.keys(hist[0].cambios || {}).length ? '<button class="enlace-btn" type="button" data-com="deshacer">Deshacer el último cambio</button>' : ''}
-              <ol>${hist.map(h => `<li><b>${esc((h.fecha || '').slice(0, 16).replace('T', ' '))}</b> · ${esc(h.por || '')}${h.nota ? ' · ' + esc(h.nota) : ''}${Object.keys(h.cambios || {}).length ? '<div class="c-sub">' + Object.entries(h.cambios).map(([k, [a, b]]) => esc(k) + ': ' + esc(String(a) || '—') + ' → ' + esc(String(b) || '—')).join(' · ') + '</div>' : ''}</li>`).join('')}</ol></details>` : ''}
+            ${hist.length ? `<details class="historial"${L.histAbierto ? ' open' : ''}><summary>Historial (${hist.length})</summary>
+              ${raw && C.puedeDeshacer(raw) ? '<button class="enlace-btn" type="button" data-com="deshacer">Deshacer el último cambio</button>' : ''}
+              <ol>${hist.map(h => `<li${h.deshecha ? ' class="deshecha"' : ''}><b>${esc((h.fecha || '').slice(0, 16).replace('T', ' '))}</b> · ${esc(h.por || '')}${h.nota ? ' · ' + esc(h.nota) : ''}${h.deshecha ? ' · <i>deshecho</i>' : ''}${Object.keys(h.cambios || {}).length ? '<div class="c-sub">' + Object.entries(h.cambios).map(([k, [a, b]]) => esc(k) + ': ' + esc(String(a) || '—') + ' → ' + esc(String(b) || '—')).join(' · ') + '</div>' : ''}</li>`).join('')}</ol></details>` : ''}
           </form></div>`;
-      const primer = $('#ce-cliente'); if (primer && L.editor === 'nueva') primer.focus();
+      L.inicial = leerFormulario();
+      if (previos) for (const [k, val] of Object.entries(previos)) { const el = $('#ce-' + k); if (el) el.value = val; }
     }
+    const borrarHtml = () => L.borrar
+      ? '<span class="peligro">¿Eliminarla para siempre?</span><button class="btn sm peligro" type="button" data-com="borrar-si">Sí, eliminar</button><button class="enlace-btn" type="button" data-com="borrar-no">No</button>'
+      : '<button class="enlace-btn peligro" type="button" data-com="borrar">Eliminar</button>';
+    function pintarBorrar(foco) { const b = $('#ce-borrar'); if (!b) return; b.innerHTML = borrarHtml(); const f = b.querySelector(foco); if (f) f.focus(); }
     function leerFormulario() {
       const o = {};
       for (const el of $$('#f-cot [data-campo]')) o[el.dataset.campo] = el.value;
       return o;
     }
     async function guardarFormulario() {
-      const datos = leerFormulario(), msg = $('#ce-msg');
-      if (!String(datos.cliente || '').trim()) { msg.textContent = 'Falta el cliente.'; $('#ce-cliente').focus(); return; }
+      if (L.guardando) return;
+      const msg = $('#ce-msg');
       const actual = L.editor === 'nueva' ? null : ctx.cotizaciones().find(q => q.id === L.editor);
+      if (L.editor !== 'nueva' && !actual) { msg.textContent = 'Esta cotización ya no existe (alguien la eliminó).'; return; }
+      // en una existente se mandan solo los campos que cambiaron: no se pisa lo que otro cambió mientras el editor estaba abierto
+      const datos = actual ? cambiosFormulario() : leerFormulario();
+      if (actual && !Object.keys(datos).length) { cerrarEditor(); return; }
+      if ((!actual || 'cliente' in datos) && !String(datos.cliente || '').trim()) { msg.textContent = 'Falta el cliente.'; $('#ce-cliente').focus(); return; }
       if (!actual) {
         const prov = C.limpiar(Object.assign({}, datos, { origen: 'manual' }));
         if (ctx.cotizaciones().some(q => q.id === prov.id)) prov.id = prov.id + '-' + Date.now().toString(36);
         datos.id = prov.id; datos.origen = 'manual';
       }
       const r = C.aplicar(actual, datos, 'usuario', actual ? '' : 'Creada en AerIA', ahoraISO());
-      msg.textContent = 'Guardando…';
+      msg.textContent = 'Guardando…'; L.guardando = true;
       const ok = await ctx.guardarCot(r.cotizacion);
+      L.guardando = false;
       if (!ok) { msg.textContent = 'No se pudo guardar. Revisa tu conexión e intenta de nuevo.'; return; }
       cerrarEditor(); ctx.pintar();
     }
@@ -270,16 +315,22 @@
       const nota = $('#ce-seg-nota').value.trim(), prox = $('#ce-seg-fecha').value;
       if (!nota && !prox) { $('#ce-msg').textContent = 'Escribe qué pasó o la próxima fecha.'; return; }
       const r = C.aplicar(actual, { ultimo_contacto: hoy(), proximo_seguimiento: prox || actual.proximo_seguimiento }, 'usuario', 'Seguimiento: ' + (nota || 'contacto'), ahoraISO());
-      if (await ctx.guardarCot(r.cotizacion)) { pintarEditor(); ctx.pintar(); }
+      if (await ctx.guardarCot(r.cotizacion)) { pintarEditor(true); $('#ce-msg').textContent = 'Seguimiento anotado.'; ctx.pintar(); }
+      else $('#ce-msg').textContent = 'No se pudo anotar el seguimiento. Intenta de nuevo.';
     }
 
     /* ---------------- importador ---------------- */
     function abrirImportador() {
-      L.imp = L.imp || { paso: 1, texto: '', conjuntos: [], elegido: 0, mapeo: {}, origen: '', plan: null, msg: '' };
+      L.imp = L.imp || { paso: 1, texto: '', conjuntos: [], elegido: 0, mapeo: {}, origen: '', plan: null, msg: '', unir: true, esDashboard: false };
       const p = $('#panel-importar'); if (!p) return;
       p.hidden = false; p.innerHTML = importadorHtml(); p.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
-    function pintarImportador() { const p = $('#panel-importar'); if (p && L.imp) p.innerHTML = importadorHtml(); }
+    function pintarImportador() {
+      const p = $('#panel-importar'); if (!p || !L.imp) return;
+      const act = document.activeElement, idAct = act && act.id && p.contains(act) ? act.id : '';
+      p.innerHTML = importadorHtml();
+      if (idAct && document.getElementById(idAct)) document.getElementById(idAct).focus({ preventScroll: true });
+    }
     function importadorHtml() {
       const I0 = L.imp;
       const cab = `<div class="panel-c"><h2>Importar cotizaciones</h2><span class="bajada">Paso ${I0.paso} de 3 · ${['', 'Trae los datos', 'Revisa las columnas', 'Confirma'][I0.paso]}</span>
@@ -288,16 +339,16 @@
         <p class="c-sub">Pega aquí lo que copió el marcador «AerIA · Extraer» desde tu dashboard, o un CSV, JSON o tabla copiada de Excel. También puedes subir el archivo.</p>
         <div class="fila"><label class="btn sm sec" for="imp-archivo">Elegir archivo</label><input id="imp-archivo" type="file" accept=".csv,.json,.txt,.tsv,.html,.htm" class="sr" data-com-archivo="1"><span class="c-sub">${esc(I0.origen || '')}</span></div>
         <label class="sr" for="imp-texto">Datos a importar</label>
-        <textarea id="imp-texto" placeholder="Pega aquí (Cmd+V)…">${esc(I0.texto.slice(0, 20000))}</textarea>
+        <textarea id="imp-texto" placeholder="Pega aquí (Cmd+V)…">${esc(I0.texto)}</textarea>
         <div class="fila"><button class="btn sm" type="button" data-com="imp-leer">Leer</button>${ctx.puedeIA() ? '<button class="btn sm sec" type="button" data-com="imp-ia">Que AerIA lo ordene</button>' : ''}</div>
         <p class="msg" aria-live="polite">${esc(I0.msg)}</p></div>`;
       if (I0.paso === 2) {
         const cj = I0.conjuntos[I0.elegido];
         const cols = cj.columnas;
-        const campos = [['cliente', 'Cliente *'], ['monto', 'Monto *'], ['estado', 'Estado'], ['folio', 'N° de cotización'], ['descripcion', 'Descripción'], ['linea', 'Línea'],
+        const campos = [['cliente', 'Cliente *'], ['monto', 'Monto'], ['estado', 'Estado'], ['folio', 'N° de cotización'], ['descripcion', 'Descripción'], ['linea', 'Línea'],
           ['fecha_cotizacion', 'Fecha de cotización'], ['fecha_cierre', 'Fecha de cierre'], ['fecha_cierre_estimada', 'Cierre estimado'], ['fecha_ejecucion', 'Fecha de ejecución'],
           ['proximo_seguimiento', 'Próximo seguimiento'], ['probabilidad', 'Probabilidad'], ['contacto', 'Contacto'], ['email', 'Correo'], ['telefono', 'Teléfono'], ['rut', 'RUT'],
-          ['factura_folio', 'Factura'], ['cobrada', 'Cobrada'], ['motivo_perdida', 'Motivo de pérdida'], ['notas', 'Notas']];
+          ['factura_folio', 'Factura'], ['cobrada', 'Cobrada'], ['motivo_perdida', 'Motivo de pérdida'], ['notas', 'Notas'], ['id', 'ID de AerIA (CSV exportado desde aquí)']];
         const muestra = C.mapear(cj.filas.slice(0, 5), I0.mapeo, 'vista previa');
         return cab + `<div class="importar">
           ${I0.conjuntos.length > 1 ? `<label class="campo-f"><span>Encontré ${I0.conjuntos.length} conjuntos de datos. Usar:</span><select data-com-input="imp-conjunto">${I0.conjuntos.map((c, i) => `<option value="${i}"${i === I0.elegido ? ' selected' : ''}>${esc(c.origen)} · ${c.filas.length} filas</option>`).join('')}</select></label>` : `<p class="c-sub">${esc(cj.origen)} · ${cj.filas.length} filas.</p>`}
@@ -306,23 +357,29 @@
           <div class="tabla-env"><table><thead><tr><th>Cliente</th><th class="d">Monto</th><th>Estado</th><th>Fecha</th><th>Línea</th></tr></thead><tbody>
             ${muestra.map(q => `<tr><td>${esc(q.cliente || '—')}<div class="c-sub">${esc(q.descripcion.slice(0, 80))}</div></td><td class="d">${F.clp(q.monto)}</td><td>${esc((C.ESTADO[q.estado] || {}).label || q.estado)}</td><td class="nw">${esc(q.fecha_cotizacion || '—')}</td><td>${esc((C.LINEA[q.linea] || {}).label || '')}</td></tr>`).join('')}
           </tbody></table></div>
-          <div class="fila"><button class="btn sm" type="button" data-com="imp-plan"${I0.mapeo.cliente || I0.mapeo.monto ? '' : ' disabled'}>Seguir</button><button class="enlace-btn" type="button" data-com="imp-volver">Volver</button></div>
+          <div class="fila"><button class="btn sm" type="button" data-com="imp-plan"${I0.mapeo.cliente || I0.mapeo.descripcion ? '' : ' disabled'}>Seguir</button><button class="enlace-btn" type="button" data-com="imp-volver">Volver</button></div>
+          ${I0.mapeo.cliente || I0.mapeo.descripcion ? '' : '<p class="c-sub">Asigna al menos la columna del cliente (o la descripción) para seguir.</p>'}
           <p class="msg" aria-live="polite">${esc(I0.msg)}</p></div>`;
       }
       const P = I0.plan;
+      const n = P.crear.length + P.actualizar.length;
       return cab + `<div class="importar">
         <p>Se van a <b>crear ${P.crear.length}</b> cotizaciones y <b>actualizar ${P.actualizar.length}</b>${P.iguales ? '; ' + P.iguales + ' ya estaban iguales' : ''}. Cada cambio queda en el historial de la cotización.</p>
+        ${P.parecidas.length || !I0.unir ? `<div class="aviso-imp"><p>${P.parecidas.length ? P.parecidas.length + (P.parecidas.length === 1 ? ' fila se parece' : ' filas se parecen') + ' a cotizaciones que ya estaban (sembradas desde el SII, el banco, Notion o el plan): mismo cliente y mismo monto.' : 'No estoy uniendo las filas parecidas a lo que ya estaba.'}</p>
+          ${P.parecidas.length ? `<ul class="c-sub">${P.parecidas.slice(0, 30).map(x => '<li>' + esc(x.nueva.cliente) + ' ' + F.clp(x.nueva.monto) + ' → ' + esc(x.antes.cliente) + ' (' + esc(x.antes.id) + ')</li>').join('')}</ul>` : ''}
+          <label class="chk"><input type="checkbox" id="imp-unir" data-com-input="imp-unir"${I0.unir ? ' checked' : ''}> Unirlas con lo que ya estaba en vez de crearlas de nuevo (recomendado)</label></div>` : ''}
+        ${P.repetidas.length ? `<p class="c-sub">${P.repetidas.length} ${P.repetidas.length === 1 ? 'fila repite' : 'filas repiten'} un N° de cotización que ya existe con otro cliente: se crean aparte.</p>` : ''}
         ${P.actualizar.length ? `<details><summary>Ver los cambios (${P.actualizar.length})</summary><ul class="c-sub">${P.actualizar.slice(0, 80).map(u => '<li>' + esc(u.antes.cliente || u.id) + ': ' + Object.entries(u.cambios).map(([k, v]) => esc(k) + ' → ' + esc(String(v))).join(', ') + '</li>').join('')}</ul></details>` : ''}
-        <label class="chk"><input type="checkbox" id="imp-dashboard"${I0.esDashboard ? ' checked' : ''}> Estos datos vienen de mi dashboard comercial</label>
-        <div class="fila"><button class="btn sm" type="button" data-com="imp-go"${P.crear.length + P.actualizar.length ? '' : ' disabled'}>Importar</button><button class="enlace-btn" type="button" data-com="imp-volver">Volver</button></div>
-        <div class="progreso" hidden><i></i></div>
+        <label class="chk"><input type="checkbox" id="imp-dashboard" data-com-input="imp-dashboard"${I0.esDashboard ? ' checked' : ''}${I0.guardando ? ' disabled' : ''}> Son las cotizaciones de mi dashboard comercial: AerIA las usará para el pronóstico y las alertas</label>
+        <div class="fila"><button class="btn sm" type="button" data-com="imp-go"${n && !I0.guardando ? '' : ' disabled'}>${I0.guardando ? 'Importando…' : 'Importar'}</button>${I0.guardando ? '' : '<button class="enlace-btn" type="button" data-com="imp-volver">Volver</button>'}</div>
+        <div class="progreso"${I0.guardando ? '' : ' hidden'}><i style="width:${Math.round((I0.avance || 0) * 100)}%"></i></div>
         <p class="msg" aria-live="polite">${esc(I0.msg)}</p></div>`;
     }
     function leerImportacion(texto, origen) {
       const I0 = L.imp;
       I0.texto = texto; I0.origen = origen || I0.origen || 'texto pegado';
       try { I0.conjuntos = C.conjuntos(texto); } catch (e) { I0.conjuntos = []; }
-      I0.esDashboard = /aeria-extractor/.test(texto.slice(0, 200)) || /\.(csv|json|tsv|html?)$/i.test(I0.origen);
+      I0.esDashboard = /aeria-extractor/.test(texto.slice(0, 200));
       if (!I0.conjuntos.length) { I0.msg = 'No encontré filas de datos ahí. Revisa que lo pegado tenga encabezados (cliente, monto, estado…).'; pintarImportador(); return; }
       I0.elegido = 0; I0.mapeo = Object.assign({}, I0.conjuntos[0].mapeo); I0.paso = 2; I0.msg = '';
       pintarImportador();
@@ -330,22 +387,28 @@
     function planificar() {
       const I0 = L.imp, cj = I0.conjuntos[I0.elegido];
       const nuevas = C.mapear(cj.filas, I0.mapeo, 'importación');
-      I0.plan = C.planImportacion(nuevas, ctx.cotizaciones().map(C.limpiar));
+      I0.plan = C.planImportacion(nuevas, ctx.cotizaciones().map(C.limpiar), { unirParecidas: I0.unir !== false });
       I0.paso = 3; I0.msg = ''; pintarImportador();
     }
     async function ejecutarImportacion() {
-      const I0 = L.imp, P = I0.plan;
-      const origen = ($('#imp-dashboard') && $('#imp-dashboard').checked ? 'dashboard' : 'importación') + ' ' + hoy();
-      const barra = $('#panel-importar .progreso'), msg = $('#panel-importar .msg');
-      barra.hidden = false;
-      const tareas = P.crear.map(q => () => C.aplicar(null, Object.assign({}, q, { origen }), 'importación', 'Importada desde ' + I0.origen, ahoraISO()).cotizacion)
-        .concat(P.actualizar.map(u => () => C.aplicar(u.antes, u.cambios, 'importación', 'Actualizada desde ' + I0.origen, ahoraISO()).cotizacion));
+      const I0 = L.imp;
+      if (!I0 || !I0.plan || I0.guardando) return;   // un segundo clic no lanza otra pasada
+      const P = I0.plan;
+      // «dashboard» marca que esto es el pipeline completo (conecta el pronóstico y las alertas)
+      const por = I0.esDashboard ? 'dashboard' : 'importación';
+      const origen = por + ' ' + hoy();
+      I0.guardando = true; I0.avance = 0; I0.msg = 'Guardando…'; pintarImportador();
+      // se arma cada cotización con lo último de la base, no con lo que había al planificar
+      const vigente = u => ctx.cotizaciones().find(q => q.id === u.id) || u.antes;
+      const tareas = P.crear.map(q => () => C.aplicar(null, Object.assign({}, q, { origen }), por, 'Importada desde ' + I0.origen, ahoraISO()).cotizacion)
+        .concat(P.actualizar.map(u => () => C.aplicar(vigente(u), u.cambios, por, 'Actualizada desde ' + I0.origen, ahoraISO()).cotizacion));
       let hechas = 0, fallas = 0;
       for (const t of tareas) {
         const ok = await ctx.guardarCot(t(), true);
         if (ok) hechas++; else fallas++;
-        barra.firstElementChild.style.width = Math.round((hechas + fallas) / tareas.length * 100) + '%';
-        msg.textContent = 'Guardando ' + (hechas + fallas) + ' de ' + tareas.length + '…';
+        I0.avance = (hechas + fallas) / tareas.length; I0.msg = 'Guardando ' + (hechas + fallas) + ' de ' + tareas.length + '…';
+        const p = $('#panel-importar');
+        if (p) { const i = p.querySelector('.progreso i'), m = p.querySelector('.msg'); if (i) i.style.width = Math.round(I0.avance * 100) + '%'; if (m) m.textContent = I0.msg; }
       }
       L.imp = null;
       ctx.pintar();
@@ -355,7 +418,8 @@
     /* ---------------- exportar ---------------- */
     async function exportarCSV() {
       const campos = ['id'].concat(C.CAMPOS);
-      const cel = v => { const s = String(v == null ? '' : v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+      // una celda que empieza con = + - @ se neutraliza para que Excel no la ejecute como fórmula
+      const cel = v => { let s = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
       const csv = '﻿' + [campos.join(';')].concat(ctx.cotizaciones().map(q => campos.map(k => cel(q[k])).join(';'))).join('\n');
       const nombre = 'aeria-cotizaciones-' + hoy() + '.csv';
       const d = await ctx.descargas();
@@ -372,7 +436,11 @@
       if (!t) return;
       const a = t.dataset.com;
       if (a === 'marcador') { ev.preventDefault(); ctx.avisar('Arrastra el botón «AerIA · Extraer» a tu barra de marcadores; aquí dentro no hace nada.'); return; }
-      if (a === 'abrir') { abrirEditor(t.dataset.id); return; }
+      if (a === 'abrir') {
+        // el selector de estado y los demás controles de la fila no abren el editor
+        if (ev.target !== t && ev.target.closest('select, input, label, textarea, a, button:not([data-com])')) return;
+        abrirEditor(t.dataset.id); return;
+      }
       if (a === 'nueva') { abrirEditor('nueva'); return; }
       if (a === 'cerrar') { cerrarEditor(); return; }
       if (a === 'importar') { abrirImportador(); return; }
@@ -385,13 +453,16 @@
         return;
       }
       if (a === 'seguimiento') { anotarSeguimiento(); return; }
-      if (a === 'borrar') { L.borrar = true; pintarEditor(); return; }
-      if (a === 'borrar-no') { L.borrar = false; pintarEditor(); return; }
+      if (a === 'borrar') { L.borrar = true; pintarBorrar('[data-com="borrar-no"]'); return; }
+      if (a === 'borrar-no') { L.borrar = false; pintarBorrar('[data-com="borrar"]'); return; }
       if (a === 'borrar-si') { const id = L.editor; if (await ctx.borrarCot(id)) { cerrarEditor(); ctx.pintar(); } return; }
       if (a === 'deshacer') {
         const actual = ctx.cotizaciones().find(q => q.id === L.editor); if (!actual) return;
         const d = C.deshacer(actual, ahoraISO());
-        if (d && await ctx.guardarCot(d)) { pintarEditor(); ctx.pintar(); }
+        if (!d) { $('#ce-msg').textContent = 'No hay cambios que deshacer.'; return; }
+        L.histAbierto = true;
+        if (await ctx.guardarCot(d)) { pintarEditor(true); $('#ce-msg').textContent = 'Cambio deshecho.'; ctx.pintar(); }
+        else $('#ce-msg').textContent = 'No se pudo deshacer. Intenta de nuevo.';
         return;
       }
       if (a === 'preguntar') {
@@ -403,18 +474,23 @@
       if (a === 'imp-volver') { L.imp.paso = Math.max(1, L.imp.paso - 1); L.imp.msg = ''; pintarImportador(); return; }
       if (a === 'imp-leer') { leerImportacion($('#imp-texto').value, L.imp.origen && L.imp.origen !== 'texto pegado' ? L.imp.origen : 'texto pegado'); return; }
       if (a === 'imp-plan') { planificar(); return; }
-      if (a === 'imp-go') { t.disabled = true; ejecutarImportacion(); return; }
+      if (a === 'imp-go') { ejecutarImportacion(); return; }
       if (a === 'imp-ia') {
+        const I0 = L.imp; if (!I0 || I0.ordenando) return;
         const txt = $('#imp-texto').value.trim();
-        if (!txt) { L.imp.msg = 'Pega primero el contenido.'; pintarImportador(); return; }
-        L.imp.msg = 'AerIA está ordenando los datos…'; pintarImportador();
+        I0.texto = txt;
+        if (!txt) { I0.msg = 'Pega primero el contenido.'; pintarImportador(); return; }
+        const MAX = 50000;
+        I0.ordenando = true; I0.msg = 'AerIA está ordenando los datos…'; pintarImportador();
         try {
-          const arr = await ctx.iaJSON('Convierte este export de un dashboard de cotizaciones de una empresa chilena en un JSON array de objetos con estas claves: cliente, monto (número en pesos, sin puntos), estado (enviada, negociacion, ganada, perdida o vencida), fecha_cotizacion (AAAA-MM-DD o ""), fecha_cierre (AAAA-MM-DD o ""), linea (sence, curso_cerrado, aoc, servicios, escuela, flota, venta_equipos u otro), descripcion, folio, contacto, notas. Una fila por cotización; ignora totales y encabezados. Responde solo el JSON.\n\n' + txt.slice(0, 50000));
-          const filas = Array.isArray(arr) ? arr : [];
-          L.imp.conjuntos = filas.length ? [{ origen: 'Ordenado por AerIA', filas, columnas: Object.keys(filas[0] || {}), puntaje: 9, mapeo: C.sugerirMapeo(Object.keys(filas[0] || {})) }] : [];
-          if (!filas.length) { L.imp.msg = 'AerIA no encontró cotizaciones en ese contenido.'; pintarImportador(); return; }
-          L.imp.elegido = 0; L.imp.mapeo = L.imp.conjuntos[0].mapeo; L.imp.paso = 2; L.imp.msg = ''; pintarImportador();
-        } catch (e) { L.imp.msg = e && e.message ? e.message : 'No se pudo ordenar ahora.'; pintarImportador(); }
+          const arr = await ctx.iaJSON('Convierte este export de un dashboard de cotizaciones de una empresa chilena en un JSON array de objetos con estas claves: cliente, monto (número en pesos, sin puntos), estado (enviada, negociacion, ganada, perdida o vencida), fecha_cotizacion (AAAA-MM-DD o ""), fecha_cierre (AAAA-MM-DD o ""), linea (sence, curso_cerrado, aoc, servicios, escuela, flota, venta_equipos u otro), descripcion, folio, contacto, notas. Una fila por cotización; ignora totales y encabezados. Responde solo el JSON.\n\n' + txt.slice(0, MAX));
+          const filas = Array.isArray(arr) ? arr.filter(x => x && typeof x === 'object' && !Array.isArray(x)) : [];
+          I0.conjuntos = filas.length ? [{ origen: 'Ordenado por AerIA', filas, columnas: Object.keys(filas[0] || {}), puntaje: 9, mapeo: C.sugerirMapeo(Object.keys(filas[0] || {})) }] : [];
+          if (!filas.length) { I0.msg = 'AerIA no encontró cotizaciones en ese contenido.'; return; }
+          I0.elegido = 0; I0.mapeo = Object.assign({}, I0.conjuntos[0].mapeo); I0.paso = 2;
+          I0.msg = txt.length > MAX ? 'Ojo: AerIA solo leyó los primeros ' + MAX.toLocaleString('es-CL') + ' caracteres de ' + txt.length.toLocaleString('es-CL') + '. Revisa que estén todas o importa el CSV o el JSON con «Leer», que no tiene límite.' : '';
+        } catch (e) { I0.msg = e && e.message ? e.message : 'No se pudo ordenar ahora.'; }
+        finally { I0.ordenando = false; if (L.imp === I0) pintarImportador(); }
       }
     });
     document.addEventListener('change', async ev => {
@@ -425,21 +501,42 @@
         if (await ctx.guardarCot(r.cotizacion)) ctx.pintar(); else t.value = actual.estado;
       } else if (t.dataset.comInput === 'linea' || t.dataset.comInput === 'orden') {
         L[t.dataset.comInput] = t.value; L.ver = 40; $('#tabla-cot').innerHTML = tablaHtml(R());
+      } else if (t.dataset.comInput === 'imp-unir' && L.imp) {
+        L.imp.unir = t.checked; planificar();
+      } else if (t.dataset.comInput === 'imp-dashboard' && L.imp) {
+        L.imp.esDashboard = t.checked;
       } else if (t.dataset.comInput === 'imp-conjunto') {
         L.imp.elegido = Number(t.value); L.imp.mapeo = Object.assign({}, L.imp.conjuntos[L.imp.elegido].mapeo); pintarImportador();
       } else if (t.dataset.comMapeo) {
         L.imp.mapeo[t.dataset.comMapeo] = t.value; pintarImportador();
       } else if (t.dataset.comArchivo && t.files && t.files[0]) {
         const f = t.files[0]; L.imp.origen = f.name;
-        leerImportacion(await f.text(), f.name);
+        // Excel guarda los CSV en Windows-1252: si no es UTF-8 válido, se lee así
+        const buf = await f.arrayBuffer();
+        let txt;
+        try { txt = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { txt = new TextDecoder('windows-1252').decode(buf); }
+        leerImportacion(txt, f.name);
       }
     });
     document.addEventListener('input', ev => {
       if (ev.target.dataset.comInput === 'texto') { L.texto = ev.target.value; L.ver = 40; $('#tabla-cot').innerHTML = tablaHtml(R()); }
+      else if (ev.target.id === 'imp-texto' && L.imp) L.imp.texto = ev.target.value;   // lo pegado sobrevive a un repintado
     });
     document.addEventListener('submit', ev => { if (ev.target.id === 'f-cot') { ev.preventDefault(); guardarFormulario(); } });
     document.addEventListener('keydown', ev => {
-      if (ev.key === 'Escape' && L.editor) cerrarEditor();
+      if (ev.key === 'Escape' && L.editor) { cerrarEditor(); return; }
+      // Enter en «Qué pasó» o en su fecha anota el seguimiento (no envía todo el formulario)
+      if (ev.key === 'Enter' && (ev.target.id === 'ce-seg-nota' || ev.target.id === 'ce-seg-fecha')) { ev.preventDefault(); anotarSeguimiento(); return; }
+      // el foco no sale del editor con Tab
+      if (ev.key === 'Tab' && L.editor) {
+        const caja = $('#modal-com .modal-caja'); if (!caja) return;
+        const f = $$('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex="0"]', caja).filter(x => x.offsetParent !== null);
+        if (!f.length) return;
+        const i = f.indexOf(document.activeElement);
+        if (ev.shiftKey && (i <= 0)) { ev.preventDefault(); f[f.length - 1].focus(); }
+        else if (!ev.shiftKey && (i === f.length - 1 || i < 0)) { ev.preventDefault(); f[0].focus(); }
+        return;
+      }
       if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.classList && ev.target.classList.contains('fila-cot')) { ev.preventDefault(); abrirEditor(ev.target.dataset.id); }
     });
     document.addEventListener('paste', ev => {

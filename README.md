@@ -79,8 +79,13 @@ devuelve KPIs, alertas, agenda, eventos y el briefing. El **módulo comercial**
 
 Las cotizaciones viven en la base de la página (un documento por cotización), así
 que se ven y se editan igual desde cualquier dispositivo. Los montos se cuentan sin
-IVA. Mientras el dashboard no esté conectado, AerIA usa su última tasa de cierre
-conocida y no lanza alertas de pronóstico, para no alarmar con un pipeline incompleto. Corre en la página (así las
+IVA. Mientras el dashboard no esté conectado (al menos 3 cotizaciones importadas
+como «dashboard»), AerIA usa su última tasa de cierre conocida y no lanza alertas de
+pronóstico, para no alarmar con un pipeline incompleto. Las cotizaciones abiertas con
+más de 90 días sin contacto, o viejas y sin cierre estimado, quedan «estancadas» y no
+cuentan en el pronóstico. Importar no duplica: una fila se une a la cotización que ya
+existe por id, folio, folio de factura o cliente parecido con el mismo monto, y solo
+cambia los campos que la fila trae. Corre en la página (así las
 cuentas regresivas se recalculan cada día) y en node para probarlo.
 
 ## Privacidad

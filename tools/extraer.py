@@ -104,7 +104,6 @@ def extraer_finanzas(origen: Path):
         "mp": st["mp"],
         "facturacion": st["sii"],
         "compras_resumen": st["compras"],
-        "cofundador": st["vidal"],
         "iva_julio": st["iva_jul"],
         "caja_minima": st["min_san"],
         "dias_bajos": st["dias_bajos"],

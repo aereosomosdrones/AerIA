@@ -41,8 +41,13 @@
   const NIVELES = ['critica', 'alta', 'oportunidad', 'media', 'baja'];
   /* Módulo comercial (app/comercial.js): en la página llega como global; en node, por require */
   const Com = (typeof module !== 'undefined' && module.exports) ? require('./comercial.js') : raiz.AeriaComercial;
-  /* ¿Ya entró el detalle del dashboard comercial (no solo lo sembrado desde SII, Notion o el plan)? */
-  const dashboardConectado = com => !!(com && com.cotizaciones.some(q => /dashboard|import/i.test(q.origen || '')));
+  /* ¿Ya entró el detalle del dashboard comercial (no solo lo sembrado desde SII, Notion o el plan)?
+     Cuenta solo lo importado como «dashboard» (el extractor o la casilla del importador) y
+     desde un mínimo de cotizaciones: un pipeline parcial no debe alimentar alertas ni el 2027. */
+  const MIN_DASHBOARD = 3;
+  const vieneDelDashboard = q => /^dashboard/i.test(String(q.origen || '').trim()) || (q.historial || []).some(h => h.por === 'dashboard');
+  const deDashboard = lista => (lista || []).filter(vieneDelDashboard).length >= MIN_DASHBOARD;
+  const dashboardConectado = com => !!(com && deDashboard(com.cotizaciones));
 
   /* ---------- formato ---------- */
   function miles(n) {
@@ -65,6 +70,7 @@
   function fCorta(s) { const d = fecha(s); return d.getDate() + '-' + MES3[d.getMonth()]; }
   function fLarga(s) { const d = fecha(s); return DIAS_SEM[d.getDay()] + ' ' + d.getDate() + ' de ' + MESES[d.getMonth()]; }
   function mesNombre(ym) { return MESES[Number(ym.slice(5, 7)) - 1]; }
+  function sumarMesesISO(s, n) { const [y, m] = s.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); }
   function plano(t) { return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
   function cuando(dias) {
     if (dias < 0) return 'hace ' + (-dias) + (dias === -1 ? ' día' : ' días');
@@ -361,7 +367,8 @@
     const { pasado, cursos, lic, cot, porCobrar, cruce, futuro } = X;
     const M = D.modelo;
 
-    // Caja
+    // Caja (la acción sale del hallazgo de liquidez del informe, si lo trae)
+    const liquidez = D.finanzas.hallazgos.find(h => h.id === 'liquidez');
     if (pasado.cajaFinal < M.costos_fijos_mes) {
       add({
         id: 'caja', nivel: 'critica', foco: 'cruce', monto: pasado.cajaFinal,
@@ -370,14 +377,16 @@
           '. La regla del plan 2027 es nunca bajar de 1 mes de costos fijos (' + mm(M.costos_fijos_mes, 2) + '). ' +
           'En ' + pasado.etiqueta.replace(/ \d{4}$/, '') + ' la operación dejó ' + mm(pasado.flujoOperacional) + ', pero socio, cofundador y Aéreo OTEC restaron ' +
           mm(-(pasado.socioNeto + pasado.cofundador + pasado.otec)) + ' netos. La caja más baja fue ' + clp(pasado.cajaMin.total) + ' el ' + fCorta(pasado.cajaMin.fecha) + '.',
-        accion: 'Fijar un saldo mínimo de operación y programar los retiros del socio después de cubrir los egresos del mes. Cobrar lo pendiente y hacer preventa de noviembre y diciembre.',
+        accion: (liquidez && liquidez.accion ? liquidez.accion.replace(/\.?$/, '. ') : 'Fijar un saldo mínimo de operación. ') +
+          'Cobrar lo pendiente y hacer preventa de ' + mesNombre(sumarMesesISO(hoy, 1)) + ' y ' + mesNombre(sumarMesesISO(hoy, 2)) + '.',
         fuente: 'Finanzas ' + pasado.etiqueta + ' + Plan 2027 (Tablero mensual)',
       });
     }
-    // Hallazgos financieros: alta → alta (impuestos y socio suben a crítica)
+    // Hallazgos financieros: conservan su severidad; los que el modelo marca en «hallazgos_criticos» suben a crítica
+    const criticos = new Set(M.hallazgos_criticos || []);
     for (const h of D.finanzas.hallazgos) {
       if (h.id === 'liquidez') continue; // ya está en «caja»
-      const nivel = (h.id === 'socio' || h.id === 'impuestos') ? 'critica' : h.sev;
+      const nivel = criticos.has(h.id) ? 'critica' : h.sev;
       add({
         id: 'fin-' + h.id, nivel, foco: 'pasado', monto: h.monto,
         titulo: h.titulo, detalle: h.detalle, accion: h.accion,
@@ -500,7 +509,7 @@
   /* ---------- AGENDA: lo que AerIA te ordena hacer ---------- */
   function construirAgenda(D, X, alertas, hoy) {
     const items = [];
-    const add = (o) => { if (!items.some(i => i.id === o.id)) items.push(o); };
+    const add = (o) => { if (!items.some(i => i.id === o.id || i.titulo === o.titulo)) items.push(o); };
     const { porCobrar, lic, pasado } = X;
     for (const a of alertas) {
       if (a.id.startsWith('lic-') && a.nivel === 'alta') {
@@ -599,10 +608,13 @@
     p.push('La escuela está en su mejor momento: el Nivel 1 se agotó ' + cursos.racha.length + ' meses seguidos y de las ' +
       cursos.resN1.fechas + ' fechas de Nivel 1 que vienen ya están vendidos ' + cursos.resN1.vendidos + ' de ' + cursos.resN1.cupos + ' cupos. ' +
       'En ' + pasado.meses.map(m => mesNombre(m.mes)).join(' y ') + ' la operación dejó ' + mm(pasado.flujoOperacional) + ' de caja.');
-    const hall = id => D.finanzas.hallazgos.some(h => h.id === id);
-    p.push('Pero esa caja no se quedó en la empresa: salieron ' + mm(-pasado.socioNeto) + ' netos a la cuenta del socio' + (hall('socio') ? ' sin clasificar' : '') + ' y ' +
+    // los hallazgos que el modelo marca como críticos se nombran con su propio título (texto del informe)
+    const criticos = new Set(D.modelo.hallazgos_criticos || []);
+    const hCrit = D.finanzas.hallazgos.filter(h => criticos.has(h.id));
+    p.push('Pero esa caja no se quedó en la empresa: salieron ' + mm(-pasado.socioNeto) + ' netos a la cuenta del socio y ' +
       mm(-pasado.cofundador) + ' al cofundador (desde Aéreo OTEC entraron ' + mm(pasado.otec) + '). Al ' + fCorta(pasado.fechaCorte) + ' quedaban ' + clp(pasado.cajaFinal) +
-      ': ' + futuro.runwayDias.toFixed(1).replace('.', ',') + ' días hábiles de costos fijos.' + (hall('impuestos') ? ' Tampoco veo pagos de impuestos ni cotizaciones.' : ''));
+      ': ' + futuro.runwayDias.toFixed(1).replace('.', ',') + ' días hábiles de costos fijos.' +
+      (hCrit.length ? ' Lo más urgente del informe: ' + hCrit.map(h => h.titulo.replace(/\.$/, '').replace(/^./, c => c.toLowerCase())).join('; ') + '.' : ''));
     const com = X.comercial;
     const f0 = com && com.total ? com.pronostico.meses[0] : null;
     p.push('Hacia 2027 el punto es el B2B. En ' + mesNombre(u.mes) + ' le vendiste ' + mm(u.b2b) + ' a empresas e instituciones; el equilibrio del plan es ' +
@@ -617,7 +629,7 @@
     if (!dashboardConectado(com)) hoyTxt.push('conectar el dashboard comercial a AerIA');
     if (capUrg.length) hoyTxt.push('ofertar a ' + capUrg.length + (capUrg.length === 1 ? ' licitación' : ' licitaciones') + ' de capacitación que ' + (capUrg.length === 1 ? 'cierra' : 'cierran') + ' en menos de 72 horas');
     if (totalCobrar) hoyTxt.push('cobrar ' + mm(totalCobrar));
-    if (hall('socio')) hoyTxt.push('clasificar los retiros');
+    if (hCrit.length) hoyTxt.push('resolver ' + (hCrit.length === 1 ? 'el hallazgo crítico' : 'los ' + hCrit.length + ' hallazgos críticos') + ' de finanzas');
     if (pasado.cajaFinal < D.modelo.costos_fijos_mes) hoyTxt.push('fijar un saldo mínimo de caja');
     p.push('Mi recomendación para esta semana: ' + (hoyTxt.length > 1 ? hoyTxt.slice(0, -1).join(', ') + ' y ' + hoyTxt[hoyTxt.length - 1] : hoyTxt[0]) + '.');
     return { titular, parrafos: p, criticas };
@@ -634,7 +646,7 @@
     const porCobrar = leerPorCobrar(D.finanzas);
     const cruce = cruzarPorCobrarPlan(D.plan, D.finanzas);
     const equilibrio = resultado2027(D.modelo, 0).equilibrio;
-    const conectado = !!(D.comercial && (D.comercial.cotizaciones || []).some(q => /dashboard|import/i.test(q.origen || '')));
+    const conectado = !!(D.comercial && deDashboard(D.comercial.cotizaciones));
     const comercial = Com && D.comercial ? Com.analizar(D.comercial.cotizaciones || [], hoy, {
       meta: D.modelo.b2b_meta_mes, minimo: D.modelo.b2b_minimo_mes, equilibrio,
       sii: D.finanzas.sii, siiCorte: D.finanzas.periodo.hasta, clientes: D.comercial.clientes || [],
