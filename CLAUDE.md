@@ -82,8 +82,14 @@ folio ni folio de factura se une a la existente con cliente parecido y el mismo 
 (±3 %, con o sin IVA): así lo sembrado no se duplica.
 
 El historial es una pila: «deshacer» revierte la última entrada con cambios no deshecha
-(la marca `deshecha: true`) y nunca la de creación. `AeriaComercial.deshacerPor` revierte
-todo lo que hizo AerIA en una respuesta del chat.
+(la marca `deshecha: true`) y nunca la de creación. Los cambios que hace el chat llevan en
+su entrada `resp` (la hora de inicio de esa respuesta); `AeriaComercial.deshacerPor(q, resp)`
+revierte solo esas entradas y avisa conflicto si otra respuesta o una persona cambió la
+cotización después.
+
+Nombres parecidos (importación y cruce con el SII): si uno de los nombres dice un tipo de
+institución (universidad, municipalidad, bomberos, gobierno regional, servicio de salud…),
+el otro debe ser del mismo tipo.
 
 Severidad de los hallazgos financieros: la del informe; los ids listados en
 `hallazgos_criticos` de `datos/privado/modelo2027.json` suben a crítica (el código no
