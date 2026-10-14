@@ -84,6 +84,20 @@
     if (h < 48) return 'cierra en ' + h + ' h';
     return 'cierra en ' + Math.round(h / 24) + ' días';
   }
+  // el curso dicho en palabras: «curso de Nivel 1», «curso de Niveles 2 y 3»
+  const cursoTxt = c => 'curso de ' + (c.nivel === 'n1' ? 'Nivel 1' : 'Niveles 2 y 3');
+  // «TEXTO EN MAYÚSCULAS» → «Texto en mayúsculas»
+  const oracion = t => String(t || '').toLowerCase().replace(/^./, c => c.toUpperCase());
+  // corta en una palabra completa y lo avisa con «…»
+  function recortar(t, n) {
+    t = String(t || '').replace(/\s+/g, ' ').trim();
+    if (t.length <= n) return t;
+    let c = t.slice(0, n - 1);
+    const i = c.lastIndexOf(' ');
+    if (i > n * 0.6) c = c.slice(0, i);
+    if ((c.match(/"/g) || []).length % 2) c = c.slice(0, c.lastIndexOf('"'));   // sin comillas abiertas
+    return c.replace(/[\s,;:·\-–"«(]+$/, '') + '…';
+  }
 
   /* ---------- PASADO ---------- */
   function leerPasado(F) {
@@ -263,18 +277,19 @@
     return out;
   }
   function leerPorCobrarFilas(F) {
-    const corte = fCorta(F.periodo.hasta);
+    const corte = fDia(F.periodo.hasta);
+    const mesInicio = MESES[fecha(F.periodo.desde || F.periodo.hasta).getMonth()];
     const pagadas = cobradasDespues(F);
     const out = [];
     for (const s of F.sii) {
       if (/por cobrar/i.test(s.estado) && pagadas.has(String(s.folio))) continue; // ya pagada según el registro interno
-      if (/por cobrar/i.test(s.estado) && s.fecha > F.periodo.hasta) out.push({ ...s, saldo: s.monto, tipoDeuda: 'Emitida el ' + fCorta(s.fecha) + ' (después del corte de las cartolas), sin cobro en el registro interno al ' + fCorta(F.sii_hasta || s.fecha) });
-      else if (/por cobrar/i.test(s.estado)) out.push({ ...s, saldo: s.monto, tipoDeuda: 'Emitida en el período, sin pago al ' + corte });
-      else if (/pendiente desde antes/i.test(s.estado)) out.push({ ...s, saldo: s.monto, tipoDeuda: 'Pendiente desde antes de agosto (por confirmar)' });
+      if (/por cobrar/i.test(s.estado) && s.fecha > F.periodo.hasta) out.push({ ...s, saldo: s.monto, tipoDeuda: 'La emitiste el ' + fDia(s.fecha) + '. Al ' + fDia(F.sii_hasta || s.fecha) + ', tu registro de ventas no anota el pago' });
+      else if (/por cobrar/i.test(s.estado)) out.push({ ...s, saldo: s.monto, tipoDeuda: 'El banco no mostraba el pago al ' + corte });
+      else if (/pendiente desde antes/i.test(s.estado)) out.push({ ...s, saldo: s.monto, tipoDeuda: 'Viene de antes de ' + mesInicio + ': falta confirmar si se pagó' });
       else if (/factoring/i.test(s.estado)) {
         const m = /\$([\d.]+)/.exec(s.det || '');
         const anticipo = m ? Number(m[1].replace(/\./g, '')) : 0;
-        out.push({ ...s, saldo: s.monto - anticipo, tipoDeuda: 'Cedida a factoring: saldo por liquidar, si corresponde' });
+        out.push({ ...s, saldo: s.monto - anticipo, tipoDeuda: 'Se la vendiste a una financiera: puede quedar un saldo a tu favor' });
       }
     }
     return out.sort((a, b) => b.saldo - a.saldo);
@@ -346,11 +361,11 @@
     const prom = pasado.b2b / pasado.meses.length;
     const escenarios = [
       { id: 'minimo', nombre: 'Mínimo del plan', b2b: M.b2b_minimo_mes },
-      { id: 'ultimo', nombre: 'Ritmo de ' + mesNombre(ultimo.mes), b2b: ultimo.b2b, real: true },
+      { id: 'ultimo', nombre: 'Como en ' + mesNombre(ultimo.mes), b2b: ultimo.b2b, real: true },
       { id: 'meta', nombre: 'Meta 2027', b2b: M.b2b_meta_mes },
-      { id: 'promedio', nombre: 'Promedio ' + pasado.meses.map(m => MES3[Number(m.mes.slice(5)) - 1]).join('–'), b2b: prom, real: true },
+      { id: 'promedio', nombre: 'Promedio de ' + yLista(pasado.meses.map(m => mesNombre(m.mes))), b2b: prom, real: true },
     ].concat(dashboardConectado(com) && com.pronostico.promedio3 > 0
-      ? [{ id: 'comercial', nombre: 'Pronóstico comercial 3 meses', b2b: com.pronostico.promedio3, real: true }] : [])
+      ? [{ id: 'comercial', nombre: 'Lo probable de tus cotizaciones (3 meses)', b2b: com.pronostico.promedio3, real: true }] : [])
       .map(e => ({ ...e, ...resultado2027(M, e.b2b) }))
       .sort((a, b) => a.b2b - b.b2b);
     const hito = M.hito_decisivo;
@@ -372,44 +387,44 @@
       if (t.id === 'b2b') {
         valor = mm(u.b2b) + ' en ' + mesNombre(u.mes);
         est = estado(u.b2b >= M.b2b_meta_mes, u.b2b < M.b2b_minimo_mes);
-        nota = 'Venta a empresas e instituciones según las cartolas (incluye anticipos de factoring).';
+        nota = 'Lo que entró al banco por ventas a empresas en ' + mesNombre(u.mes) + ' (incluye lo que adelantó una financiera por facturas).';
         const dsp = leerDespues(D.finanzas, D.cursos && D.cursos.precios_web);
-        if (dsp && dsp.b2bN) nota += ' Después del corte, al ' + fCorta(dsp.hasta) + ': ' + mm(dsp.b2b) + ' sin IVA facturados a empresas (SII).';
+        if (dsp && dsp.b2bN) nota += ' Después, al ' + fDia(dsp.hasta) + ', el SII ya muestra ' + mm(dsp.b2b) + ' sin IVA facturados a empresas.';
         if (dashboardConectado(com)) {
           const f = com.pronostico.meses[0];
-          nota += ' Comercial: ' + f.etiqueta + ' lleva ' + mm(f.ganado) + ' ganado y ' + mm(f.esperado) + ' esperable de lo abierto.';
+          nota += ' Para ' + mesNombre(f.mes) + ' llevas ' + mm(f.ganado) + ' ganados, y lo probable de lo cotizado suma ' + mm(f.esperado) + ' más.';
         }
       } else if (t.id === 'ocup_n1' && cursos.resN1.ocupacion21 != null) {
         valor = pct(cursos.resN1.ocupacion21) + ' vendido';
         est = estado(cursos.resN1.ocupacion21 >= t.umbral, cursos.resN1.ocupacion21 < 0.5);
-        nota = 'Cursos que empiezan en los próximos 21 días.';
+        nota = 'Solo los cursos que empiezan en las próximas 3 semanas.';
       } else if (t.id === 'ocup_n23' && cursos.resN23.ocupacion21 != null) {
         valor = pct(cursos.resN23.ocupacion21) + ' vendido';
         est = estado(cursos.resN23.ocupacion21 >= t.umbral, cursos.resN23.ocupacion21 < 0.4);
-        nota = 'Cursos que empiezan en los próximos 21 días.';
+        nota = 'Solo los cursos que empiezan en las próximas 3 semanas.';
       } else if (t.id === 'cac' && u.cac) {
         valor = clp(u.cac) + ' en ' + mesNombre(u.mes);
         est = estado(u.cac <= t.umbral, u.cac > 1.5 * t.umbral);
         const mk = pasado.meses.reduce((a, m) => a + m.marketing, 0), al = pasado.meses.reduce((a, m) => a + m.alumnos, 0);
-        nota = 'Marketing pagado en el mes ÷ alumnos que pagaron en el mes (' + u.alumnos + '). El marketing de un mes vende cursos de los meses siguientes: el promedio de ' + pasado.meses.length + ' meses es ' + clp(mk / al) + '.';
+        nota = 'Lo gastado en publicidad en ' + mesNombre(u.mes) + ', dividido por los ' + u.alumnos + ' alumnos que pagaron ese mes. La publicidad también vende cursos de los meses siguientes: juntando los ' + pasado.meses.length + ' meses, sale ' + clp(mk / al) + ' por alumno.';
       } else if (t.id === 'caja') {
         valor = clp(pasado.cajaFinal) + ' al ' + fCorta(pasado.fechaCorte);
         est = estado(pasado.cajaFinal >= t.umbral, pasado.cajaFinal < t.umbral / 3);
-        nota = nombresCuentas(D.finanzas) + '.';
+        nota = 'Lo que había en ' + yLista([...new Set(Object.values(cuentas(D.finanzas)))]) + ' ese día.';
       } else if (t.id === 'fcl') {
-        nota = 'Se mide desde enero de 2027, al cierre de cada trimestre.';
+        nota = 'La plata que queda después de pagar todo, mirada cada 3 meses. Se empieza a medir en enero de 2027.';
       } else if (t.id === 'upsell') {
-        nota = 'Falta cruzar el registro de alumnos del N1 con los del N2+N3.';
+        nota = 'Falta comparar la lista de alumnos del Nivel 1 con la de los Niveles 2 y 3.';
       }
       return { ...t, valor, estado: est, nota };
     });
   }
 
-  /* Fila de la tabla de riesgos del plan que menciona un tema, como «riesgo → qué hacer» */
+  /* Fila de la tabla de riesgos del plan que menciona un tema: [riesgo, qué hacer…] */
   function riesgoPlan(P, patron) {
     if (!P) return null;
     for (const s of P.secciones) for (const t of s.tablas) for (const f of t.slice(1)) {
-      if (f.some(c => patron.test(c))) return f.join(' → ');
+      if (f.some(c => patron.test(c))) return f;
     }
     return null;
   }
@@ -426,17 +441,22 @@
     if (pasado.cajaFinal < M.costos_fijos_mes) {
       const viejo = diasEntre(pasado.fechaCorte, hoy) > 7;
       const dsp = X.despues;
+      const mesesTxt = yLista(pasado.meses.map(m => mesNombre(m.mes)));
+      const neto = pasado.socioNeto + pasado.cofundador + pasado.otec;   // socios y Aéreo OTEC: lo que entró menos lo que salió
       add({
         id: 'caja', nivel: 'critica', foco: 'cruce', monto: pasado.cajaFinal,
-        titulo: (viejo ? 'Al ' + fCorta(pasado.fechaCorte) + ' la caja cubría ' : 'La caja cubre ') + futuro.runwayDias.toFixed(1).replace('.', ',') + ' días hábiles de operación',
-        detalle: 'Al ' + fCorta(pasado.fechaCorte) + ' las dos cuentas sumaban ' + clp(pasado.cajaFinal) +
-          '. La regla del plan 2027 es nunca bajar de 1 mes de costos fijos (' + mm(M.costos_fijos_mes, 2) + '). ' +
-          'En ' + pasado.etiqueta.replace(/ \d{4}$/, '') + ' la operación dejó ' + mm(pasado.flujoOperacional) + ', pero socio, cofundador y Aéreo OTEC restaron ' +
-          mm(-(pasado.socioNeto + pasado.cofundador + pasado.otec)) + ' netos. La caja más baja fue ' + clp(pasado.cajaMin.total) + ' el ' + fCorta(pasado.cajaMin.fecha) + '.' +
-          (dsp && dsp.cobradoRegistro ? ' Después del corte, el registro interno anota cobros por ' + mm(dsp.cobradoRegistro) + ' al ' + fCorta(dsp.hasta) + ' (sin cartola que lo confirme).' : ''),
-        accion: (liquidez && liquidez.accion ? liquidez.accion.replace(/\.?$/, '. ') : 'Fijar un saldo mínimo de operación. ') +
-          'Cobrar lo pendiente y hacer preventa de ' + mesNombre(sumarMesesISO(hoy, 1)) + ' y ' + mesNombre(sumarMesesISO(hoy, 2)) + '.',
-        fuente: 'Finanzas ' + pasado.etiqueta + ' + Plan 2027 (Tablero mensual)',
+        titulo: (viejo ? 'Al ' + fDia(pasado.fechaCorte) + ' la plata del banco alcanzaba para ' : 'La plata del banco alcanza para ') + futuro.runwayDias.toFixed(1).replace('.', ',') + ' días hábiles de gastos',
+        detalle: 'Al ' + fDia(pasado.fechaCorte) + ' tenías ' + clp(pasado.cajaFinal) + ' en el banco (' + yLista([...new Set(Object.values(cuentas(D.finanzas)))]) + '). ' +
+          'El plan 2027 pide no bajar nunca de un mes de gastos fijos: ' + mm(M.costos_fijos_mes, 2) + '. ' +
+          (pasado.flujoOperacional >= 0 ? 'En ' + mesesTxt + ' la operación dejó ' + mm(pasado.flujoOperacional) + ' a favor. '
+            : 'En ' + mesesTxt + ' operar costó ' + mm(-pasado.flujoOperacional) + ' más de lo que entró. ') +
+          (neto < 0 ? (pasado.flujoOperacional >= 0 ? 'Pero entre' : 'Entre') + ' socios y Aéreo OTEC salieron ' + mm(-neto) + ' más de lo que entró. '
+            : neto > 0 ? 'Entre socios y Aéreo OTEC entraron ' + mm(neto) + ' más de lo que salió. ' : '') +
+          'El día más justo fue el ' + fDia(pasado.cajaMin.fecha) + ': quedaban ' + clp(pasado.cajaMin.total) + '.' +
+          (dsp && dsp.cobradoRegistro ? ' Después, tu registro de ventas anota ' + mm(dsp.cobradoRegistro) + ' cobrados hasta el ' + fDia(dsp.hasta) + '. El banco aún no lo confirma.' : ''),
+        accion: (liquidez && liquidez.accion ? liquidez.accion.replace(/\.?$/, '. ') : 'Decidir un piso de plata que nunca se saca del banco. ') +
+          'Cobrar lo pendiente y vender por adelantado los cursos de ' + mesNombre(sumarMesesISO(hoy, 1)) + ' y ' + mesNombre(sumarMesesISO(hoy, 2)) + '.',
+        fuente: 'Movimientos del banco de ' + pasado.etiqueta + ' y el mínimo de plata que pide el plan 2027',
       });
     }
     // Hallazgos financieros: conservan su severidad; los que el modelo marca en «hallazgos_criticos» suben a crítica
@@ -447,21 +467,27 @@
       add({
         id: 'fin-' + h.id, nivel, foco: 'pasado', monto: h.monto,
         titulo: h.titulo, detalle: h.detalle, accion: h.accion,
-        fuente: 'Finanzas ' + pasado.etiqueta + ' (hallazgo «' + h.id + '»)',
+        fuente: 'Revisión contable de ' + pasado.etiqueta,
       });
     }
-    // B2B bajo la meta
+    // Ventas a empresas bajo la meta
     const u = pasado.meses[pasado.meses.length - 1];
     if (u.b2b < M.b2b_meta_mes) {
+      const cierra = r => r >= 0 ? 'ganando ' + mm(r) : 'perdiendo ' + mm(-r);
+      const receta = M.mix_b2b_meta ? sinJerga(M.mix_b2b_meta).replace(/curso cerrado o para una empresa/g, 'curso cerrado para una empresa')
+        .replace(/\b1 AOC\b/g, '1 asesoría AOC').replace(/~\$/g, 'cerca de $').replace(/\.$/, '') : '';
       add({
         id: 'b2b-' + u.mes, nivel: u.b2b < M.b2b_minimo_mes ? 'critica' : 'alta', foco: 'cruce', monto: u.b2b,
-        titulo: 'B2B de ' + mesNombre(u.mes) + ': ' + mm(u.b2b) + ', bajo la meta de ' + mm(M.b2b_meta_mes),
-        detalle: 'El plan 2027 depende del B2B: con ' + mm(M.b2b_meta_mes) + ' al mes el año cierra en ' +
-          mm(resultado2027(M, M.b2b_meta_mes).resultado) + '; al ritmo de ' + mesNombre(u.mes) + ' cerraría en ' +
-          mm(resultado2027(M, u.b2b).resultado) + '. El equilibrio está en ' + mm(futuro.equilibrio) + ' al mes. ' +
-          'Las cotizaciones abiertas (' + mm(cot.abiertasMonto) + ') son la reserva para subirlo.',
-        accion: 'Cerrar cotizaciones abiertas y armar la cartera de enero–marzo desde ahora' + (M.mix_b2b_meta ? ': ' + M.mix_b2b_meta + '.' : '.'),
-        fuente: 'Finanzas (ventas por producto) + Plan 2027',
+        titulo: 'En ' + mesNombre(u.mes) + ' vendiste ' + mm(u.b2b) + ' a empresas: menos que la meta de ' + mm(M.b2b_meta_mes) + ' al mes',
+        detalle: 'El plan 2027 depende de las ventas a empresas. Con ' + mm(M.b2b_meta_mes) + ' al mes, 2027 cierra ' +
+          cierra(resultado2027(M, M.b2b_meta_mes).resultado) + '. Al ritmo de ' + mesNombre(u.mes) + ', cerraría ' +
+          cierra(resultado2027(M, u.b2b).resultado) + '. Lo mínimo para no perder plata es venderles ' + mm(futuro.equilibrio) + ' al mes. ' +
+          // con el dashboard conectado se usan sus cotizaciones (sin IVA); si no, el último resumen que mandó
+          (dashboardConectado(X.comercial) ? 'En Ventas hay ' + mm(X.comercial.abiertas.monto) + ' en cotizaciones esperando respuesta (lo probable: ' + mm(X.comercial.abiertas.ponderado) + ')'
+            : (cot.corte ? 'Según el último resumen de tu dashboard (' + fDia(cot.corte) + '), tenías ' : 'Tenías ') + mm(cot.abiertasMonto) + ' en cotizaciones esperando respuesta') +
+          ': de ahí puede salir la diferencia.',
+        accion: 'Cierra las cotizaciones que esperan respuesta y busca desde ya ventas a empresas para enero a marzo' + (receta ? ': ' + receta + '.' : '.'),
+        fuente: 'Ventas por producto de ' + pasado.etiqueta + ' y el plan 2027',
       });
     }
     // Cursos: feriados
@@ -469,26 +495,29 @@
       for (const f of c.feriados) {
         add({
           id: 'feriado-' + c.nivel + '-' + c.inicio, nivel: 'alta', foco: 'presente',
-          titulo: 'El ' + c.corto + ' del ' + fCorta(c.inicio) + ' cae en feriado (' + fCorta(f.fecha) + ', ' + f.nombre + ')',
-          detalle: 'La fecha sigue publicada en aereo.cl con ' + c.vendidos + ' de ' + c.max + ' cupos vendidos.' +
-            (c.nivel === 'n23' && c.inicio === '2026-12-07' ? ' El plan 2027 ya pide moverlo al 14–15 de diciembre.' : ''),
-          accion: 'Mover la fecha en datos/' + (c.nivel === 'n1' ? 'cursos-fechas.js' : 'n23-fechas.js') + ' del repo aereo-web y avisar a los inscritos.',
-          fuente: 'aereo.cl (cursos publicados) + calendario de feriados', fecha_limite: c.inicio,
+          titulo: 'El ' + cursoTxt(c) + ' del ' + fDia(c.inicio) + ' cae en feriado (' + fDia(f.fecha) + ', ' + f.nombre + ')',
+          detalle: 'Sigue publicado en aereo.cl' + (c.vendidos ? ' y ya tiene ' + c.vendidos + ' de ' + c.max + ' cupos vendidos.' : '. Todavía no tiene alumnos, así que moverlo es fácil.') +
+            (c.nivel === 'n23' && c.inicio === '2026-12-07' ? ' El plan 2027 ya propone moverlo al 14 y 15 de diciembre.' : ''),
+          accion: 'Cambia la fecha en aereo.cl' + (c.vendidos ? ' y avísales a ' + (c.vendidos === 1 ? 'la persona inscrita.' : 'los ' + c.vendidos + ' inscritos.') : '.'),
+          fuente: 'Cursos publicados en aereo.cl y el calendario de feriados', fecha_limite: c.inicio,
         });
       }
     }
     // Cursos: cupos por vender cerca de la fecha
     for (const c of cursos.proximos) {
       if (c.dias <= 21 && c.dias >= 0 && c.libres >= 3) {
+        const anterior = cursos[c.nivel].filter(x => x.inicio < c.inicio).sort((a, b) => a.inicio.localeCompare(b.inicio)).pop();
         add({
           id: 'vender-' + c.nivel + '-' + c.inicio, nivel: c.dias <= 10 ? 'alta' : 'media', foco: 'presente',
           monto: c.libres * c.precio,
-          titulo: 'El ' + c.corto + ' del ' + fCorta(c.inicio) + ' tiene ' + c.libres + ' de ' + c.max + ' cupos libres y empieza ' + cuando(c.dias),
-          detalle: 'Cada cupo vale ' + clp(c.precio) + ' a precio actual. ' +
-            (cursos.racha.length >= 3 ? 'Es la excepción: ' + cursos.racha.length + ' meses seguidos se agotaron y las fechas vecinas están llenas.' : ''),
-          accion: 'Ofrecer los cupos a la lista de espera de las fechas agotadas y a empresas con SENCE' +
-            (M.margen_alumno ? ' (un alumno SENCE deja ' + clp(M.margen_alumno.sence) + ' contra ' + clp(M.margen_alumno.nivel1) + ' de un particular).' : '.'),
-          fuente: 'aereo.cl (cursos publicados)', fecha_limite: c.inicio,
+          titulo: c.libres === c.max ? 'El ' + cursoTxt(c) + ' del ' + fDia(c.inicio) + ' empieza ' + cuando(c.dias) + ' y todavía no vende ningún cupo'
+            : 'Al ' + cursoTxt(c) + ' del ' + fDia(c.inicio) + ' le quedan ' + c.libres + ' de ' + c.max + ' cupos libres y empieza ' + cuando(c.dias),
+          detalle: 'Cada cupo vale ' + clp(c.precio) + ' a precio de hoy.' +
+            (anterior && anterior.libres === 0 ? ' El curso anterior, del ' + fDia(anterior.inicio) + ', se llenó.' : '') +
+            (c.nivel === 'n1' && cursos.racha.length >= 3 ? ' El Nivel 1 se agotó ' + cursos.racha.length + ' meses seguidos: hay interés.' : ''),
+          accion: 'Avísale a la lista de espera y ofrece los cupos a empresas con SENCE.' +
+            (c.nivel === 'n1' && M.margen_alumno ? ' Un alumno por SENCE te deja ' + clp(M.margen_alumno.sence) + '; uno particular, ' + clp(M.margen_alumno.nivel1) + '.' : ''),
+          fuente: 'Cursos publicados en aereo.cl', fecha_limite: c.inicio,
         });
       }
     }
@@ -496,12 +525,15 @@
     const vacios = cursos.proximos.filter(c => c.vendidos === 0 && c.dias > 21);
     if (vacios.length >= 3) {
       const meses = [...new Set(vacios.map(c => MESES[fecha(c.inicio).getMonth()]))];
+      const riesgo = riesgoPlan(D.plan, /preventa/i);
       add({
         id: 'preventa', nivel: 'media', foco: 'futuro', monto: vacios.reduce((a, c) => a + c.max * c.precio, 0),
-        titulo: vacios.length + ' fechas publicadas sin ningún cupo vendido (' + meses.join(' y ') + ')',
-        detalle: 'Suman ' + vacios.reduce((a, c) => a + c.max, 0) + ' cupos.' + (riesgoPlan(D.plan, /preventa/i) ? ' Plan 2027: «' + riesgoPlan(D.plan, /preventa/i) + '».' : ''),
-        accion: 'Lanzar preventa con fecha límite y abrir estos cupos a empresas con SENCE.',
-        fuente: 'aereo.cl + Plan 2027 (Riesgos)',
+        titulo: vacios.length + ' cursos de ' + yLista(meses) + ' todavía no tienen ningún alumno',
+        detalle: 'Son ' + vacios.reduce((a, c) => a + c.max, 0) + ' cupos por vender.' +
+          (riesgo ? ' El plan 2027 ya lo había previsto: «' + riesgo[0] + '».' + (riesgo.length > 1 ? ' Y propone: «' + riesgo.slice(1).join(' ') + '».' : '') : ''),
+        accion: 'Vende estos cupos por adelantado, con una fecha límite. Y ofrécelos a empresas con SENCE.',
+        tarea: 'Vender por adelantado los cupos de los cursos que no tienen alumnos',
+        fuente: 'Cursos publicados en aereo.cl y los riesgos del plan 2027',
       });
     }
     // Licitaciones
@@ -511,11 +543,11 @@
       add({
         id: 'lic-' + l.codigo, nivel: l.encaje === 'capacitacion' && urgente ? 'alta' : 'oportunidad', foco: 'presente',
         monto: l.monto || null,
-        titulo: l.encaje_label + ': ' + l.nombre.toLowerCase().replace(/^\w/, x => x.toUpperCase()).slice(0, 110),
-        detalle: l.organismo + ' · ' + l.region + ' · ' + (l.monto ? 'presupuesto ' + clp(l.monto) : 'sin monto publicado') +
-          ' · ' + horasA(l.cierre, ahora) + ' (' + fLarga(l.cierre) + ').',
-        accion: urgente ? 'Revisar las bases y ofertar hoy.' : 'Revisar las bases y decidir si se postula.',
-        fuente: 'Radar de licitaciones (' + (l.fuente === 'compra_agil' ? 'Compra Ágil' : 'Licitación') + ')',
+        titulo: l.encaje_label + ': ' + recortar(oracion(l.nombre), 110),
+        detalle: 'Lo pide ' + nombrePropio(l.organismo) + ' (' + l.region + '). Presupuesto: ' + (l.monto ? clp(l.monto) : 'no lo publicaron') +
+          '. Puedes postular hasta el ' + fLarga(l.cierre) + ' (' + horasA(l.cierre, ahora).replace(/^cierra en [01] h$/, 'queda menos de 1 hora').replace(/^cierra en /, 'quedan ').replace(/ h$/, ' horas') + ').',
+        accion: urgente ? 'Lee lo que piden (las bases) y manda tu oferta hoy.' : 'Lee lo que piden (las bases) y decide si postulas.',
+        fuente: 'Mercado Público (' + (l.fuente === 'compra_agil' ? 'Compra Ágil' : 'licitación') + '), visto por tu radar de concursos del Estado',
         fecha_limite: l.cierre.slice(0, 10), url: l.url,
       });
     }
@@ -524,37 +556,42 @@
     if (!dashboardConectado(com)) {
       add({
         id: 'cot-antiguas', nivel: 'alta', foco: 'comercial',
-        titulo: 'Tu dashboard comercial todavía no está conectado a AerIA',
-        detalle: 'Lo último que veo del dashboard es el agregado del ' + fCorta(cot.corte) + (cot.antiguedad != null ? ' (hace ' + cot.antiguedad + ' días)' : '') + ': ' +
-          mm(cot.abiertasMonto) + ' abiertas con ' + (cot.tasaCierre ? pct(cot.tasaCierre) : '?') + ' de cierre por monto.' +
-          (com && com.total ? ' En Comercial hay ' + com.total + ' cotizaciones cargadas desde otras fuentes (SII, Notion, plan), pero no el detalle del dashboard.' : '') +
-          ' Sin ese detalle no puedo pronosticar bien ni decirte cuáles empujar.',
-        accion: 'Abre tu dashboard, corre el extractor de AerIA y pega el resultado en Comercial → Importar (o sube el CSV o JSON exportado).',
-        fuente: 'Dashboard de cotizaciones',
+        titulo: 'AerIA todavía no ve las cotizaciones de tu dashboard',
+        detalle: 'Lo último que vi de tu dashboard' + (cot.corte ? ' es del ' + fDia(cot.corte) + (cot.antiguedad != null ? ' (hace ' + cot.antiguedad + ' días)' : '') : '') + ': ' +
+          mm(cot.abiertasMonto) + ' en cotizaciones esperando respuesta' + (cot.tasaCierre ? ', y ganabas el ' + pct(cot.tasaCierre) + ' de la plata cotizada que ya tenía respuesta' : '') + '.' +
+          (com && com.total ? ' En Ventas tengo ' + com.total + ' negocios sacados de facturas, Notion y el plan, pero faltan los de tu dashboard.' : '') +
+          ' Sin ellos no puedo decirte cuánto vas a vender ni a quién llamar.',
+        accion: 'Abre AerIA en la app de escritorio de Claude: así lee tu dashboard sola. Si no puedes, usa el marcador «AerIA · Extraer» en tu dashboard y pega lo que copia en Ventas → Importar.',
+        tarea: 'Conectar tu dashboard de cotizaciones a AerIA',
+        fuente: 'El último resumen de tu dashboard de cotizaciones',
       });
     }
     if (com) for (const a of com.alertas) add(a);
     // Cruce plan vs cartolas
     if (cruce) {
+      // lo leído en las cartolas, dicho en simple (los valores de «leido» no cambian: los usa el cruce)
+      const LEIDO = { 'ya cobrada': 'ya te pagó', 'sigue por cobrar': 'todavía te debe', 'sin dato en las cartolas': 'el banco no muestra nada' };
+      const leidoTxt = t => LEIDO[t] || String(t).replace(/^cedida a factoring/, 'se la vendiste a una financiera');
       add({
         id: 'cruce-por-cobrar', nivel: 'media', foco: 'cruce',
-        titulo: 'El plan 2027 da por cobrar facturas que las cartolas muestran resueltas',
-        detalle: 'El plan dice: «' + cruce.frase + '». Las cartolas dicen: ' +
-          cruce.estado.map(e => e.cliente + ' ' + e.leido).join('; ') + '.',
-        accion: 'Corregir la cifra en el plan y usar la lista de Presente → Por cobrar, que sale del banco y el SII.',
-        fuente: 'Plan 2027 × Finanzas ' + pasado.etiqueta,
+        titulo: 'Según el plan 2027 te deben facturas que el banco muestra resueltas',
+        detalle: 'El plan dice: «' + cruce.frase.replace(/\.$/, '') + '». Lo que muestra el banco: ' +
+          cruce.estado.map(e => e.cliente + ', ' + leidoTxt(e.leido)).join('; ') + '.',
+        accion: 'Corrige ese número en el plan. Para saber quién te debe, mira la lista de cobros en «Cursos y cobros»: sale del banco y del SII.',
+        tarea: 'Corregir en el plan 2027 lo que da por cobrar',
+        fuente: 'El plan 2027 y el banco (' + pasado.etiqueta + ')',
       });
     }
     // Oportunidad: precio
     if (cursos.racha.length >= 4) {
       add({
         id: 'demanda', nivel: 'oportunidad', foco: 'futuro',
-        titulo: 'La demanda respalda el alza de precio de 2027',
-        detalle: 'El Nivel 1 se agotó ' + cursos.racha.length + ' meses seguidos (' + cursos.racha.map(m => MES3[m]).join(', ') +
-          ') a ' + clp(D.cursos.precios_web.nivel1) + '. El plan sube el N1 a ' +
-          clp(M.precios_2027.nivel1) + ' (+' + pct(M.precios_2027.nivel1 / D.cursos.precios_web.nivel1 - 1) + ').',
-        accion: 'Mantener el alza y la regla de descuentos (máximo 10%, solo grupos de 3+). Evaluar publicar las fechas de enero ya con el precio 2027.',
-        fuente: 'aereo.cl + Plan 2027',
+        titulo: 'El Nivel 1 se agota: hay espacio para subir el precio en 2027',
+        detalle: 'El Nivel 1 se agotó ' + cursos.racha.length + ' meses seguidos (' + yLista(cursos.racha.map(m => MESES[m])) +
+          ') a ' + clp(D.cursos.precios_web.nivel1) + '. El plan lo sube a ' +
+          clp(M.precios_2027.nivel1) + ' en 2027: ' + pct(M.precios_2027.nivel1 / D.cursos.precios_web.nivel1 - 1) + ' más.',
+        accion: 'Mantén el alza y la regla de descuentos: máximo 10%, y solo para grupos de 3 o más. Piensa en publicar las fechas de enero con el precio nuevo.',
+        fuente: 'Cursos publicados en aereo.cl y el plan 2027',
       });
     }
     const orden = a => NIVELES.indexOf(a.nivel);
@@ -570,7 +607,7 @@
     const { porCobrar, lic, pasado } = X;
     for (const a of alertas) {
       if (a.id.startsWith('lic-') && a.nivel === 'alta') {
-        add({ id: a.id, cuando: 'hoy', titulo: 'Ofertar: ' + a.titulo.replace(/^[^:]+: /, ''), por: a.detalle, foco: 'presente', url: a.url, prioridad: 0 });
+        add({ id: a.id, cuando: 'hoy', titulo: 'Postular hoy: ' + a.titulo.replace(/^[^:]+: /, ''), por: a.detalle, foco: 'presente', url: a.url, prioridad: 0 });
       }
     }
     const vencidas = porCobrar.filter(p => p.grupo === 'vencida'), confirmar = porCobrar.filter(p => p.grupo === 'por_confirmar');
@@ -578,15 +615,15 @@
     if (vencidas.length) {
       add({
         id: 'cobrar', cuando: 'esta semana', foco: 'presente', prioridad: 1,
-        titulo: 'Cobrar ' + mm(suma(vencidas)) + (vencidas.length === 1 ? ' vencido' : ' vencidos'),
-        por: vencidas.map(p => p.cliente + ' ' + clp(p.saldo) + ' (f. ' + p.folio + ', venció el ' + fCorta(p.vence) + ')').join(' · '),
+        titulo: 'Cobrar ' + mm(suma(vencidas)) + (vencidas.length === 1 ? ' de una factura atrasada' : ' de facturas atrasadas'),
+        por: vencidas.map(p => p.cliente + ': ' + clp(p.saldo) + ', factura ' + p.folio + ', debía pagar el ' + fDia(p.vence)).join(' · '),
       });
     }
     if (confirmar.length) {
       add({
         id: 'cobrar-confirmar', cuando: 'esta semana', foco: 'presente', prioridad: 2,
-        titulo: 'Confirmar si siguen por cobrar ' + mm(suma(confirmar)),
-        por: confirmar.map(p => p.cliente + ' ' + clp(p.saldo) + ' (f. ' + p.folio + ': ' + p.tipoDeuda.replace(/\s*\(por confirmar\)/, '') + ')').join(' · '),
+        titulo: 'Revisar si ya te pagaron ' + mm(suma(confirmar)) + (confirmar.length === 1 ? ' de una factura' : ' en facturas'),
+        por: confirmar.map(p => p.cliente + ': ' + clp(p.saldo) + ', factura ' + p.folio + ' (' + minus(p.tipoDeuda) + ')').join(' · '),
       });
     }
     const primera = t => String(t || '').split(/(?<=\.)\s/)[0].replace(/\.$/, '');
@@ -603,14 +640,20 @@
       if (a.id === 'cruce-por-cobrar') return [3, 'este mes'];
       return null;
     };
+    // el curso de una alerta de feriado o de cupos (la tarea se arma con el curso, no cortando el título)
+    const cursoDe = id => X.cursos.proximos.find(c => id === 'feriado-' + c.nivel + '-' + c.inicio || id === 'vender-' + c.nivel + '-' + c.inicio);
     for (const a of alertas) {
-      if (a.id.startsWith('feriado-')) add({ id: a.id, cuando: 'esta semana', foco: 'presente', prioridad: 1, titulo: 'Mover ' + a.titulo.split(' cae')[0].replace(/^El /, 'el ') + ' a una fecha sin feriado', por: a.accion });
-      else if (a.id.startsWith('vender-')) add({ id: a.id, cuando: 'esta semana', foco: 'presente', prioridad: 1, titulo: 'Llenar ' + a.titulo.split(' tiene')[0].replace(/^El /, 'el ') + ' (' + a.titulo.split(' tiene ')[1].split(' y ')[0] + ')', por: a.accion });
+      const c = cursoDe(a.id);
+      if (a.id.startsWith('feriado-')) add({ id: a.id, cuando: 'esta semana', foco: 'presente', prioridad: 1, titulo: c ? 'Cambiar la fecha del ' + cursoTxt(c) + ' del ' + fDia(c.inicio) + ': cae en feriado' : a.titulo, por: a.accion });
+      else if (a.id.startsWith('vender-')) add({ id: a.id, cuando: 'esta semana', foco: 'presente', prioridad: 1,
+        titulo: !c ? a.titulo : c.libres === c.max ? 'Conseguir alumnos para el ' + cursoTxt(c) + ' del ' + fDia(c.inicio) + ': todavía no tiene'
+          : 'Vender los ' + c.libres + ' cupos libres del ' + cursoTxt(c) + ' del ' + fDia(c.inicio),
+        por: primera(a.accion) });
       else if (regla(a)) {
         const [pr, cuando] = regla(a);
-        add({ id: a.id, cuando, foco: a.foco, prioridad: pr, titulo: primera(a.accion), por: a.titulo });
+        add({ id: a.id, cuando, foco: a.foco, prioridad: pr, titulo: a.tarea || primera(a.accion), por: a.titulo });
       } else if (a.id.startsWith('lic-') && a.nivel === 'oportunidad' && /capacitaci/i.test(a.titulo)) {
-        add({ id: a.id, cuando: 'antes del ' + fCorta(a.fecha_limite), foco: 'presente', prioridad: 2, titulo: 'Preparar oferta: ' + a.titulo.replace(/^[^:]+: /, ''), por: a.detalle, url: a.url });
+        add({ id: a.id, cuando: 'antes del ' + fDia(a.fecha_limite), foco: 'presente', prioridad: 2, titulo: 'Preparar la postulación: ' + a.titulo.replace(/^[^:]+: /, ''), por: a.detalle, url: a.url });
       }
     }
     // Acciones comerciales: seguimientos, facturar lo ganado, definir cierres vencidos
@@ -620,7 +663,7 @@
     if (plan) {
       for (const t of plan.listas.flat()) {
         if (/cobrar|mover el n2|sacar el caf/i.test(t)) continue;
-        add({ id: 'plan-' + plano(t).replace(/[^a-z0-9]+/g, '-').slice(0, 40), cuando: 'esta semana', foco: 'futuro', prioridad: 2, titulo: t, por: 'Plan 2027 · Plan de acción' });
+        add({ id: 'plan-' + plano(t).replace(/[^a-z0-9]+/g, '-').slice(0, 40), cuando: 'esta semana', foco: 'futuro', prioridad: 2, titulo: t, por: 'Lo pide el plan 2027' });
       }
     }
     const peso = { hoy: 0, 'esta semana': 1, 'este mes': 3 };
@@ -633,12 +676,12 @@
     const hasta = sumarDias(hoy, 90);
     for (const c of X.cursos.proximos) {
       if (c.inicio > hasta) continue;
-      ev.push({ fecha: c.inicio, tipo: 'curso', titulo: c.nombre + ' · ' + c.vendidos + '/' + c.max + ' vendidos',
+      ev.push({ fecha: c.inicio, tipo: 'curso', titulo: (c.nivel === 'n1' ? 'Nivel 1' : 'Niveles 2 y 3') + ': ' + c.vendidos + ' de ' + c.max + ' cupos vendidos',
         estado: c.libres === 0 ? 'lleno' : (c.vendidos === 0 ? 'vacio' : 'parcial'), nivel: c.nivel });
     }
     for (const l of X.lic.relevantes) {
       if (l.cierre.slice(0, 10) > hasta) continue;
-      ev.push({ fecha: l.cierre.slice(0, 10), tipo: 'licitacion', titulo: 'Cierra: ' + l.nombre.slice(0, 70).toLowerCase(),
+      ev.push({ fecha: l.cierre.slice(0, 10), tipo: 'licitacion', titulo: 'Último día para postular: ' + recortar(oracion(l.nombre), 70),
         estado: l.encaje, url: l.url });
     }
     for (let i = 0; i < 4; i++) {
@@ -646,16 +689,16 @@
       const f = iso(d);
       if (f >= hoy && f <= hasta) {
         const prev = new Date(d); prev.setMonth(prev.getMonth() - 1);
-        ev.push({ fecha: f, tipo: 'impuesto', titulo: 'Vence el F29 de ' + MESES[prev.getMonth()] + ' (IVA, PPM y retenciones)', estado: 'tributario' });
+        ev.push({ fecha: f, tipo: 'impuesto', titulo: 'Último día para declarar y pagar los impuestos de ' + MESES[prev.getMonth()] + ' (formulario F29)', estado: 'tributario' });
       }
     }
     for (const p of X.porCobrar.filter(x => x.grupo === 'por_vencer' && x.vence >= hoy && x.vence <= hasta))
-      ev.push({ fecha: p.vence, tipo: 'cobro', titulo: 'Vence la factura ' + p.folio + ' de ' + p.cliente + ' · ' + mm(p.saldo), estado: 'por cobrar' });
+      ev.push({ fecha: p.vence, tipo: 'cobro', titulo: nombrePropio(p.cliente) + ' debería pagarte ' + mm(p.saldo) + ' (factura ' + p.folio + ')', estado: 'por cobrar' });
     if (X.comercial) for (const e of X.comercial.eventos) if (e.fecha <= hasta) ev.push(e);
     const fijos = [
-      { fecha: '2026-12-31', tipo: 'hito', titulo: 'Cierre 2026 · se fijan precios y fechas de 2027', estado: 'hito' },
-      { fecha: '2027-01-06', tipo: 'hito', titulo: 'Primer Nivel 1 de 2027 a ' + clp(D.modelo.precios_2027.nivel1), estado: 'hito' },
-      { fecha: '2027-03-31', tipo: 'hito', titulo: 'Gatillo del plan: si el B2B ene–mar promedia < ' + mm(D.modelo.b2b_minimo_mes) + ', plan B', estado: 'hito' },
+      { fecha: '2026-12-31', tipo: 'hito', titulo: 'Fin de año: dejar listos los precios y fechas de 2027', estado: 'hito' },
+      { fecha: '2027-01-06', tipo: 'hito', titulo: 'Primer Nivel 1 de 2027, ya con el precio nuevo: ' + clp(D.modelo.precios_2027.nivel1), estado: 'hito' },
+      { fecha: '2027-03-31', tipo: 'hito', titulo: 'Día clave del plan: si de enero a marzo vendes a empresas menos de ' + mm(D.modelo.b2b_minimo_mes) + ' al mes, va el plan B', estado: 'hito' },
     ];
     for (const f of fijos) if (f.fecha >= hoy) ev.push(f);
     return ev.sort((a, b) => a.fecha.localeCompare(b.fecha)).map(e => ({ ...e, dias: diasEntre(hoy, e.fecha) }));
@@ -670,39 +713,41 @@
     const porVencer = porCobrar.filter(p => p.grupo === 'por_vencer');
     const capUrg = lic.capacitacion.filter(l => l.horas <= 72);
     const titular = cursos.racha.length >= 4 && pasado.cajaFinal < D.modelo.costos_fijos_mes
-      ? 'Aéreo vende bien y se queda sin caja'
-      : (pasado.cajaFinal < D.modelo.costos_fijos_mes ? 'La caja es la prioridad' : 'La empresa está en ruta');
+      ? 'Vendes bien, pero falta plata en el banco'
+      : (pasado.cajaFinal < D.modelo.costos_fijos_mes ? 'Lo urgente es la plata en el banco' : 'Aéreo va por buen camino');
     const p = [];
-    p.push('La escuela está en su mejor momento: el Nivel 1 se agotó ' + cursos.racha.length + ' meses seguidos y de las ' +
-      cursos.resN1.fechas + ' fechas de Nivel 1 que vienen ya están vendidos ' + cursos.resN1.vendidos + ' de ' + cursos.resN1.cupos + ' cupos. ' +
-      'En ' + pasado.meses.map(m => mesNombre(m.mes)).join(' y ') + ' la operación dejó ' + mm(pasado.flujoOperacional) + ' de caja.');
+    const mesesTxt = yLista(pasado.meses.map(m => mesNombre(m.mes)));
+    p.push('La escuela anda muy bien: el Nivel 1 se agotó ' + cursos.racha.length + ' meses seguidos. De las ' +
+      cursos.resN1.fechas + ' fechas de Nivel 1 que vienen, ya vendiste ' + cursos.resN1.vendidos + ' de ' + cursos.resN1.cupos + ' cupos. ' +
+      (pasado.flujoOperacional >= 0 ? 'En ' + mesesTxt + ' la operación dejó ' + mm(pasado.flujoOperacional) + ' a favor.'
+        : 'En ' + mesesTxt + ' operar costó ' + mm(-pasado.flujoOperacional) + ' más de lo que entró.'));
     // los hallazgos que el modelo marca como críticos se nombran con su propio título (texto del informe)
     const criticos = new Set(D.modelo.hallazgos_criticos || []);
     const hCrit = D.finanzas.hallazgos.filter(h => criticos.has(h.id));
-    p.push('Pero esa caja no se quedó en la empresa: salieron ' + mm(-pasado.socioNeto) + ' netos a la cuenta del socio y ' +
-      mm(-pasado.cofundador) + ' al cofundador (desde Aéreo OTEC entraron ' + mm(pasado.otec) + '). Al ' + fCorta(pasado.fechaCorte) + ' quedaban ' + clp(pasado.cajaFinal) +
-      ': ' + futuro.runwayDias.toFixed(1).replace('.', ',') + ' días hábiles de costos fijos.' +
-      (hCrit.length ? ' Lo más urgente del informe: ' + hCrit.map(h => h.titulo.replace(/\.$/, '').replace(/^./, c => c.toLowerCase())).join('; ') + '.' : ''));
+    p.push('Pero esa plata no se quedó en la empresa: salieron ' + mm(-pasado.socioNeto) + ' a la cuenta del socio (descontando lo que devolvió) y ' +
+      mm(-pasado.cofundador) + ' al cofundador. Desde Aéreo OTEC entraron ' + mm(pasado.otec) + '. Al ' + fDia(pasado.fechaCorte) + ' quedaban ' + clp(pasado.cajaFinal) +
+      ' en el banco: alcanza para ' + futuro.runwayDias.toFixed(1).replace('.', ',') + ' días hábiles de gastos fijos.' +
+      (hCrit.length ? ' Lo más urgente que encontró la revisión contable: ' + hCrit.map(h => h.titulo.replace(/\.$/, '').replace(/^./, c => c.toLowerCase())).join('; ') + '.' : ''));
     const com = X.comercial;
     const f0 = com && com.total ? com.pronostico.meses[0] : null;
-    p.push('Hacia 2027 el punto es el B2B. En ' + mesNombre(u.mes) + ' le vendiste ' + mm(u.b2b) + ' a empresas e instituciones; el equilibrio del plan es ' +
-      mm(futuro.equilibrio) + ' al mes y la meta ' + mm(D.modelo.b2b_meta_mes) + '. ' +
-      (despues && despues.b2bN ? 'Después del corte, al ' + fCorta(despues.hasta) + ', el SII ya trae ' + mm(despues.b2b) + ' sin IVA facturados a empresas e instituciones (' + despues.b2bN + (despues.b2bN === 1 ? ' factura' : ' facturas') + ', sin contar cupos sueltos)' +
-        (despues.b2b >= D.modelo.b2b_meta_mes ? ', sobre la meta del mes' : despues.b2b >= futuro.equilibrio ? ', sobre el equilibrio' : '') + '. ' : '') +
+    p.push('Para 2027, lo importante son las ventas a empresas. En ' + mesNombre(u.mes) + ' les vendiste ' + mm(u.b2b) + '. Lo mínimo para no perder plata es ' +
+      mm(futuro.equilibrio) + ' al mes, y la meta, ' + mm(D.modelo.b2b_meta_mes) + '. ' +
+      (despues && despues.b2bN ? 'Después, al ' + fDia(despues.hasta) + ', el SII ya muestra ' + mm(despues.b2b) + ' sin IVA facturados a empresas (' + despues.b2bN + (despues.b2bN === 1 ? ' factura' : ' facturas') + ', sin contar cupos de cursos abiertos)' +
+        (despues.b2b >= D.modelo.b2b_meta_mes ? ': más que la meta del mes' : despues.b2b >= futuro.equilibrio ? ': más que lo mínimo' : '') + '. ' : '') +
       (dashboardConectado(com)
-        ? 'En Comercial tienes ' + com.abiertas.n + ' cotizaciones abiertas por ' + mm(com.abiertas.monto) + ' (~' + mm(com.abiertas.ponderado) + ' ponderado), en los últimos 90 días ganaste ' + mm(com.ganadas.ultimos90) +
-          ' y para ' + f0.etiqueta + ' espero ' + mm(f0.total) + ' de venta B2B'
-        : 'Tu dashboard reportaba ' + mm(cot.abiertasMonto) + ' en cotizaciones abiertas al ' + fCorta(cot.corte) + (cot.esperado ? ' (~' + mm(cot.esperado) + ' esperables)' : '') +
-          ', pero su detalle aún no entra a AerIA' + (com && com.total ? '; lo que sí tengo (' + com.total + ' negocios desde SII, Notion y el plan) suma ' + mm(com.ganadas.ultimos90) + ' ganado en 90 días' : '')) +
-      '. Además hay ' + lic.relevantes.length + ' licitaciones abiertas que calzan con lo que hace Aéreo.');
+        ? 'En Ventas tienes ' + com.abiertas.n + ' cotizaciones esperando respuesta por ' + mm(com.abiertas.monto) + ' (lo probable: ' + mm(com.abiertas.ponderado) + '). En los últimos 90 días ganaste ' + mm(com.ganadas.ultimos90) +
+          ', y para ' + mesNombre(f0.mes) + ' lo probable en ventas a empresas es ' + mm(f0.total)
+        : 'Tu dashboard mostraba ' + mm(cot.abiertasMonto) + ' en cotizaciones esperando respuesta' + (cot.corte ? ' al ' + fDia(cot.corte) : '') + (cot.esperado ? ' (lo probable: ' + mm(cot.esperado) + ')' : '') +
+          ', pero AerIA todavía no ve el detalle' + (com && com.total ? '. Lo que sí tengo (' + com.total + ' negocios sacados de facturas, Notion y el plan) suma ' + mm(com.ganadas.ultimos90) + ' ganados en 90 días' : '')) +
+      '. Además hay ' + lic.relevantes.length + (lic.relevantes.length === 1 ? ' concurso del Estado (licitación) abierto que calza' : ' concursos del Estado (licitaciones) abiertos que calzan') + ' con lo que hace Aéreo.');
     const hoyTxt = [];
-    if (!dashboardConectado(com)) hoyTxt.push('conectar el dashboard comercial a AerIA');
-    if (capUrg.length) hoyTxt.push('ofertar a ' + capUrg.length + (capUrg.length === 1 ? ' licitación' : ' licitaciones') + ' de capacitación que ' + (capUrg.length === 1 ? 'cierra' : 'cierran') + ' en menos de 72 horas');
-    if (totalCobrar) hoyTxt.push('cobrar ' + mm(totalCobrar) + ' vencidos');
-    if (porVencer.length) hoyTxt.push('seguir ' + mm(porVencer.reduce((s, x) => s + x.saldo, 0)) + ' facturados que vencen entre el ' + fCorta(porVencer.map(x => x.vence).sort()[0]) + ' y el ' + fCorta(porVencer.map(x => x.vence).sort().pop()));
-    if (hCrit.length) hoyTxt.push('resolver ' + (hCrit.length === 1 ? 'el hallazgo crítico' : 'los ' + hCrit.length + ' hallazgos críticos') + ' de finanzas');
-    if (pasado.cajaFinal < D.modelo.costos_fijos_mes) hoyTxt.push('fijar un saldo mínimo de caja');
-    p.push('Mi recomendación para esta semana: ' + (hoyTxt.length > 1 ? hoyTxt.slice(0, -1).join(', ') + ' y ' + hoyTxt[hoyTxt.length - 1] : hoyTxt[0]) + '.');
+    if (!dashboardConectado(com)) hoyTxt.push('conectar tu dashboard de cotizaciones a AerIA');
+    if (capUrg.length) hoyTxt.push('postular a ' + capUrg.length + (capUrg.length === 1 ? ' concurso' : ' concursos') + ' de capacitación que ' + (capUrg.length === 1 ? 'cierra' : 'cierran') + ' en menos de 72 horas');
+    if (totalCobrar) hoyTxt.push('cobrar ' + mm(totalCobrar) + ' de facturas atrasadas');
+    if (porVencer.length) hoyTxt.push('estar atento a ' + mm(porVencer.reduce((s, x) => s + x.saldo, 0)) + ' facturados que deberían pagarte entre el ' + fDia(porVencer.map(x => x.vence).sort()[0]) + ' y el ' + fDia(porVencer.map(x => x.vence).sort().pop()));
+    if (hCrit.length) hoyTxt.push('resolver con tu contador ' + (hCrit.length === 1 ? 'el tema urgente' : 'los ' + hCrit.length + ' temas urgentes') + ' de la revisión contable');
+    if (pasado.cajaFinal < D.modelo.costos_fijos_mes) hoyTxt.push('decidir un piso de plata que nunca se saca del banco');
+    p.push(hoyTxt.length ? 'Esta semana te recomiendo: ' + yLista(hoyTxt) + '.' : 'Esta semana no veo nada urgente.');
     return { titular, parrafos: p, criticas };
   }
 
@@ -718,12 +763,15 @@
   const minus = t => String(t || '').replace(/^./, c => c.toLowerCase());
   function diasTxt(n) { const r = Math.round(n); return n < 1 ? 'menos de un día' : r === 1 ? 'un día' : 'unos ' + r + ' días'; }
   const PALABRAS = [
-    [/\bel B2B\b/g, 'la venta a empresas'], [/\bB2B\b/g, 'venta a empresas'], [/\begresos\b/g, 'gastos'],
+    [/\bVenta B2B\b/g, 'Venta a empresas'], [/\bel B2B\b/g, 'la venta a empresas'], [/\bB2B\b/g, 'venta a empresas'],
+    [/\bel N2\+N3\b/g, 'los Niveles 2 y 3'], [/\bNiveles 2\+3\b/g, 'Niveles 2 y 3'], [/\begresos\b/g, 'gastos'],
     [/saldo m[ií]nimo de operaci[oó]n/gi, 'piso de plata en el banco'], [/\bcartera\b/g, 'ventas'],
     [/\bfactoring\b/g, 'venta de la factura a una financiera'], [/\bin-company\b/g, 'para una empresa'],
     [/\bponderado\b/g, 'lo probable'], [/\bequilibrio\b/g, 'lo mínimo para no perder plata'],
     [/\bN2\+N3\b/g, 'Niveles 2 y 3'], [/\bN1\b/g, 'Nivel 1'], [/enero[–-]marzo/g, 'enero a marzo'],
     [/\b(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic) \d{2}\b/g, m => MESES[MES3.indexOf(m.slice(0, 3))]],
+    [/\bcostos fijos\b/g, 'gastos fijos'], [/\bFlujo de caja libre\b/g, 'Plata libre (después de pagar todo)'],
+    [/^Caja a fin de mes/, 'Plata en el banco a fin de mes'], [/^Ocupación /, 'Cupos vendidos, '],
   ];
   const sinJerga = t => PALABRAS.reduce((x, [re, por]) => x.replace(re, por), String(t || ''));
   // «MUNICIPALIDAD DE VILLA FICTICIA» → «Municipalidad de Villa Ficticia»; lo que ya trae minúsculas queda igual
@@ -852,7 +900,7 @@
       hacerVentas.push({ id: it.id, texto: l ? 'Preparar la oferta para ' + nombrePropio(l.organismo) + ': cierra el ' + fDia(l.cierre.slice(0, 10)) : sinJerga(it.titulo), url: it.url || '' });
     }
     const b2bAl = I.alertas.find(a => /^b2b-/.test(a.id));
-    if (b2bAl) hacerVentas.push({ alerta: b2bAl.id, texto: 'Armar desde ya las ventas a empresas de enero a marzo', por: Mo.mix_b2b_meta ? 'La receta de cada mes: ' + sinJerga(Mo.mix_b2b_meta).replace(/curso cerrado o para una empresa/g, 'curso cerrado para una empresa').replace(/\b1 AOC\b/g, '1 certificación AOC').replace(/~\$/g, 'cerca de $') : '' });
+    if (b2bAl) hacerVentas.push({ alerta: b2bAl.id, texto: 'Armar desde ya las ventas a empresas de enero a marzo', por: Mo.mix_b2b_meta ? 'La receta de cada mes: ' + sinJerga(Mo.mix_b2b_meta).replace(/curso cerrado o para una empresa/g, 'curso cerrado para una empresa').replace(/\b1 AOC\b/g, '1 asesoría AOC').replace(/~\$/g, 'cerca de $') : '' });
     temas.push({
       id: 'ventas', pregunta: '¿Vendemos lo suficiente a empresas?', nombre: 'cuánto le vendemos a empresas', semaforo: semVentas,
       frase: (vendido != null && (dia > 10 || vendido >= u.b2b) ? 'En ' + MESES[fecha(I.hoy).getMonth()] + ' ya ' + verbo + ' ' + mm(vendido) + ' a empresas: ' + comoVa(vendido) + '.'
@@ -1189,7 +1237,7 @@
 
   const API = {
     analizar, explicar, resultado2027, buscarMovimientos, resumenParaIA, cuentas, dashboardConectado,
-    fmt: { clp, mm, pct, fCorta, fLarga, fDia, mesNombre, cuando, horasA, plano, diasEntre, sumarDias, iso, nombrePropio },
+    fmt: { clp, mm, pct, fCorta, fLarga, fDia, mesNombre, cuando, horasA, plano, diasEntre, sumarDias, iso, nombrePropio, sinJerga },
     FERIADOS, MESES,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

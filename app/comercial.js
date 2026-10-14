@@ -64,6 +64,23 @@
   const clp = n => (n < 0 ? '−' : '') + '$' + miles(n);
   const mm = n => Math.abs(n) < 1e6 ? clp(n) : (n < 0 ? '−' : '') + '$' + (Math.abs(n) / 1e6).toFixed(1).replace('.', ',') + 'M';
   const corto = (t, n) => { t = String(t || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t; };
+  /* ---------- textos para las personas ----------
+     nombreMes («nov 26») queda para los ejes de los gráficos; en una frase va el mes con
+     todas sus letras, y el año solo si no es el de hoy. */
+  const MESES_TXT = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  const mesTxt = (ym, hoy) => MESES_TXT[Number(ym.slice(5, 7)) - 1] + (hoy && ym.slice(0, 4) !== hoy.slice(0, 4) ? ' de ' + ym.slice(0, 4) : '');
+  const diaTxt = s => esFecha(s) ? Number(s.slice(8, 10)) + ' de ' + MESES_TXT[Number(s.slice(5, 7)) - 1] : String(s || '');
+  // «MUNICIPALIDAD DE VILLA FICTICIA» → «Municipalidad de Villa Ficticia»; lo que ya trae minúsculas queda igual
+  const CHICAS = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y', 'e', 'en', 'para', 'por', 'a']);
+  const clienteTxt = t => /[a-záéíóúñ]/.test(String(t || '')) ? String(t || '') : String(t || '').toLowerCase()
+    .replace(/[^\s·\-/]+/g, (w, i) => (i > 0 && CHICAS.has(w)) ? w : w.replace(/^./, c => c.toUpperCase()));
+  // qué se vende, dicho corto (las etiquetas de LINEAS son valores y no se tocan)
+  const LINEA_TXT = { sence: 'curso SENCE', curso_cerrado: 'curso cerrado', aoc: 'asesoría AOC', servicios: 'servicio con drones',
+    otro: '', escuela: 'cupos en cursos abiertos', flota: 'Aéreo Flota', venta_equipos: 'venta de equipos' };
+  const LINEA_UN = { sence: 'un curso SENCE', curso_cerrado: 'un curso cerrado', aoc: 'una asesoría AOC', servicios: 'un servicio con drones',
+    escuela: 'cupos en cursos abiertos', flota: 'Aéreo Flota', venta_equipos: 'una venta de equipos' };
+  const ESTADO_TXT = { borrador: 'Todavía sin enviar', enviada: 'Enviada, sin respuesta', negociacion: 'Conversando precio o fechas' };
+  const diasTxt = n => n + (n === 1 ? ' día' : ' días');
 
   /* ---------- lectura de valores sueltos (importación y edición) ---------- */
   /* Toma el primer número del texto (o el que sigue al «$»), así «$1.200.000 + IVA»,
@@ -560,32 +577,34 @@
     const A = [];
     const ab = R.cotizaciones.filter(q => q.abierta);
     const top = (l, n) => l.slice().sort((a, b) => (b.monto || 0) - (a.monto || 0)).slice(0, n || 5);
-    const nombre = q => (q.cliente || 'Sin cliente') + (q.descripcion ? ' · ' + corto(q.descripcion, 50) : '') + ' (' + montoTxt(q) + ')';
+    const nombre = q => (q.cliente ? clienteTxt(q.cliente) : 'Sin cliente') + ' (' + montoTxt(q) + ')';
+    const FUENTE = 'Tus cotizaciones (pestaña Ventas)', FUENTE_SII = 'Tus cotizaciones y las facturas del SII';
     const seg = ab.filter(q => q.seguimientoVencido);
     if (seg.length) {
       const m = seg.reduce((a, q) => a + q.valor, 0);
       A.push({ id: 'com-seguimientos-' + huella(seg), nivel: m >= 3e6 ? 'alta' : 'media', foco: 'comercial', monto: m,
-        titulo: seg.length + (seg.length === 1 ? ' cotización con el seguimiento vencido' : ' cotizaciones con el seguimiento vencido'),
-        detalle: 'Las más grandes: ' + top(seg, 4).map(q => nombre(q) + ', debía ser el ' + q.proximo_seguimiento.slice(8, 10) + '-' + MES3[Number(q.proximo_seguimiento.slice(5, 7)) - 1]).join('; ') + '.',
-        accion: 'Llamar o escribir hoy y anotar el resultado y la próxima fecha en Comercial.', fuente: 'Comercial' });
+        titulo: seg.length === 1 ? 'Una cotización espera tu llamada: ya pasó la fecha anotada' : seg.length + ' cotizaciones esperan tu llamada: ya pasó la fecha anotada',
+        detalle: (seg.length === 1 ? '' : 'Las más grandes: ') + top(seg, 4).map(q => nombre(q) + ', tocaba el ' + diaTxt(q.proximo_seguimiento)).join('; ') + '.',
+        accion: 'Llama o escribe hoy. Después anota qué te dijeron y cuándo volver a llamar.', fuente: FUENTE });
     }
     const frias = ab.filter(q => !q.seguimientoVencido && !esFecha(q.proximo_seguimiento) && q.diasSinContacto != null && q.diasSinContacto > 14);
     if (frias.length) {
       const m = frias.reduce((a, q) => a + q.valor, 0);
       const muy = frias.filter(q => q.diasSinContacto > 45).length;
       A.push({ id: 'com-frias-' + huella(frias), nivel: m >= 5e6 ? 'alta' : 'media', foco: 'comercial', monto: m,
-        titulo: frias.length + (frias.length === 1 ? ' cotización abierta' : ' cotizaciones abiertas') + ' sin contacto hace más de 2 semanas',
-        detalle: 'Suman ' + mm(m) + (muy ? '; ' + muy + ' llevan más de 45 días y probablemente estén perdidas' : '') + '. Las mayores: ' + top(frias, 4).map(q => nombre(q) + ', ' + q.diasSinContacto + ' días').join('; ') + '.',
-        accion: 'Contactar las más grandes, ponerles próxima fecha de seguimiento y cerrar como perdidas las que ya no van.', fuente: 'Comercial' });
+        titulo: frias.length === 1 ? 'Una cotización lleva más de 2 semanas sin contacto con el cliente' : frias.length + ' cotizaciones llevan más de 2 semanas sin contacto con el cliente',
+        detalle: 'Suman ' + mm(m) + '.' + (muy ? ' ' + (muy === 1 ? 'Una lleva' : muy + ' llevan') + ' más de 45 días: lo más probable es que ya no vayan.' : '') +
+          (frias.length === 1 ? ' ' : ' Las más grandes: ') + top(frias, 4).map(q => nombre(q) + ', ' + diasTxt(q.diasSinContacto) + ' sin contacto').join('; ') + '.',
+        accion: 'Llama primero a las más grandes y anota cuándo volver a llamar. Las que ya no van, márcalas como perdidas.', fuente: FUENTE });
     }
     const cierres = ab.filter(q => q.cierreVencido);
     if (cierres.length) {
       const est = cierres.filter(q => q.estancada).length;
       A.push({ id: 'com-cierres-' + huella(cierres), nivel: 'media', foco: 'comercial', monto: cierres.reduce((a, q) => a + q.valor, 0),
-        titulo: cierres.length + (cierres.length === 1 ? ' cotización pasó su fecha estimada de cierre' : ' cotizaciones pasaron su fecha estimada de cierre'),
-        detalle: top(cierres, 5).map(q => nombre(q) + ', estimada ' + q.fecha_cierre_estimada).join('; ') + '. El pronóstico las cuenta como si cerraran este mes' +
+        titulo: cierres.length === 1 ? 'Una cotización pasó la fecha en que el cliente debía decidir' : cierres.length + ' cotizaciones pasaron la fecha en que el cliente debía decidir',
+        detalle: top(cierres, 5).map(q => nombre(q) + ', debía decidir el ' + diaTxt(q.fecha_cierre_estimada)).join('; ') + '. Mientras no ' + (cierres.length === 1 ? 'la actualices' : 'las actualices') + ', AerIA cuenta que se decide' + (cierres.length === 1 ? '' : 'n') + ' este mes' +
           (est ? ', salvo ' + (est === 1 ? 'una que lleva' : est + ' que llevan') + ' más de 90 días sin contacto' : '') + '.',
-        accion: 'Actualizar el estado (ganada, perdida) o mover la fecha estimada de cierre.', fuente: 'Comercial' });
+        accion: 'Anota si se ganó o se perdió. Si el cliente sigue pensando, pon una fecha nueva.', fuente: FUENTE });
     }
     // Facturar: lo ganado y ejecutado sin folio. Las que calzan con una factura del SII siguen aquí hasta que se anote el folio.
     const sinFac = porFacturar(R, hoy);
@@ -593,50 +612,55 @@
       const sug = id => R.sii.find(s => s.id === id && s.como === 'sugerida');
       const nSug = sinFac.filter(q => sug(q.id)).length, nSin = sinFac.length - nSug;
       A.push({ id: 'com-facturar-' + huella(sinFac), nivel: nSin ? 'alta' : 'media', foco: 'comercial', monto: sinFac.reduce((a, q) => a + q.valor, 0),
-        titulo: sinFac.length + (sinFac.length === 1 ? ' venta ganada sin factura registrada' : ' ventas ganadas sin factura registrada') +
-          (nSug ? ' (' + nSug + (nSug === 1 ? ' calza' : ' calzan') + ' con una factura del SII)' : ''),
-        detalle: top(sinFac, 6).map(q => { const s = sug(q.id); return nombre(q) + (s ? ': ¿es la factura ' + s.folio + (s.fechaFactura ? ' del ' + s.fechaFactura : '') + '?' : ''); }).join('; ') + '.',
-        accion: (nSin ? 'Facturar el día en que termina cada curso o servicio y registrar el folio en Comercial.' : '') +
-          (nSug ? (nSin ? ' ' : '') + 'Confirmar el folio de las que calzan con el SII (Comercial → editar).' : ''), fuente: 'Comercial × SII' });
+        titulo: sinFac.length + (sinFac.length === 1 ? ' venta ganada sin factura anotada' : ' ventas ganadas sin factura anotada') +
+          (nSug ? ' (para ' + (nSug === 1 ? 'una' : nSug) + ' encontré en el SII una factura que podría ser)' : ''),
+        detalle: top(sinFac, 6).map(q => { const s = sug(q.id); return nombre(q) + (s ? ': ¿es la factura ' + s.folio + (s.fechaFactura ? ' del ' + diaTxt(s.fechaFactura) : '') + '?' : ''); }).join('; ') + '.',
+        accion: (nSin ? 'Emite la factura el mismo día que terminas cada curso o servicio, y anota su número en la ficha de la venta (pestaña Ventas).' : '') +
+          (nSug ? (nSin ? ' ' : '') + 'Revisa las que coinciden con una factura del SII y, si es la misma, anota su número en la ficha.' : ''), fuente: FUENTE_SII });
     }
     if (R.siiSinVenta && R.siiSinVenta.length) {
       const l = R.siiSinVenta, m = l.reduce((a, s) => a + (s.monto || 0), 0);
       A.push({ id: 'com-sii-sin-venta-' + hash(l.map(s => s.folio).sort().join('|')).slice(0, 6), nivel: 'media', foco: 'comercial', monto: m,
-        titulo: l.length + (l.length === 1 ? ' factura a empresa o institución no está' : ' facturas a empresas o instituciones no están') + ' como venta en Comercial',
-        detalle: l.slice().sort((a, b) => b.monto - a.monto).slice(0, 6).map(s => (s.cliente || '?') + ' · factura ' + s.folio + ' del ' + s.fecha + ' · ' + mm(s.monto)).join('; ') + '. Sin ellas, lo ganado y el pronóstico se quedan cortos.',
-        accion: 'Registrarlas como ventas ganadas en Comercial (o pedírselo a AerIA en el chat).', fuente: 'Comercial × SII' });
+        titulo: l.length === 1 ? 'Una factura a una empresa no está anotada como venta' : l.length + ' facturas a empresas no están anotadas como venta',
+        detalle: l.slice().sort((a, b) => b.monto - a.monto).slice(0, 6).map(s => (s.cliente ? clienteTxt(s.cliente) : '?') + ': factura ' + s.folio + ' del ' + diaTxt(s.fecha) + ', ' + mm(s.monto)).join('; ') +
+          '. Si no ' + (l.length === 1 ? 'la anotas' : 'las anotas') + ', AerIA cree que vendiste menos de lo que vendiste.',
+        accion: (l.length === 1 ? 'Anótala como venta ganada' : 'Anótalas como ventas ganadas') + ' en la pestaña Ventas, o pídeselo a AerIA en el chat.', fuente: FUENTE_SII });
     }
     // Lo facturado que viene del SII ya lo sigue el informe financiero (Presente → Por cobrar): aquí solo lo registrado en Comercial
     const cobrar = R.ganadas.porCobrar.filter(q => esFecha(q.fecha_cierre) && dias(q.fecha_cierre, hoy) > 30 && !/SII/.test(q.origen || ''));
     if (cobrar.length) {
       A.push({ id: 'com-cobrar-' + huella(cobrar), nivel: 'media', foco: 'comercial', monto: cobrar.reduce((a, q) => a + q.valor, 0),
-        titulo: cobrar.length + (cobrar.length === 1 ? ' venta facturada sin cobro' : ' ventas facturadas sin cobro') + ' hace más de 30 días',
+        titulo: cobrar.length === 1 ? 'Una venta facturada sigue sin pago después de 30 días' : cobrar.length + ' ventas facturadas siguen sin pago después de 30 días',
         detalle: top(cobrar, 5).map(q => nombre(q) + ', factura ' + q.factura_folio).join('; ') + '.',
-        accion: 'Llamar a cobranza de cada cliente y anotar la fecha comprometida.', fuente: 'Comercial' });
+        accion: 'Llama a quien paga en cada cliente y anota el día en que prometió pagar.', fuente: FUENTE });
     }
     // El pronóstico solo alerta cuando ve el pipeline completo (dashboard conectado)
     if (ctx.equilibrio && ctx.conectado !== false) {
       for (const f of R.pronostico.meses.slice(0, 2)) {
         if (f.total < ctx.equilibrio) {
+          const mes = mesTxt(f.mes, hoy);
           A.push({ id: 'com-pronostico-' + f.mes, nivel: f.total < (ctx.minimo || 0) ? 'alta' : 'media', foco: 'cruce', monto: f.total, fecha_limite: f.mes + '-28',
-            titulo: 'Venta B2B esperada para ' + f.etiqueta + ': ' + mm(f.total) + ', bajo el equilibrio de ' + mm(ctx.equilibrio),
-            detalle: 'Ganado ' + mm(f.ganado) + ' + esperable de lo abierto ' + mm(f.esperado) + ' (' + f.nAbiertas + (f.nAbiertas === 1 ? ' cotización, ponderada' : ' cotizaciones, ponderadas') + ' por probabilidad)' +
-              (f.supuestas ? '; ' + f.supuestas + ' sin fecha estimada de cierre, calculada con el ciclo histórico' : '') + '. La meta del plan es ' + mm(ctx.meta || 0) + '.',
-            accion: 'Cotizar más B2B con cierre en ' + f.etiqueta + ' (SENCE, cursos cerrados, AOC, servicios) y empujar las negociaciones más avanzadas.', fuente: 'Comercial × Plan 2027' });
+            titulo: 'Para ' + mes + ', lo probable en ventas a empresas es ' + mm(f.total) + ': menos de lo mínimo para no perder plata (' + mm(ctx.equilibrio) + ')',
+            detalle: 'Ganado hasta ahora: ' + mm(f.ganado) + '. De lo cotizado, lo probable es cerrar ' + mm(f.esperado) + ' (' + f.nAbiertas + (f.nAbiertas === 1 ? ' cotización' : ' cotizaciones') + ').' +
+              (f.supuestas ? ' A ' + (f.supuestas === 1 ? 'una' : f.supuestas) + ' le' + (f.supuestas === 1 ? '' : 's') + ' falta la fecha en que el cliente decide: la calculé con lo que suele tardar una venta.' : '') +
+              ' La meta es ' + mm(ctx.meta || 0) + ' al mes.',
+            accion: 'Manda más cotizaciones a empresas que puedan cerrar en ' + mes + ': SENCE, cursos cerrados, asesorías AOC o servicios con drones. Y llama a las que están por decidir.',
+            tarea: 'Cotizar más a empresas para cerrar en ' + mes,
+            fuente: 'Tus cotizaciones y el plan 2027' });
         }
       }
     }
     if (R.concentracion && R.concentracion.parte >= 0.4 && R.abiertas.n >= 5 && ctx.conectado !== false) {
       A.push({ id: 'com-concentracion', nivel: 'media', foco: 'comercial', monto: R.concentracion.monto,
-        titulo: 'El ' + Math.round(R.concentracion.parte * 100) + '% de lo esperable del pipeline depende de un solo cliente (' + R.concentracion.cliente + ')',
-        detalle: 'Si ese negocio se cae, el pronóstico pierde ' + mm(R.concentracion.monto) + ' de base.',
-        accion: 'Diversificar: sumar cotizaciones de otros clientes en la misma línea.', fuente: 'Comercial' });
+        titulo: 'El ' + Math.round(R.concentracion.parte * 100) + '% de lo probable de tus cotizaciones depende de un solo cliente: ' + clienteTxt(R.concentracion.cliente),
+        detalle: 'Si ese negocio se cae, pierdes ' + mm(R.concentracion.monto) + ' de lo probable.',
+        accion: 'Busca otros clientes para lo mismo, así no dependes de uno solo.', fuente: FUENTE });
     }
     for (const q of top(ab.filter(x => x.estado === 'negociacion' && x.monto > 0 && !x.estancada), 3)) {
       A.push({ id: 'com-empujar-' + q.id, nivel: 'oportunidad', foco: 'comercial', monto: q.monto,
-        titulo: 'En negociación: ' + (q.cliente || 'sin cliente') + (q.descripcion ? ', ' + corto(q.descripcion, 60) : ''),
-        detalle: mm(q.monto) + ' con ' + Math.round(q.prob * 100) + '% de probabilidad' + (q.diasSinContacto != null ? '; último contacto hace ' + q.diasSinContacto + ' días' : '') + '.',
-        accion: 'Proponer fecha de inicio y condiciones para cerrar esta semana.', fuente: 'Comercial' });
+        titulo: (q.cliente ? clienteTxt(q.cliente) : 'Un cliente sin nombre') + ' está negociando ' + (LINEA_UN[q.linea] || 'contigo'),
+        detalle: 'Es una venta de ' + mm(q.monto) + ', con ' + Math.round(q.prob * 100) + '% de probabilidad' + (q.diasSinContacto != null ? '. El último contacto fue hace ' + diasTxt(q.diasSinContacto) : '') + '.',
+        accion: 'Llámalo y propón una fecha de inicio y las condiciones para cerrar esta semana.', fuente: FUENTE });
     }
     return A;
   }
@@ -650,21 +674,27 @@
     const prio = q => (q.seguimientoVencido ? 0 : 1) * 1e12 - (q.monto || 0);
     for (const q of ab.filter(q => q.seguimientoVencido || (q.diasSinContacto != null && q.diasSinContacto > 10 && !esFecha(q.proximo_seguimiento)) || (esFecha(q.proximo_seguimiento) && q.proximo_seguimiento <= sumarDias(hoy, 2)))
       .sort((a, b) => prio(a) - prio(b)).slice(0, 6)) {
+      const linea = LINEA_TXT[q.linea];
+      const toca = !esFecha(q.proximo_seguimiento) ? '' : q.proximo_seguimiento < hoy ? ' · tocaba llamar el ' + diaTxt(q.proximo_seguimiento)
+        : q.proximo_seguimiento === hoy ? ' · toca llamar hoy' : ' · toca llamar el ' + diaTxt(q.proximo_seguimiento);
       out.push({ id: 'com-seg-' + q.id + '-' + (esFecha(q.proximo_seguimiento) ? q.proximo_seguimiento : 'c' + q.fechaContacto), cuando: q.seguimientoVencido || q.proximo_seguimiento <= hoy ? 'hoy' : 'esta semana', foco: 'comercial', prioridad: q.monto >= 1e6 ? 0 : 1,
-        titulo: 'Seguimiento a ' + (q.cliente || 'cliente') + (q.monto ? ' por ' + mm(q.monto) : '') + (q.descripcion ? ' · ' + corto(q.descripcion, 40) : ''),
-        por: q.estadoLabel + (q.diasSinContacto != null ? ' · último contacto hace ' + q.diasSinContacto + ' días' : '') + (q.proximo_seguimiento ? ' · tocaba el ' + q.proximo_seguimiento : ''),
+        titulo: 'Llamar a ' + (q.cliente ? clienteTxt(q.cliente) : 'el cliente') + ' por su cotización' + (q.monto ? ' de ' + mm(q.monto) : '') +
+          ((linea || !q.monto) ? ' (' + [linea, q.monto ? '' : 'monto por completar'].filter(Boolean).join(', ') + ')' : ''),
+        por: (ESTADO_TXT[q.estado] || q.estadoLabel) + (q.diasSinContacto != null ? ' · último contacto hace ' + diasTxt(q.diasSinContacto) : '') + toca,
         cotizacion: q.id });
     }
     // las ventas más grandes primero: así lo que más plata trae no queda fuera de las cuatro
     for (const q of porFacturar(R, hoy).slice().sort((a, b) => (b.valor || 0) - (a.valor || 0)).slice(0, 4)) {
       const sug = R.sii.find(s => s.id === q.id && s.como === 'sugerida');
+      const quien = q.cliente ? clienteTxt(q.cliente) : 'el cliente';
       out.push({ id: 'com-fac-' + q.id, cuando: 'esta semana', foco: 'comercial', prioridad: 1,
-        titulo: sug ? 'Confirmar si la factura ' + sug.folio + ' es de la venta a ' + q.cliente : 'Facturar la venta a ' + (q.cliente || 'cliente') + ' por ' + montoTxt(q),
-        por: sug ? 'Calza por nombre y monto con el SII; si es, anota el folio.' : 'Ganada' + (q.fecha_cierre ? ' el ' + q.fecha_cierre : '') + ', sin folio registrado.', cotizacion: q.id });
+        titulo: sug ? 'Confirmar si la factura ' + sug.folio + ' es de la venta a ' + quien : 'Facturar la venta a ' + quien + ' (' + montoTxt(q) + ')',
+        por: sug ? 'El nombre y el monto coinciden con esa factura del SII. Si es, anota su número.'
+          : (esFecha(q.fecha_cierre) ? 'La ganaste el ' + diaTxt(q.fecha_cierre) : 'Está ganada') + ' y no tiene factura anotada.', cotizacion: q.id });
     }
     for (const q of ab.filter(q => q.cierreVencido).sort((a, b) => b.monto - a.monto).slice(0, 3)) {
       out.push({ id: 'com-cierre-' + q.id + '-' + q.fecha_cierre_estimada, cuando: 'esta semana', foco: 'comercial', prioridad: 2,
-        titulo: 'Definir si se gana o se pierde: ' + (q.cliente || 'cliente') + ' (' + montoTxt(q) + ')', por: 'El cierre estimado era el ' + q.fecha_cierre_estimada + '.', cotizacion: q.id });
+        titulo: 'Preguntarle a ' + (q.cliente ? clienteTxt(q.cliente) : 'el cliente') + ' si ya decidió (' + montoTxt(q) + ')', por: 'Debía decidir el ' + diaTxt(q.fecha_cierre_estimada) + '.', cotizacion: q.id });
     }
     return out;
   }
@@ -673,12 +703,13 @@
   function eventos(R, hoy) {
     const ev = [];
     for (const q of R.cotizaciones) {
+      const quien = q.cliente ? clienteTxt(q.cliente) : 'el cliente';
       if (q.abierta && esFecha(q.proximo_seguimiento) && q.proximo_seguimiento >= hoy)
-        ev.push({ fecha: q.proximo_seguimiento, tipo: 'comercial', titulo: 'Seguimiento: ' + (q.cliente || 'cliente') + ' · ' + montoTxt(q), estado: q.estado, cotizacion: q.id });
+        ev.push({ fecha: q.proximo_seguimiento, tipo: 'comercial', titulo: 'Llamar a ' + quien + ' (' + montoTxt(q) + ')', estado: q.estado, cotizacion: q.id });
       else if (q.abierta && esFecha(q.fecha_cierre_estimada) && q.fecha_cierre_estimada >= hoy && q.monto >= 1e6)
-        ev.push({ fecha: q.fecha_cierre_estimada, tipo: 'comercial', titulo: 'Cierre estimado: ' + (q.cliente || 'cliente') + ' · ' + mm(q.monto), estado: q.estado, cotizacion: q.id });
+        ev.push({ fecha: q.fecha_cierre_estimada, tipo: 'comercial', titulo: (q.cliente ? clienteTxt(q.cliente) : 'El cliente') + ' debería decidir (' + mm(q.monto) + ')', estado: q.estado, cotizacion: q.id });
       if (q.estado === 'ganada' && esFecha(q.fecha_ejecucion) && q.fecha_ejecucion >= hoy)
-        ev.push({ fecha: q.fecha_ejecucion, tipo: 'comercial', titulo: 'Se ejecuta: ' + (q.cliente || 'cliente') + (q.descripcion ? ' · ' + corto(q.descripcion, 40) : ''), estado: 'ganada', cotizacion: q.id });
+        ev.push({ fecha: q.fecha_ejecucion, tipo: 'comercial', titulo: 'Trabajo para ' + quien + (LINEA_TXT[q.linea] ? ': ' + LINEA_TXT[q.linea] : q.descripcion ? ': ' + corto(q.descripcion, 40) : ''), estado: 'ganada', cotizacion: q.id });
     }
     return ev;
   }
@@ -1013,7 +1044,7 @@
   }
 
   /* Código del extractor para correr en el dashboard local (marcador o consola) */
-  const EXTRACTOR = "(()=>{const T=[...document.querySelectorAll('table')].map((t,i)=>({titulo:(t.caption&&t.caption.innerText.trim())||(t.closest('section,div')&&t.closest('section,div').querySelector('h1,h2,h3')||{}).innerText||('tabla '+(i+1)),filas:[...t.rows].map(r=>[...r.cells].map(c=>c.innerText.trim()))}));const L={};try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);L[k]=localStorage.getItem(k)}}catch(e){}const G={};for(const k of Object.keys(window)){try{const v=window[k];if(Array.isArray(v)&&v.length&&v[0]&&typeof v[0]==='object'){JSON.stringify(v);G[k]=v}}catch(e){}}const s=JSON.stringify({fuente:'aeria-extractor',url:location.href,fecha:new Date().toISOString(),tablas:T,almacenamiento:L,globales:G});const fin=()=>alert('AerIA: datos copiados ('+Math.round(s.length/1024)+' KB). Pégalos en AerIA → Comercial → Importar.');navigator.clipboard.writeText(s).then(fin,()=>{const a=document.createElement('textarea');a.value=s;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove();fin()})})();";
+  const EXTRACTOR = "(()=>{const T=[...document.querySelectorAll('table')].map((t,i)=>({titulo:(t.caption&&t.caption.innerText.trim())||(t.closest('section,div')&&t.closest('section,div').querySelector('h1,h2,h3')||{}).innerText||('tabla '+(i+1)),filas:[...t.rows].map(r=>[...r.cells].map(c=>c.innerText.trim()))}));const L={};try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);L[k]=localStorage.getItem(k)}}catch(e){}const G={};for(const k of Object.keys(window)){try{const v=window[k];if(Array.isArray(v)&&v.length&&v[0]&&typeof v[0]==='object'){JSON.stringify(v);G[k]=v}}catch(e){}}const s=JSON.stringify({fuente:'aeria-extractor',url:location.href,fecha:new Date().toISOString(),tablas:T,almacenamiento:L,globales:G});const fin=()=>alert('AerIA: datos copiados ('+Math.round(s.length/1024)+' KB). Pégalos en AerIA → Ventas → Importar.');navigator.clipboard.writeText(s).then(fin,()=>{const a=document.createElement('textarea');a.value=s;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove();fin()})})();";
 
   /* ---------- contexto para el chat ---------- */
   function resumenParaIA(R) {

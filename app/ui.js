@@ -12,8 +12,8 @@
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const NIVEL_TXT = { critica: 'Crítica', alta: 'Alta', oportunidad: 'Oportunidad', media: 'Media', baja: 'Baja' };
-  const FOCO_TXT = { pasado: 'Pasado', presente: 'Presente', futuro: 'Futuro', cruce: 'Cruce', comercial: 'Comercial' };
+  const NIVEL_TXT = { critica: 'Urgente', alta: 'Ojo', oportunidad: 'Oportunidad', media: 'Sin apuro', baja: 'Para saber' };
+  const FOCO_TXT = { pasado: 'La plata', presente: 'Cursos y cobros', futuro: '2027', cruce: 'Varios datos', comercial: 'Ventas' };
   const C = window.AeriaComercial;
   const VISTAS = ['mando', 'pasado', 'presente', 'comercial', 'futuro', 'hablar'];
   const MES3 = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
@@ -97,6 +97,13 @@
   function recalcular() { I = M.analizar(datos(), hoy(), new Date()); }
   const resuelta = a => S.alertas[a.id] && S.alertas[a.id].estado === 'resuelta';
   const fuerte = t => esc(t).replace(/(−?\$[\d.,]+M?)/g, '<b>$1</b>');
+  // fecha y hora de Chile para una marca ISO (las fuentes la guardan en UTC)
+  const enChile = s => {
+    const d = new Date(s || '');
+    if (!s || isNaN(d)) return '?';
+    try { return d.toLocaleString('es-CL', { timeZone: 'America/Santiago', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }); }
+    catch (e) { return String(s).slice(0, 16).replace('T', ' ') + ' UTC'; }
+  };
   const fechaCaja = s => { const d = F.fCorta(s).split('-'); return '<b>' + d[0] + '</b><small>' + d[1] + '</small>'; };
   const dSem = s => { const p = s.split('-').map(Number); return DIA3[new Date(p[0], p[1] - 1, p[2]).getDay()]; };
 
@@ -119,13 +126,20 @@
     'ventas a empresas': 'Cursos cerrados, SENCE, asesoría AOC y servicios con drones que compran empresas e instituciones. No incluye los cupos sueltos de los cursos abiertos.',
     'punto de equilibrio': 'Lo que hay que vender cada mes para no perder plata: ni ganar ni perder.',
     'costos fijos': 'Lo que Aéreo gasta cada mes aunque no venda nada: sueldos, arriendos, sistemas.',
+    'gastos fijos': 'Lo que Aéreo gasta cada mes aunque no venda nada: sueldos, arriendos, sistemas.',
+    'lo que dejó la operación': 'Lo que entró por ventas menos lo que costó funcionar, antes de lo que sacan los socios.',
     'factoring': 'Venderle una factura a una financiera para recibir la plata antes, a cambio de una comisión.',
     'cotización abierta': 'Una propuesta enviada que el cliente todavía no acepta ni rechaza.',
-    'lo probable': 'Lo cotizado multiplicado por la probabilidad de cerrar cada cotización: una estimación realista, no lo máximo.',
+    'cotización vencida': 'Una cotización que pasó su fecha sin respuesta del cliente.',
+    'lo probable': 'Lo que probablemente se cierre: cada cotización cuenta según su chance. Una en negociación pesa más que una recién enviada.',
     'por cobrar': 'Facturas emitidas que el cliente todavía no paga.',
-    'vencida': 'Una factura cuyo plazo de pago (30 días) ya pasó.',
+    'vencida': 'Una factura que ya pasó su plazo de pago y sigue sin pagarse.',
+    'concursos del Estado': 'Compras públicas (licitaciones y compras ágiles) que el Estado publica en Mercado Público y a las que Aéreo puede postular.',
     'licitación': 'Un concurso público del Estado (Mercado Público) en que Aéreo puede postular.',
-    'palanca': 'Una medida del plan 2027 que suma plata: subir precios, vender almuerzos, abrir revalidación.',
+    'medidas del plan': 'Cosas del plan 2027 que mejoran el resultado del año: vender algo nuevo o gastar menos.',
+    'palanca': 'Una medida del plan 2027 que mejora el resultado del año: vender algo nuevo o gastar menos.',
+    'plan B': 'Recortes de gastos que se aplican si las ventas a empresas no alcanzan.',
+    'SENCE': 'Programa del Estado que permite a una empresa pagar cursos con descuento en sus impuestos.',
     'caja': 'La plata disponible en las cuentas del banco de Aéreo.',
     'SII': 'Servicio de Impuestos Internos: ahí quedan todas las facturas que Aéreo emite.',
     'cartola': 'El detalle de movimientos que entrega el banco.',
@@ -142,7 +156,7 @@
   function accionHtml(x, pre) {
     const ids = x.ids || (x.id ? [x.id] : []);
     const abrir = x.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(x.cotizacion)}">abrir</button>` : '';
-    const ficha = x.url ? ` · <a href="${esc(x.url)}" target="_blank" rel="noopener">ficha ↗</a>` : '';
+    const ficha = x.url ? ` · <a href="${esc(x.url)}" target="_blank" rel="noopener">ver la licitación ↗</a>` : '';
     if (x.alerta) {
       const r = resuelta({ id: x.alerta });
       return `<li class="${r ? 'hecho' : ''}"><span><span>${simple(x.texto)}</span>${x.por ? '<span class="c-sub">' + esc(x.por) + '</span>' : ''}</span><button class="enlace-btn" type="button" data-accion="resolver" data-id="${esc(x.alerta)}">${r ? 'Volver a mostrar' : 'Ya lo vi'}</button></li>`;
@@ -189,7 +203,7 @@
   function renderBanda() {
     const crit = I.alertas.filter(a => a.nivel === 'critica' && !resuelta(a)).length;
     $('#banda-estado').innerHTML =
-      '<span><span class="led' + (crit ? ' rojo' : '') + '"></span><b>' + crit + '</b> ' + (crit === 1 ? 'aviso urgente' : 'avisos urgentes') + '</span>' +
+      '<span><span class="led' + (crit ? ' rojo' : '') + '"></span>' + (crit ? '<b>' + crit + '</b> ' + (crit === 1 ? 'aviso urgente' : 'avisos urgentes') : 'Sin avisos urgentes') + '</span>' +
       '<span>Banco al <b>' + F.fCorta(I.pasado.fechaCorte) + '</b></span>' +
       '<span>Cursos al <b>' + F.fCorta((D0.cursos.extraido || '').slice(0, 10)) + '</b></span>' +
       '<span>Hoy <b>' + F.fLarga(I.hoy) + '</b></span>';
@@ -209,12 +223,12 @@
   }
   function renderPie() {
     $('#pie').innerHTML =
-      '<p><b>Fuentes.</b> Pasado: ' + esc(D0.finanzas.fuente) + ', generado el ' + esc(D0.finanzas.generado_fuente.slice(0, 10)) +
-      '. Presente: ' + esc(D0.cursos.fuente) + ' (commit ' + esc(D0.cursos.commit || '?') + '); ' + esc(D0.licitaciones.fuente) +
-      ', ' + esc((D0.licitaciones.generado_fuente || '').slice(0, 16).replace('T', ' ')) + ' UTC; ' + esc(D0.cotizaciones.fuente) + '; Comercial: ' + (I.comercial ? I.comercial.total : 0) + ' cotizaciones en la base de AerIA' +
-      '. Futuro: ' + esc(D0.plan.fuente) + '; ' + esc(D0.modelo.fuente) + '.</p>' +
-      '<p><b>Método.</b> AerIA no inventa cifras: todo número sale de esas fuentes o de cálculos sobre ellas, y cada alerta dice de dónde viene. ' +
-      'Montos en pesos chilenos. Paquete armado el ' + esc((D0.construido || '').slice(0, 16).replace('T', ' ')) + '.</p>';
+      '<p><b>De dónde salen los datos.</b> La plata: ' + esc(D0.finanzas.fuente) + ', del ' + esc(F.fCorta(D0.finanzas.generado_fuente.slice(0, 10))) +
+      '. Cursos y cobros: ' + esc(D0.cursos.fuente) + ' (versión ' + esc((D0.cursos.commit || '?').split(' ')[0]) + '); ' + esc(D0.licitaciones.fuente) +
+      ', revisado el ' + esc(enChile(D0.licitaciones.generado_fuente)) + '. Ventas: ' + esc(D0.cotizaciones.fuente) + '; ' + (I.comercial ? I.comercial.total : 0) + ' cotizaciones guardadas en AerIA' +
+      '. 2027: ' + esc(D0.plan.fuente) + '; ' + esc(D0.modelo.fuente) + '.</p>' +
+      '<p><b>Cómo trabaja AerIA.</b> No inventa cifras: cada número sale de esos datos o de una cuenta hecha con ellos, y cada aviso dice de dónde viene. ' +
+      'Montos en pesos chilenos. Datos cargados el ' + esc(enChile(D0.construido)) + '.</p>';
   }
 
   /* ========================================================================
@@ -224,13 +238,13 @@
     '¿Qué hago hoy y por qué?',
     'Explícame en simple cómo está la plata',
     '¿Llegamos bien a 2027? Dímelo con peras y manzanas',
-    '¿Dónde se fue la plata del último período?',
-    '¿Llegamos a la meta 2027 al ritmo actual? ¿Qué palanca mueve más?',
-    '¿Qué licitaciones vale la pena postular esta semana?',
-    'Arma un plan de preventa para noviembre y diciembre',
-    '¿Qué riesgos tributarios ves y qué le pregunto al contador?',
-    '¿Qué cotizaciones debo empujar esta semana y por qué?',
-    '¿Cuánto hemos ganado y en qué líneas nos va mejor?',
+    '¿En qué se fue la plata los últimos meses?',
+    '¿Llegamos a la meta 2027 si seguimos así? ¿Qué medida del plan ayuda más?',
+    '¿A qué concursos del Estado me conviene postular esta semana?',
+    '¿Cómo lleno los próximos cursos que tienen cupos libres?',
+    '¿Qué problemas de impuestos ves y qué le pregunto al contador?',
+    '¿A qué clientes debo llamar esta semana y por qué?',
+    '¿Cuánto hemos vendido y qué es lo que más se vende?',
   ];
 
   function titular(t) {
@@ -282,7 +296,7 @@
           <div class="alertas" id="lista-alertas">${listaAlertas()}</div>
         </section>`)}
       ${capa('agenda', 'La lista completa de tareas', I.agenda.length + ' tareas, ordenadas por urgencia.', `<section class="panel"><div class="agenda" id="agenda">${agendaHtml()}</div></section>`)}
-      ${capa('viene', 'Lo que viene', 'Los próximos 90 días: cursos, cobros, concursos del Estado, impuestos e hitos del plan.', `<section class="panel"><div class="panel-b ras"><div class="viene" id="viene">${vieneHtml()}</div></div></section>`)}`;
+      ${capa('viene', 'Lo que viene', 'Los próximos 90 días: cursos, cobros, concursos del Estado, impuestos y fechas clave del plan.', `<section class="panel"><div class="panel-b ras"><div class="viene" id="viene">${vieneHtml()}</div></div></section>`)}`;
   }
   // «Lo que tienes que hacer»: las filas que el motor eligió (una por pregunta que preocupa, después el resto)
   const TEMA_TXT = { plata: 'Plata', cobros: 'Cobros', ventas: 'Ventas', equipo: 'Equipo', cursos: 'Cursos' };
@@ -293,7 +307,7 @@
     if (!ver.length) return '<p class="panel-b mudo">No hay tareas pendientes. Buen trabajo.</p>';
     return ver.map(f => {
       const h = f.ids.every(hecho), id = 'th-' + f.ids[0].replace(/[^a-z0-9-]/gi, '');
-      const meta = `<span class="por"><span class="pill foco">${esc(TEMA_TXT[f.tema] || '')}</span> ${f.cuando === 'hoy' ? '' : esc(mayus1(f.cuando)) + ' · '}${esc(f.por || '')}${f.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(f.cotizacion)}">ver cotización</button>` : ''}${f.url ? ` · <a href="${esc(f.url)}" target="_blank" rel="noopener">ficha ↗</a>` : ''} · <button class="enlace-btn" type="button" data-accion="ver-tema" data-id="${esc(f.tema)}" data-paso-n="1">¿Por qué?</button></span>`;
+      const meta = `<span class="por"><span class="pill foco">${esc(TEMA_TXT[f.tema] || '')}</span> ${f.cuando === 'hoy' ? '' : esc(mayus1(f.cuando)) + ' · '}${esc(f.por || '')}${f.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(f.cotizacion)}">ver cotización</button>` : ''}${f.url ? ` · <a href="${esc(f.url)}" target="_blank" rel="noopener">ver la licitación ↗</a>` : ''} · <button class="enlace-btn" type="button" data-accion="ver-tema" data-id="${esc(f.tema)}" data-paso-n="1">¿Por qué?</button></span>`;
       if (f.sub && f.sub.length > 1) {
         const pend = f.ids.filter(x => !hecho(x)).length;
         return `<div class="ag-item grupo${f.cuando === 'hoy' ? ' hoy' : ''}${h ? ' hecho' : ''}"><span class="ag-n" aria-hidden="true">${pend || '✓'}</span>
@@ -310,15 +324,15 @@
   function resumenAlertas() {
     const act = I.alertas.filter(a => !resuelta(a));
     const c = n => act.filter(a => a.nivel === n).length;
-    return act.length + ' activas: ' + c('critica') + ' críticas, ' + c('alta') + ' altas, ' + c('oportunidad') + ' oportunidades. Cada una dice de dónde viene y qué hacer.';
+    return act.length + ' avisos sin resolver: ' + c('critica') + ' urgentes, ' + c('alta') + ' para mirar con ojo y ' + c('oportunidad') + ' oportunidades. Cada uno dice de dónde sale y qué hacer.';
   }
   function chipsAlertas() {
     const act = I.alertas.filter(a => !resuelta(a));
-    const ops = [['principales', 'Principales', null], ['critica', 'Críticas', act.filter(a => a.nivel === 'critica').length],
-      ['alta', 'Altas', act.filter(a => a.nivel === 'alta').length], ['oportunidad', 'Oportunidades', act.filter(a => a.nivel === 'oportunidad').length],
-      ['media', 'Medias', act.filter(a => a.nivel === 'media').length], ['baja', 'Bajas', act.filter(a => a.nivel === 'baja').length],
-      ['resueltas', 'Resueltas', I.alertas.filter(resuelta).length]];
-    return '<div class="chips" role="group" aria-label="Filtrar alertas">' + ops.map(([k, t, n]) =>
+    const ops = [['principales', 'Lo más importante', null], ['critica', 'Urgentes', act.filter(a => a.nivel === 'critica').length],
+      ['alta', 'Ojo', act.filter(a => a.nivel === 'alta').length], ['oportunidad', 'Oportunidades', act.filter(a => a.nivel === 'oportunidad').length],
+      ['media', 'Sin apuro', act.filter(a => a.nivel === 'media').length], ['baja', 'Para saber', act.filter(a => a.nivel === 'baja').length],
+      ['resueltas', 'Resueltos', I.alertas.filter(resuelta).length]];
+    return '<div class="chips" role="group" aria-label="Elegir qué avisos ver">' + ops.map(([k, t, n]) =>
       `<button class="chip" type="button" data-accion="filtro-alertas" data-valor="${k}" aria-pressed="${S.filtroAlertas === k}">${t}${n != null ? '<span class="n">' + n + '</span>' : ''}</button>`).join('') + '</div>';
   }
   function alertasFiltradas() {
@@ -326,12 +340,13 @@
     if (f === 'resueltas') return I.alertas.filter(resuelta);
     const act = I.alertas.filter(a => !resuelta(a));
     if (f === 'principales') return act.filter(a => a.nivel !== 'baja').slice(0, 9);
+    if (f === 'todas') return act;
     return act.filter(a => a.nivel === f);
   }
   function plazo(a) {
     if (!a.fecha_limite) return '';
     const dias = F.diasEntre(I.hoy, a.fecha_limite);
-    return '<span class="pill' + (dias <= 3 ? ' critica' : '') + '">' + (dias < 0 ? 'vencida' : F.cuando(dias)) + '</span>';
+    return '<span class="pill' + (dias <= 3 ? ' critica' : '') + '">' + (dias < 0 ? 'ya pasó la fecha' : F.cuando(dias)) + '</span>';
   }
   function alertaHtml(a) {
     const r = resuelta(a);
@@ -341,12 +356,12 @@
           <span class="a-meta"><span class="pill ${a.nivel}">${NIVEL_TXT[a.nivel]}</span><span class="pill foco">${FOCO_TXT[a.foco]}</span>${plazo(a)}</span></summary>
         <div class="a-cuerpo">
           <p>${fuerte(a.detalle)}</p>
-          <p class="hacer"><b>Qué hacer:</b> ${esc(a.accion)}</p>
-          <p class="mudo">Fuente: ${esc(a.fuente)}</p>
+          <p class="hacer"><b>¿Qué hago?</b> ${esc(a.accion)}</p>
+          <p class="mudo">De dónde sale: ${esc(a.fuente)}</p>
           <div class="a-acciones">
-            <button class="btn sm sec" type="button" data-accion="resolver" data-id="${esc(a.id)}">${r ? 'Reabrir' : 'Marcar resuelta'}</button>
-            <button class="btn sm" type="button" data-accion="preguntar-alerta" data-id="${esc(a.id)}">Preguntar a AerIA</button>
-            ${a.url ? `<a href="${esc(a.url)}" target="_blank" rel="noopener">Ver ficha en Mercado Público ↗</a>` : ''}
+            <button class="btn sm sec" type="button" data-accion="resolver" data-id="${esc(a.id)}">${r ? 'Volver a abrir' : 'Listo, ya lo resolví'}</button>
+            <button class="btn sm" type="button" data-accion="preguntar-alerta" data-id="${esc(a.id)}">Explícamelo en simple</button>
+            ${a.url ? `<a href="${esc(a.url)}" target="_blank" rel="noopener">Ver la licitación en Mercado Público ↗</a>` : ''}
           </div>
         </div>
       </details></div>`;
@@ -354,8 +369,8 @@
   function listaAlertas() {
     const l = alertasFiltradas();
     const resto = I.alertas.filter(a => !resuelta(a)).length - l.length;
-    return (l.length ? l.map(alertaHtml).join('') : '<p class="panel-b mudo">No hay alertas en este filtro.</p>') +
-      (S.filtroAlertas === 'principales' && resto > 0 ? `<div class="pie-lista"><button class="enlace-btn" type="button" data-accion="filtro-alertas" data-valor="todas">Ver las ${resto} restantes</button></div>` : '') +
+    return (l.length ? l.map(alertaHtml).join('') : '<p class="panel-b mudo">No hay avisos en este grupo.</p>') +
+      (S.filtroAlertas === 'principales' && resto > 0 ? `<div class="pie-lista"><button class="enlace-btn" type="button" data-accion="filtro-alertas" data-valor="todas">Ver los otros ${resto}</button></div>` : '') +
       (S.filtroAlertas === 'todas' ? '' : '');
   }
   function agendaHtml() {
@@ -374,17 +389,17 @@
       return `<div class="ag-item${h ? ' hecho' : ''}${it.cuando === 'hoy' ? ' hoy' : ''}">
         <input type="checkbox" id="${id}" data-accion="agenda" data-id="${esc(it.id)}"${h ? ' checked' : ''}>
         <label for="${id}">${esc(it.titulo)}</label>
-        <span class="por">${fuerte(it.por)}${it.url ? ` · <a href="${esc(it.url)}" target="_blank" rel="noopener">ficha ↗</a>` : ''}${it.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(it.cotizacion)}">abrir cotización</button>` : ''}</span></div>`;
-    }).join('')).join('') + `<div class="pie-lista">${visibles.length < I.agenda.length ? `<button class="enlace-btn" type="button" data-accion="agenda-todas">Ver ${I.agenda.length - visibles.length} más para este mes</button>` : ''}<span class="mudo">${hechas} de ${I.agenda.length} hechas${S.db ? '' : ' · se guarda solo en este navegador'}</span></div>`;
+        <span class="por">${fuerte(it.por)}${it.url ? ` · <a href="${esc(it.url)}" target="_blank" rel="noopener">ver la licitación ↗</a>` : ''}${it.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(it.cotizacion)}">ver cotización</button>` : ''}</span></div>`;
+    }).join('')).join('') + `<div class="pie-lista">${visibles.length < I.agenda.length ? `<button class="enlace-btn" type="button" data-accion="agenda-todas">Ver ${I.agenda.length - visibles.length} tareas más</button>` : ''}<span class="mudo">${hechas} de ${I.agenda.length} hechas${S.db ? '' : ' · solo se guarda en este computador'}</span></div>`;
   }
   function vieneHtml() {
     const lista = S.vieneTodo ? I.viene : I.viene.slice(0, 15);
     return lista.map(eventoHtml).join('') + (lista.length < I.viene.length
-      ? `<div class="ev"><span></span><button class="enlace-btn" type="button" data-accion="viene-todo">Ver los ${I.viene.length - lista.length} siguientes</button></div>` : '');
+      ? `<div class="ev"><span></span><button class="enlace-btn" type="button" data-accion="viene-todo">Ver ${I.viene.length - lista.length} fechas más</button></div>` : '');
   }
   function eventoHtml(e) {
     const extra = e.tipo === 'curso' ? (e.estado === 'lleno' ? 'lleno' : e.estado === 'vacio' ? 'sin ventas' : 'con cupos') :
-      e.tipo === 'licitacion' ? 'licitación' : e.tipo === 'impuesto' ? 'tributario' : e.tipo === 'comercial' ? 'comercial' : 'hito';
+      e.tipo === 'licitacion' ? 'licitación' : e.tipo === 'impuesto' ? 'impuestos' : e.tipo === 'comercial' ? 'venta' : e.tipo === 'cobro' ? 'cobro' : 'fecha clave';
     const t = e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.titulo)}</a>`
       : e.cotizacion ? `<button class="enlace-btn ev-btn" type="button" data-com="abrir" data-id="${esc(e.cotizacion)}">${esc(e.titulo)}</button>` : esc(e.titulo);
     return `<div class="ev t-${e.tipo}"><div class="ev-f">${fechaCaja(e.fecha)}</div><div><div class="ev-t">${t}</div><div class="ev-d">${dSem(e.fecha)} · ${F.cuando(e.dias)} · ${extra}</div></div></div>`;
@@ -400,26 +415,26 @@
       ${enSimpleHtml({ texto: Ps.texto, datos: Ps.datos, extra: `<div class="chips"><button class="chip" type="button" data-accion="preguntar" data-q="Explícame en simple dónde se fue la plata de ${esc(P.etiqueta)} y qué debería hacer">Pregúntale a AerIA dónde se fue la plata</button></div>` })}
       ${capa('pasado-caja', 'La plata día a día', 'Cuánto había en el banco cada día y por qué subió o bajó.', `
       <div class="grilla g-2">
-        <section class="panel"><div class="panel-c"><h2>Caja diaria</h2><span class="bajada">${esc(Object.values(M.cuentas(Fi)).join(' + '))}, ${esc(F.fCorta(Fi.serie[0].fecha))} a ${esc(F.fCorta(P.fechaCorte))}. Pasa el cursor para ver cada día.</span></div>
+        <section class="panel"><div class="panel-c"><h2>La plata en el banco, día a día</h2><span class="bajada">Suma de ${esc(Object.values(M.cuentas(Fi)).join(' + '))}, del ${esc(F.fCorta(Fi.serie[0].fecha))} al ${esc(F.fCorta(P.fechaCorte))}. Pasa el cursor (o el dedo) por el gráfico para ver cada día.</span></div>
           <div class="panel-b"><div class="grafico" id="g-caja"></div></div></section>
-        <section class="panel"><div class="panel-c"><h2>Dónde se fue la caja</h2><span class="bajada">${esc(P.etiqueta)}, todo el período: de ${F.clp(P.cajaInicial)} a ${F.clp(P.cajaFinal)}.</span></div>
+        <section class="panel"><div class="panel-c"><h2>¿En qué se fue la plata?</h2><span class="bajada">En ${esc(P.etiqueta)}, el banco pasó de ${F.clp(P.cajaInicial)} a ${F.clp(P.cajaFinal)}.</span></div>
           <div class="panel-b ras">${puenteHtml(P)}</div>
-          <p class="nota-panel">Los traspasos entre cuentas propias se compensan y no aparecen. «Lo que dejó la operación» ya descuenta los ${F.mm(-P.egresos)} que se gastaron en operar.</p></section>
+          <p class="nota-panel">No se cuenta la plata que pasó de una cuenta de Aéreo a otra. «Lo que dejó la operación» ya descuenta los ${F.mm(-P.egresos)} que se gastaron en operar.</p></section>
       </div>`)}
-      ${capa('pasado-ventas', 'Qué se vendió y en qué se gastó', 'Ventas por tipo de curso o servicio, y gastos por categoría.', `
+      ${capa('pasado-ventas', 'Qué se vendió y en qué se gastó', 'Ventas por tipo de curso o servicio, y gastos por tipo.', `
       <div class="grilla g-2">
-        <section class="panel"><div class="panel-c"><h2>Venta por línea</h2><span class="bajada">Bruto por mes. La línea punteada es la meta B2B 2027.</span></div>
+        <section class="panel"><div class="panel-c"><h2>¿Qué se vendió cada mes?</h2><span class="bajada">Lo vendido cada mes, sin descontar gastos. La raya punteada es la meta 2027 de ventas a empresas.</span></div>
           <div class="panel-b"><div class="grafico" id="g-lineas"></div></div></section>
-        <section class="panel"><div class="panel-c"><h2>Egresos por categoría</h2><span class="bajada">Dos meses. Entre paréntesis, qué tan segura es la clasificación.</span></div>
+        <section class="panel"><div class="panel-c"><h2>¿En qué se gastó?</h2><span class="bajada">${esc(P.etiqueta)}. Entre paréntesis, qué tan seguro es el tipo de gasto: «clara» está confirmado; «supuesta», «probable» o «sin clasificar», falta confirmarlo.</span></div>
           <div class="panel-b ras">${egresosHtml(P)}</div></section>
       </div>`)}
       ${capa('pasado-meses', 'Mes a mes', 'La tabla completa, mes por mes.', `
       <section class="panel">
         <div class="panel-b ras"><div class="tabla-env">${tablaMeses(P)}</div></div></section>`)}
-      ${capa('pasado-revision', 'Lo que encontró la revisión contable', Fi.hallazgos.length + ' puntos de la revisión del banco, el SII, Mercado Pago y las rendiciones. Cada uno también es un aviso en Hoy.', `
+      ${capa('pasado-revision', 'Lo que encontró la revisión contable', Fi.hallazgos.length + ' puntos de la revisión del banco, el SII, Mercado Pago y las rendiciones de gastos. Cada uno también es un aviso en Hoy.', `
       <section class="panel">
-        <div class="panel-b ras"><div class="tabla-env alto"><table><thead><tr><th>Severidad</th><th>Hallazgo</th><th class="d">Monto</th><th>Qué hacer</th></tr></thead><tbody>
-        ${Fi.hallazgos.map(h => `<tr><td><span class="pill ${h.sev === 'alta' ? 'alta' : h.sev === 'media' ? 'media' : ''}">${esc(h.sev)}</span></td><td class="ancho"><div class="c-main">${esc(h.titulo)}</div><div class="c-sub">${esc(h.detalle)}</div></td><td class="d">${h.monto ? F.clp(h.monto) : '—'}</td><td class="ancho">${esc(h.accion)}</td></tr>`).join('')}
+        <div class="panel-b ras"><div class="tabla-env alto"><table><thead><tr><th>¿Qué tan grave?</th><th>Qué se encontró</th><th class="d">Monto</th><th>¿Qué hago?</th></tr></thead><tbody>
+        ${Fi.hallazgos.map(h => ({ h, nv: (D0.modelo.hallazgos_criticos || []).includes(h.id) ? 'critica' : h.sev })).map(({ h, nv }) => `<tr><td><span class="pill ${nv === 'critica' ? 'critica' : nv === 'alta' ? 'alta' : nv === 'media' ? 'media' : ''}">${esc(NIVEL_TXT[nv] || nv)}</span></td><td class="ancho"><div class="c-main">${esc(h.titulo)}</div><div class="c-sub">${esc(h.detalle)}</div></td><td class="d">${h.monto ? F.clp(h.monto) : '—'}</td><td class="ancho">${esc(h.accion)}</td></tr>`).join('')}
         </tbody></table></div></div></section>`)}`;
     graficoCaja($('#g-caja'), Fi.serie);
     graficoLineas($('#g-lineas'), P);
@@ -427,13 +442,13 @@
 
   function puenteHtml(P) {
     const pasos = [
-      { l: 'Caja al ' + F.fCorta(D0.finanzas.serie[0].fecha), v: P.cajaInicial, tipo: 'tot' },
-      { l: 'Ingresos operacionales', v: P.ingresos, tipo: 'sube' },
-      { l: 'Egresos operacionales', v: P.egresos, tipo: 'baja' },
-      { l: 'Socio, neto', v: P.socioNeto, tipo: 'soc' },
+      { l: 'En el banco al ' + F.fCorta(D0.finanzas.serie[0].fecha), v: P.cajaInicial, tipo: 'tot' },
+      { l: 'Entró por ventas', v: P.ingresos, tipo: 'sube' },
+      { l: 'Salió en gastos', v: P.egresos, tipo: 'baja' },
+      { l: 'Movimientos con el socio', v: P.socioNeto, tipo: 'soc' },
       { l: 'Cofundador', v: P.cofundador, tipo: 'soc' },
-      { l: 'Aéreo OTEC, neto', v: P.otec, tipo: 'soc' },
-      { l: 'Caja al ' + F.fCorta(P.fechaCorte), v: P.cajaFinal, tipo: 'tot' },
+      { l: 'Movimientos con Aéreo OTEC', v: P.otec, tipo: 'soc' },
+      { l: 'En el banco al ' + F.fCorta(P.fechaCorte), v: P.cajaFinal, tipo: 'tot' },
     ];
     let acc = 0, max = 0;
     const filas = pasos.map((p, i) => {
@@ -456,7 +471,7 @@
 
   function egresosHtml(P) {
     const top = P.egresosCat.slice(0, 10), resto = P.egresosCat.slice(10);
-    if (resto.length) top.push({ label: 'Otras ' + resto.length + ' categorías', monto: resto.reduce((a, e) => a + e.monto, 0), conf: '' });
+    if (resto.length) top.push({ label: 'Otros ' + resto.length + ' tipos de gasto', monto: resto.reduce((a, e) => a + e.monto, 0), conf: '' });
     const max = top[0].monto;
     return top.map(e => `<div class="hbar"><span class="h-l">${esc(e.label)}${e.conf ? '<small>(' + esc(e.conf.toLowerCase()) + ')</small>' : ''}</span>
       <span class="h-p"><i style="width:${(e.monto / max * 100).toFixed(1)}%"></i></span><span class="h-v">${F.clp(e.monto)}</span></div>`).join('');
@@ -464,14 +479,14 @@
 
   function tablaMeses(P) {
     const filas = [
-      ['Ingresos operacionales', m => m.ingresos], ['Egresos operacionales', m => m.egresos], ['Flujo operacional', m => m.flujo, true],
-      ['Socio, neto', m => m.socio], ['Cofundador', m => m.cofundador], ['Aéreo OTEC, neto', m => m.otec],
-      ['Caja a fin de mes', m => m.cajaFin, true, true], ['Venta B2B (empresas e instituciones)', m => m.b2b], ['Venta escuela (N1, Pack, N2+3)', m => m.escuela],
-      ['Alumnos que pagaron', m => m.alumnos, false, true, true], ['Facturado en el SII, neto', m => m.facturado], ['Marketing pagado', m => m.marketing],
-      ['Marketing por alumno', m => m.cac, false, true],
+      ['Entró por ventas', m => m.ingresos], ['Salió en gastos', m => m.egresos], ['Lo que dejó la operación', m => m.flujo, true],
+      ['Movimientos con el socio', m => m.socio], ['Cofundador', m => m.cofundador], ['Movimientos con Aéreo OTEC', m => m.otec],
+      ['En el banco a fin de mes', m => m.cajaFin, true, true], ['Venta a empresas e instituciones', m => m.b2b], ['Venta de cursos abiertos (Nivel 1, Pack, Niveles 2 y 3)', m => m.escuela],
+      ['Alumnos que pagaron', m => m.alumnos, false, true, true], ['Facturado en el SII, sin IVA', m => m.facturado], ['Gasto en marketing (publicidad)', m => m.marketing],
+      ['Marketing por alumno que pagó', m => m.cac, false, true],
     ];
     const th = P.meses.map(m => '<th class="d">' + esc(F.mesNombre(m.mes).replace(/^./, c => c.toUpperCase())) + '</th>').join('');
-    return '<table><thead><tr><th>Concepto</th>' + th + '<th class="d">Total</th></tr></thead><tbody>' + filas.map(([l, f, b, sinTot, entero]) => {
+    return '<table><thead><tr><th>Qué</th>' + th + '<th class="d">Total</th></tr></thead><tbody>' + filas.map(([l, f, b, sinTot, entero]) => {
       const vals = P.meses.map(f);
       const fmt = n => n == null ? '—' : entero ? String(n) : F.clp(n);
       return `<tr><td${b ? ' style="font-weight:700"' : ''}>${esc(l)}</td>${vals.map(n => '<td class="d">' + fmt(n) + '</td>').join('')}<td class="d">${sinTot ? (entero ? vals.reduce((a, n) => a + n, 0) : '—') : fmt(vals.reduce((a, n) => a + n, 0))}</td></tr>`;
@@ -492,11 +507,11 @@
     const iMax = serie.reduce((b, s, i) => s.total > serie[b].total ? i : b, 0);
     const iFin = serie.length - 1;
     const etq = (i, txt, arriba) => `<circle cx="${x(i)}" cy="${y(serie[i].total)}" r="4" fill="var(--s-total)" stroke="var(--sup)" stroke-width="2"/><text class="etq" x="${x(i) + (i === iFin ? -8 : 8)}" y="${y(serie[i].total) + (arriba ? -10 : 16)}" text-anchor="${i === iFin ? 'end' : 'start'}">${txt}</text>`;
-    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Caja diaria de Aéreo entre el ${F.fLarga(serie[0].fecha)} y el ${F.fLarga(serie[serie.length - 1].fecha)}; máximo ${F.clp(serie[iMax].total)} el ${F.fCorta(serie[iMax].fecha)} y cierre en ${F.clp(serie[iFin].total)}." tabindex="0">
+    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Plata en el banco cada día, del ${F.fLarga(serie[0].fecha)} al ${F.fLarga(serie[serie.length - 1].fecha)}. Lo más alto: ${F.clp(serie[iMax].total)} el ${F.fCorta(serie[iMax].fecha)}. Al final: ${F.clp(serie[iFin].total)}." tabindex="0">
       ${g}
       <polygon points="${x(0)},${y(0)} ${pts.join(' ')} ${x(iFin)},${y(0)}" fill="var(--s-total)" opacity=".13"/>
       <polyline points="${pts.join(' ')}" fill="none" stroke="var(--s-total)" stroke-width="2" stroke-linejoin="round"/>
-      ${etq(iMax, 'Máx. ' + F.mm(serie[iMax].total) + ' · ' + F.fCorta(serie[iMax].fecha), true)}
+      ${etq(iMax, 'Máximo ' + F.mm(serie[iMax].total) + ' · ' + F.fCorta(serie[iMax].fecha), true)}
       ${etq(iFin, F.clp(serie[iFin].total), true)}
       <line id="cruz" class="e-l" y1="${pt}" y2="${H - pb}" x1="-10" x2="-10" stroke-dasharray="3 3"/>
       <circle id="cruz-p" r="5" cx="-10" cy="-10" fill="var(--s-total)" stroke="var(--sup)" stroke-width="2" opacity="0"/>
@@ -520,7 +535,7 @@
   /* --- gráfico: venta por línea (barras agrupadas) --- */
   function graficoLineas(el, P) {
     const W = 640, H = 250, pl = 54, pr = 18, pt = 22, pb = 30;
-    const series = [{ k: 'b2b', n: 'B2B (empresas e instituciones)', c: '--s-1' }, { k: 'escuela', n: 'Escuela (N1, Pack, N2+3)', c: '--s-3' }];
+    const series = [{ k: 'b2b', n: 'Empresas e instituciones', c: '--s-1' }, { k: 'escuela', n: 'Cursos abiertos (Nivel 1, Pack, Niveles 2 y 3)', c: '--s-3' }];
     const meta = D0.modelo.b2b_meta_mes;
     const max = Math.ceil(Math.max(meta, ...P.meses.flatMap(m => series.map(s => m[s.k]))) / 2e6) * 2e6;
     const y = v => pt + (1 - v / max) * (H - pt - pb);
@@ -537,9 +552,9 @@
         g += `<text class="etq" x="${bx + bw / 2}" y="${yy - 7}" text-anchor="middle">${F.mm(v)}</text>`;
       });
     });
-    g += `<line x1="${pl}" x2="${W - pr}" y1="${y(meta)}" y2="${y(meta)}" stroke="var(--tinta-2)" stroke-width="1.5" stroke-dasharray="5 4"/><text class="etq2" x="${W - pr}" y="${y(meta) - 6}" text-anchor="end">Meta B2B 2027 · ${F.mm(meta)}</text>`;
+    g += `<line x1="${pl}" x2="${W - pr}" y1="${y(meta)}" y2="${y(meta)}" stroke="var(--tinta-2)" stroke-width="1.5" stroke-dasharray="5 4"/><text class="etq2" x="${W - pr}" y="${y(meta) - 6}" text-anchor="end">Meta 2027 a empresas · ${F.mm(meta)}</text>`;
     el.innerHTML = `<div class="leyenda">${series.map(s => `<span><span class="punto" style="background:var(${s.c})"></span>${esc(s.n)}</span>`).join('')}</div>
-      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Venta por línea: ${P.meses.map(m => F.mesNombre(m.mes) + ' B2B ' + F.mm(m.b2b) + ' y escuela ' + F.mm(m.escuela)).join('; ')}.">${g}</svg>`;
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Lo vendido cada mes: ${P.meses.map(m => F.mesNombre(m.mes) + ', empresas ' + F.mm(m.b2b) + ' y cursos abiertos ' + F.mm(m.escuela)).join('; ')}.">${g}</svg>`;
     for (const n of $$('[data-tip]', el)) {
       n.addEventListener('pointermove', ev => { const [mes, s, v, c] = n.dataset.tip.split('|'); verTip(ev, `<div class="tt">${esc(mes)}</div><div class="tr"><span class="punto" style="background:var(${c})"></span><span class="n">${esc(s)}</span><span class="v">${F.clp(Number(v))}</span></div>`); });
       n.addEventListener('pointerleave', ocultarTip);
@@ -558,20 +573,20 @@
       ${capa('presente-cursos', 'Los cursos, fecha por fecha', 'Cada punto es un cupo: relleno quiere decir vendido.', `
       <section class="panel"><div class="panel-c"><h2>Cursos publicados en aereo.cl</h2><span class="bajada">Meses agotados en 2026: ${C.racha.map(m => MES3[m]).join(', ')}.</span></div>
         <div class="meses-cursos">${cursosHtml(C)}</div>
-        <p class="nota-panel">Fuente: datos/cursos-fechas.js y datos/n23-fechas.js del repo aereo-web (commit ${esc(D0.cursos.commit || '?')}). Para que AerIA vea una venta nueva, se baja el cupo ahí y se vuelve a armar AerIA.</p></section>`)}
+        <p class="nota-panel">De dónde sale: las fechas y cupos publicados en aereo.cl (versión ${esc((D0.cursos.commit || '?').split(' ')[0])} del sitio). Para que AerIA vea una venta nueva, primero se descuenta el cupo en la web y después se actualiza AerIA.</p></section>`)}
       ${capa('presente-cobros', 'Quién nos debe y cómo van las ventas', 'Las facturas por cobrar, una por una, y un resumen de las cotizaciones.', `
       <div class="grilla g-2">
-        <section class="panel"><div class="panel-c"><h2>Por cobrar</h2><span class="bajada">Cartolas al ${esc(F.fCorta(I.pasado.fechaCorte))}${D0.finanzas.sii_hasta && D0.finanzas.sii_hasta > D0.finanzas.periodo.hasta ? '; SII y registro interno al ' + esc(F.fCorta(D0.finanzas.sii_hasta)) : ''}. Plazo de pago: ${D0.modelo.plazo_cobro_dias || 30} días.</span></div>
-          <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>Cliente</th><th>Factura</th><th class="d">Saldo</th></tr></thead><tbody>
-          ${I.porCobrar.map(p => `<tr><td><div class="c-main">${esc(p.cliente)}</div><div class="c-sub">${esc(p.tipoDeuda)}</div></td><td class="nw">${esc(p.folio)} · ${esc(F.fCorta(p.fecha))}<div class="c-sub">${p.grupo === 'vencida' ? '<span class="pill critica">vencida</span>' : p.grupo === 'por_vencer' ? 'vence el ' + esc(F.fCorta(p.vence)) : 'por confirmar'}</div></td><td class="d">${F.clp(p.saldo)}</td></tr>`).join('')}
+        <section class="panel"><div class="panel-c"><h2>Lo que nos deben</h2><span class="bajada">Según el banco al ${esc(F.fCorta(I.pasado.fechaCorte))}${D0.finanzas.sii_hasta && D0.finanzas.sii_hasta > D0.finanzas.periodo.hasta ? ', y las facturas del SII y el registro de Aéreo al ' + esc(F.fCorta(D0.finanzas.sii_hasta)) : ''}. Los clientes tienen ${D0.modelo.plazo_cobro_dias || 30} días para pagar.</span></div>
+          <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>Cliente</th><th>Factura</th><th class="d">Nos debe</th></tr></thead><tbody>
+          ${I.porCobrar.map(p => `<tr><td><div class="c-main">${esc(p.cliente)}</div><div class="c-sub">${esc(p.tipoDeuda)}</div></td><td class="nw">${esc(p.folio)} · ${esc(F.fCorta(p.fecha))}<div class="c-sub">${p.grupo === 'vencida' ? '<span class="pill critica">atrasada</span>' : p.grupo === 'por_vencer' ? 'plazo hasta el ' + esc(F.fCorta(p.vence)) : 'falta confirmar si pagó'}</div></td><td class="d">${F.clp(p.saldo)}</td></tr>`).join('')}
           </tbody><tfoot><tr><td colspan="2" style="font-weight:700">Total</td><td class="d" style="font-weight:700">${F.clp(totCobrar)}</td></tr></tfoot></table></div></div>
-          ${I.cruce ? `<p class="nota-panel">Ojo: el plan 2027 decía «${esc(I.cruce.frase)}». Las cartolas muestran: ${esc(I.cruce.estado.map(e => e.cliente + ' ' + e.leido).join('; '))}.</p>` : ''}</section>
-        <section class="panel"><div class="panel-c"><h2>Comercial</h2><span class="bajada">${M.dashboardConectado(I.comercial) ? 'Cotizaciones del dashboard en AerIA.' : 'El dashboard aún no está conectado: abajo, lo que reuní de otras fuentes.'}</span>
-            <span class="acc"><button class="btn sm" type="button" data-tab="comercial">Abrir Comercial</button></span></div>
+          ${I.cruce ? `<p class="nota-panel">Ojo: el plan 2027 decía «${esc(I.cruce.frase)}». El banco muestra: ${esc(I.cruce.estado.map(e => e.cliente + ' ' + e.leido).join('; '))}.</p>` : ''}</section>
+        <section class="panel"><div class="panel-c"><h2>Ventas</h2><span class="bajada">${M.dashboardConectado(I.comercial) ? 'Las cotizaciones de tu dashboard, ya en AerIA.' : 'Tu dashboard de cotizaciones aún no está conectado. Abajo, lo que AerIA juntó de otros datos.'}</span>
+            <span class="acc"><button class="btn sm" type="button" data-tab="comercial">Ir a Ventas</button></span></div>
           ${comercialMirada(I.comercial, Q)}</section>
       </div>`)}
-      ${capa('presente-licitaciones', 'Concursos del Estado (licitaciones)', I.lic.relevantes.length + ' abiertos calzan con lo que hace Aéreo: capacitación, asesoría o servicios con drones.', `
-      <section class="panel"><div class="panel-c"><h2>Licitaciones abiertas</h2><span class="bajada">Mercado Público y Compra Ágil, actualizado ${esc((D0.licitaciones.generado_fuente || '').slice(0, 16).replace('T', ' '))} UTC. «Calzan» = capacitación, asesoría o servicios con drones.</span></div>
+      ${capa('presente-licitaciones', 'Concursos del Estado (licitaciones)', I.lic.relevantes.length + ' abiertos calzan con lo que hace Aéreo: cursos, asesoría o servicios con drones.', `
+      <section class="panel"><div class="panel-c"><h2>Concursos abiertos</h2><span class="bajada">De Mercado Público y Compra Ágil, revisados el ${esc(enChile(D0.licitaciones.generado_fuente))}. «Calzan con Aéreo»: cursos, asesoría o servicios con drones.</span></div>
         <div class="panel-b" style="padding-bottom:10px">${chipsLic()}</div>
         <div class="panel-b ras"><div class="tabla-env">${tablaLic()}</div></div></section>`)}`;
   }
@@ -581,42 +596,42 @@
     for (const c of C.proximos) { const k = c.inicio.slice(0, 7); (porMes[k] = porMes[k] || []).push(c); }
     return Object.entries(porMes).map(([k, lista]) => `<div class="mes-c"><h3>${esc(F.mesNombre(k + '-01'))} ${k.slice(0, 4)}</h3><div class="cursos">${lista.map(c => {
       const est = c.libres === 0 ? '<span class="pill lleno">Agotado</span>' : c.vendidos === 0 ? '<span class="pill">Sin ventas</span>' : '<span class="pill media">Quedan ' + c.libres + '</span>';
-      const fer = c.feriados.length ? '<span class="pill critica">Feriado ' + esc(F.fCorta(c.feriados[0].fecha)) + '</span>' : '';
+      const fer = c.feriados.length ? '<span class="pill critica">Cae en feriado: ' + esc(F.fCorta(c.feriados[0].fecha)) + '</span>' : '';
       const rango = c.nivel === 'n1' ? dSem(c.inicio) + ' ' + F.fCorta(c.inicio) + ' → ' + dSem(c.fin) + ' ' + F.fCorta(c.fin) : 'lun ' + F.fCorta(c.inicio) + ' y mar ' + F.fCorta(c.fin);
-      return `<div class="curso${c.feriados.length ? ' feriado' : ''}"><div class="c-cab"><span class="tag-nivel ${c.nivel}">${c.nivel === 'n1' ? 'Nivel 1' : 'N2 + N3'}</span>${fer || est}</div>
+      return `<div class="curso${c.feriados.length ? ' feriado' : ''}"><div class="c-cab"><span class="tag-nivel ${c.nivel}">${c.nivel === 'n1' ? 'Nivel 1' : 'Niveles 2 y 3'}</span>${fer || est}</div>
         <div class="c-fecha">${esc(rango)}</div>
         <div class="asientos" role="img" aria-label="${c.vendidos} de ${c.max} cupos vendidos">${Array.from({ length: c.max }, (_, i) => '<span class="asiento' + (i < c.vendidos ? ' v' : '') + '"></span>').join('')}</div>
-        <div class="c-pie"><span>${c.vendidos}/${c.max} vendidos</span><span>${c.dias <= 0 ? 'en curso' : 'empieza ' + F.cuando(c.dias)}</span></div></div>`;
+        <div class="c-pie"><span>${c.vendidos} de ${c.max} vendidos</span><span>${c.dias <= 0 ? 'ya empezó' : 'empieza ' + F.cuando(c.dias)}</span></div></div>`;
     }).join('')}</div></div>`).join('');
   }
 
   function comercialMirada(Rc, Q) {
     const filas = Rc && Rc.total ? [
-      ['Cotizado abierto', F.clp(Rc.abiertas.monto) + ' · ' + Rc.abiertas.n + ' cotizaciones'],
-      ['Esperable de lo abierto', F.clp(Rc.abiertas.ponderado)],
-      ['Ganado en 90 días', F.clp(Rc.ganadas.ultimos90)],
-      ['Venta B2B esperada ' + Rc.pronostico.meses[0].etiqueta, F.clp(Rc.pronostico.meses[0].total)],
+      ['Esperando respuesta', F.clp(Rc.abiertas.monto) + ' · ' + Rc.abiertas.n + ' cotizaciones'],
+      ['Lo probable de cerrar', F.clp(Rc.abiertas.ponderado)],
+      ['Ventas ganadas en los últimos 90 días', F.clp(Rc.ganadas.ultimos90)],
+      ['Lo probable en ventas a empresas en ' + F.mesNombre(Rc.pronostico.meses[0].mes), F.clp(Rc.pronostico.meses[0].total)],
     ] : [];
-    if (!M.dashboardConectado(Rc)) filas.push(['Último agregado del dashboard (' + F.fCorta(Q.corte) + ')', F.clp(Q.abiertasMonto) + ' abiertas · ' + (Q.tasaCierre ? F.pct(Q.tasaCierre) : '?') + ' de cierre']);
+    if (!M.dashboardConectado(Rc)) filas.push(['Último resumen de tu dashboard (' + F.fCorta(Q.corte) + ')', F.clp(Q.abiertasMonto) + ' esperando respuesta · se gana el ' + (Q.tasaCierre ? F.pct(Q.tasaCierre) : '?') + ' de lo que se cotiza']);
     return `<div class="panel-b ras"><div class="tabla-env"><table><tbody>${filas.map(([a, b]) => `<tr><td>${esc(a)}</td><td class="d">${esc(b)}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
 
   function chipsLic() {
     const L = I.lic;
-    const ops = [['calzan', 'Calzan con Aéreo', L.relevantes.length], ['capacitacion', 'Capacitación', L.abiertas.filter(l => l.encaje === 'capacitacion').length],
-      ['servicio', 'Servicios aéreos', L.abiertas.filter(l => l.encaje === 'servicio').length], ['asesoria', 'Asesoría', L.abiertas.filter(l => l.encaje === 'asesoria').length],
-      ['equipo', 'Equipos e insumos', L.abiertas.filter(l => l.encaje === 'equipo').length], ['todas', 'Todas', L.abiertas.length]];
-    return '<div class="chips" role="group" aria-label="Filtrar licitaciones">' + ops.map(([k, t, n]) => `<button class="chip" type="button" data-accion="filtro-lic" data-valor="${k}" aria-pressed="${S.filtroLic === k}">${t}<span class="n">${n}</span></button>`).join('') + '</div>';
+    const ops = [['calzan', 'Calzan con Aéreo', L.relevantes.length], ['capacitacion', 'Cursos', L.abiertas.filter(l => l.encaje === 'capacitacion').length],
+      ['servicio', 'Servicios con drones', L.abiertas.filter(l => l.encaje === 'servicio').length], ['asesoria', 'Asesoría', L.abiertas.filter(l => l.encaje === 'asesoria').length],
+      ['equipo', 'Compra de equipos', L.abiertas.filter(l => l.encaje === 'equipo').length], ['todas', 'Todos', L.abiertas.length]];
+    return '<div class="chips" role="group" aria-label="Elegir qué concursos ver">' + ops.map(([k, t, n]) => `<button class="chip" type="button" data-accion="filtro-lic" data-valor="${k}" aria-pressed="${S.filtroLic === k}">${t}<span class="n">${n}</span></button>`).join('') + '</div>';
   }
   function tablaLic() {
     const L = I.lic, f = S.filtroLic;
     const l = f === 'todas' ? L.abiertas : f === 'calzan' ? L.relevantes : L.abiertas.filter(x => x.encaje === f);
-    if (!l.length) return '<p class="panel-b mudo">No hay procesos abiertos en este filtro.</p>';
-    return `<table><thead><tr><th>Cierre</th><th>Proceso</th><th class="d">Monto</th><th>Encaje</th><th></th></tr></thead><tbody>${l.map(x => `<tr>
+    if (!l.length) return '<p class="panel-b mudo">No hay concursos abiertos de este tipo.</p>';
+    return `<table><thead><tr><th>Cierra</th><th>Qué piden</th><th class="d">Monto</th><th>Tipo</th><th></th></tr></thead><tbody>${l.map(x => `<tr>
       <td class="nw"><span class="pill${x.horas <= 72 ? ' critica' : x.horas <= 168 ? ' media' : ''}">${esc(F.horasA(x.cierre, new Date()))}</span><div class="c-sub">${esc(dSem(x.cierre.slice(0, 10)) + ' ' + F.fCorta(x.cierre) + ' ' + x.cierre.slice(11, 16))}</div></td>
       <td class="ancho"><div class="c-main">${esc(x.nombre)}</div><div class="c-sub">${esc(x.organismo)} · ${esc(x.region)} · ${x.fuente === 'compra_agil' ? 'Compra Ágil' : 'Licitación'} ${esc(x.codigo)}</div></td>
       <td class="d">${x.monto ? F.clp(x.monto) : '—'}</td><td>${esc(x.encaje_label)}</td>
-      <td class="nw"><a href="${esc(x.url)}" target="_blank" rel="noopener">Ficha ↗</a></td></tr>`).join('')}</tbody></table>`;
+      <td class="nw"><a href="${esc(x.url)}" target="_blank" rel="noopener">Ver ↗</a></td></tr>`).join('')}</tbody></table>`;
   }
 
   /* ========================================================================
@@ -631,42 +646,42 @@
   }
   function renderFuturo() {
     const v = $('#v-futuro'); const Mo = D0.modelo; const U = I.futuro; const sim = simEstado();
-    const atajos = [['Mínimo', Mo.b2b_minimo_mes], [F.mesNombre(I.pasado.meses[I.pasado.meses.length - 1].mes).replace(/^./, c => c.toUpperCase()) + ' real', I.pasado.meses[I.pasado.meses.length - 1].b2b], ['Equilibrio', U.equilibrio], ['Meta', Mo.b2b_meta_mes], ['Promedio ' + I.pasado.etiqueta.replace(/ \d{4}$/, ''), I.pasado.b2b / I.pasado.meses.length]];
+    const atajos = [['Mínimo del plan', Mo.b2b_minimo_mes], ['Como en ' + F.mesNombre(I.pasado.meses[I.pasado.meses.length - 1].mes), I.pasado.meses[I.pasado.meses.length - 1].b2b], ['Para no perder', U.equilibrio], ['Meta', Mo.b2b_meta_mes], ['Promedio ' + I.pasado.etiqueta.replace(/ \d{4}$/, ''), I.pasado.b2b / I.pasado.meses.length]];
     const Ps = I.simple.pestanas.futuro;
     v.innerHTML = `
       ${enSimpleHtml({ texto: Ps.texto, datos: Ps.datos })}
       ${capa('futuro-sim', 'Prueba qué pasa si vendes más o menos', 'Mueve la venta a empresas y las medidas del plan, y mira cómo cerraría 2027.', `
-      <section class="panel"><div class="panel-c"><h2>Simulador 2027</h2><span class="bajada">Cómo calcula: lo que deja la escuela + 12 meses × venta a empresas × ${F.pct(Mo.margen_b2b, 1)} de margen + medidas del plan − ${F.mm(Mo.costos_fijos_anio)} de gastos fijos del año.</span></div>
+      <section class="panel"><div class="panel-c"><h2>Simulador 2027</h2><span class="bajada">Cómo calcula: lo que dejan los cursos abiertos + lo que dejan 12 meses de ventas a empresas (de cada venta queda el ${F.pct(Mo.margen_b2b, 1)}) + medidas del plan − ${F.mm(Mo.costos_fijos_anio)} de gastos fijos del año.</span></div>
         <div class="sim">
           <div class="sim-ctrl">
             <div class="campo"><label for="sim-b2b">Venta a empresas al mes <output id="sim-b2b-v">${F.mm(sim.b2b, 2)}</output></label>
               <input type="range" id="sim-b2b" min="2000000" max="12000000" step="10000" value="${sim.b2b}" data-accion="sim-b2b">
               <div class="chips">${atajos.map(([t, val]) => `<button class="chip" type="button" data-accion="sim-set" data-valor="${Math.round(val / 1e4) * 1e4}">${t} · ${F.mm(val)}</button>`).join('')}</div></div>
-            <div class="campo"><span class="lab">Escuela</span><div class="seg" role="group" aria-label="Ocupación de la escuela">
-              <button type="button" data-accion="sim-escuela" data-valor="realista" aria-pressed="${sim.escuela === 'realista'}">Ocupación realista</button>
+            <div class="campo"><span class="lab">Cursos abiertos</span><div class="seg" role="group" aria-label="Cuánto se llenan los cursos abiertos">
+              <button type="button" data-accion="sim-escuela" data-valor="realista" aria-pressed="${sim.escuela === 'realista'}">Llenado realista</button>
               <button type="button" data-accion="sim-escuela" data-valor="llena" aria-pressed="${sim.escuela === 'llena'}">Todos los cursos llenos</button></div></div>
             <div class="campo"><span class="lab">Medidas del plan</span>
-              ${Mo.palancas.map(p => `<label class="palanca"><input type="checkbox" data-accion="sim-palanca" data-id="${p.id}"${sim.palancas.includes(p.id) ? ' checked' : ''}><span>${esc(p.nombre)}<small>${esc(p.estado)}</small></span><span class="pl-e">+${F.mm(p.efecto)}</span></label>`).join('')}</div>
+              ${Mo.palancas.map(p => `<label class="palanca"><input type="checkbox" data-accion="sim-palanca" data-id="${p.id}"${sim.palancas.includes(p.id) ? ' checked' : ''}><span>${esc(p.nombre)}<small>${esc(p.estado === 'Plan B' ? 'Plan B: solo si las ventas no alcanzan' : p.estado)}</small></span><span class="pl-e">+${F.mm(p.efecto)}</span></label>`).join('')}</div>
           </div>
           <div class="sim-res" id="sim-res"></div>
         </div></section>`)}
-      ${capa('futuro-tablero', 'Los números que se revisan cada mes', 'Siete números del plan y el día clave del 31 de marzo.', `
+      ${capa('futuro-tablero', 'Los números que se revisan cada mes', 'Cómo vamos contra la meta, y el día clave que decide el año.', `
       <div class="grilla g-2">
-        <section class="panel"><div class="panel-c"><h2>Tablero mensual</h2><span class="bajada">Se revisan cada día 5. Si dos meses seguidos fallan dos o más, se activa el plan B.</span></div>
-          <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>Indicador</th><th>Hoy</th><th>Meta 2027</th></tr></thead><tbody>
-          ${I.tablero.map(t => `<tr><td><div class="c-main">${esc(t.indicador)}</div><div class="c-sub">${esc(t.nota)}</div></td><td class="nw"><span class="pill ${t.estado}">${{ bien: 'En meta', atencion: 'Atención', critico: 'Crítico', sindato: 'Sin dato' }[t.estado]}</span><div style="margin-top:4px;font-weight:500">${esc(t.valor)}</div></td><td>${esc(t.meta)}</td></tr>`).join('')}
+        <section class="panel"><div class="panel-c"><h2>Los números de cada mes</h2><span class="bajada">Se revisan cada día 5. Si dos meses seguidos fallan dos o más, va el plan B (recortar gastos).</span></div>
+          <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>Qué se mide</th><th>Cómo vamos</th><th>Meta 2027</th></tr></thead><tbody>
+          ${I.tablero.map(t => `<tr><td><div class="c-main">${esc(F.sinJerga(t.indicador))}</div><div class="c-sub">${esc(t.nota)}</div></td><td class="nw"><span class="pill ${t.estado}">${{ bien: 'Bien', atencion: 'Ojo', critico: 'Urgente', sindato: 'Aún no se mide' }[t.estado]}</span><div style="margin-top:4px;font-weight:500">${esc(t.valor)}</div></td><td>${esc(F.sinJerga(t.meta))}</td></tr>`).join('')}
           </tbody></table></div></div></section>
-        <section class="panel"><div class="panel-c"><h2>El hito del ${esc(F.fCorta(U.hito.fecha))}</h2><span class="bajada">El día que decide el año.</span></div>
+        <section class="panel"><div class="panel-c"><h2>El día clave: ${esc(F.fCorta(U.hito.fecha))}</h2><span class="bajada">El día que decide el año.</span></div>
           <div class="panel-b" style="display:flex;flex-direction:column;gap:12px">
-            <div class="gran-num">${U.diasHito} días</div>
-            <p>${esc(U.hito.regla)}</p>
-            <p class="c-sub">Con las tres palancas del plan el B2B necesario para quedar en cero es ${F.mm(U.equilibrio)} al mes; con el plan B (oficina y agencia) baja a ${F.mm(U.equilibrioPlanB)}.</p>
+            <div><span class="ceja">Faltan</span><div class="gran-num">${U.diasHito} días</div></div>
+            <p>${esc(F.sinJerga(U.hito.regla))}</p>
+            <p class="c-sub">Con las medidas del plan, para no perder plata hay que vender ${F.mm(U.equilibrio)} al mes a empresas. Con el plan B (recortar gastos), basta con ${F.mm(U.equilibrioPlanB)}.</p>
             <div class="tabla-env"><table><thead><tr><th>Precio</th><th class="d">Hoy</th><th class="d">2027</th></tr></thead><tbody>
               <tr><td>Nivel 1</td><td class="d">${F.clp(D0.cursos.precios_web.nivel1)}</td><td class="d">${F.clp(Mo.precios_2027.nivel1)}</td></tr>
-              <tr><td>Niveles 2+3</td><td class="d">${F.clp(D0.cursos.precios_web.nivel23)}</td><td class="d">${F.clp(Mo.precios_2027.nivel23)}</td></tr>
+              <tr><td>Niveles 2 y 3</td><td class="d">${F.clp(D0.cursos.precios_web.nivel23)}</td><td class="d">${F.clp(Mo.precios_2027.nivel23)}</td></tr>
               <tr><td>Pack AÉREO Profesional</td><td class="d">${F.clp(D0.cursos.precios_web.pack)}</td><td class="d">${F.clp(Mo.precios_2027.pack)}</td></tr>
-              <tr><td>Revalidación</td><td class="d">—</td><td class="d">${F.clp(Mo.precios_2027.revalidacion)}</td></tr>
-              <tr><td>SENCE por participante</td><td class="d">—</td><td class="d">${F.clp(Mo.precios_2027.sence_participante)}</td></tr>
+              <tr><td>Revalidación (renovar la credencial)</td><td class="d">—</td><td class="d">${F.clp(Mo.precios_2027.revalidacion)}</td></tr>
+              <tr><td>SENCE, por alumno</td><td class="d">—</td><td class="d">${F.clp(Mo.precios_2027.sence_participante)}</td></tr>
             </tbody></table></div>
           </div></section>
       </div>`)}
@@ -686,7 +701,7 @@
     const sim = simEstado(), Mo = D0.modelo;
     const r = M.resultado2027(Mo, sim.b2b, sim.escuela, sim.palancas);
     const filas = I.futuro.escenarios.map(e => ({ n: e.nombre, b2b: e.b2b, v: M.resultado2027(Mo, e.b2b, sim.escuela, sim.palancas).resultado }));
-    filas.push({ n: 'Tu simulación', b2b: sim.b2b, v: r.resultado, tuyo: true });
+    filas.push({ n: 'Tu prueba', b2b: sim.b2b, v: r.resultado, tuyo: true });
     filas.sort((a, b) => a.v - b.v);
     const lim = Math.max(...filas.map(f => Math.abs(f.v)), 1);
     const barras = filas.map(f => {
@@ -699,9 +714,9 @@
     $('#sim-res').innerHTML = `
       <span class="ceja">Así cerraría 2027</span>
       <div class="gran-num ${r.resultado < 0 ? 'mal' : 'bien'}">${F.mm(r.resultado)}</div>
-      <p>${sim.b2b >= r.equilibrio ? 'Con ' + F.mm(sim.b2b) + ' al mes en ventas a empresas, el año deja plata. Cada millón más al mes suma ' + F.mm(12e6 * Mo.margen_b2b) + ' en el año.' : 'Con ' + F.mm(sim.b2b) + ' al mes en ventas a empresas, el año pierde plata. Faltan ' + F.mm(r.equilibrio - sim.b2b, 2) + ' al mes para quedar en cero.'}</p>
-      <div class="sim-datos"><span>Para no perder: <b>${F.mm(r.equilibrio, 2)}</b> al mes a empresas</span><span>Deja la escuela <b>${F.mm(r.margenEscuela)}</b></span><span>Dejan las ventas a empresas <b>${F.mm(r.margenB2B)}</b></span><span>Suman las medidas <b>+${F.mm(r.palancas)}</b></span><span>Gastos fijos del año <b>−${F.mm(Mo.costos_fijos_anio)}</b></span></div>
-      <p class="c-sub">Las empresas pagan a 30–60 días: la plata llega al banco 1 a 2 meses después de la venta.</p>
+      <p>${sim.b2b >= r.equilibrio ? 'Con ' + F.mm(sim.b2b) + ' al mes en ventas a empresas, el año deja plata. Cada millón más al mes suma ' + F.mm(12e6 * Mo.margen_b2b) + ' en el año.' : 'Con ' + F.mm(sim.b2b) + ' al mes en ventas a empresas, el año pierde plata. Faltan ' + F.mm(r.equilibrio - sim.b2b, 2) + ' al mes para no perder plata.'}</p>
+      <div class="sim-datos"><span>Para no perder: <b>${F.mm(r.equilibrio, 2)}</b> al mes a empresas</span><span>Dejan los cursos abiertos <b>${F.mm(r.margenEscuela)}</b></span><span>Dejan las ventas a empresas <b>${F.mm(r.margenB2B)}</b></span><span>Suman las medidas del plan <b>+${F.mm(r.palancas)}</b></span><span>Gastos fijos del año <b>−${F.mm(Mo.costos_fijos_anio)}</b></span></div>
+      <p class="c-sub">Ojo: las empresas pagan 1 a 2 meses después de la venta, así que la plata llega al banco más tarde.</p>
       <div><div class="leyenda"><span><span class="punto" style="background:var(--s-1)"></span>Gana plata</span><span><span class="punto" style="background:var(--s-2)"></span>Pierde plata</span></div>${barras}</div>`;
     const o = $('#sim-b2b-v'); if (o) o.textContent = F.mm(sim.b2b, 2);
   }
@@ -709,22 +724,22 @@
   /* ========================================================================
      HABLAR CON AerIA
      ======================================================================== */
-  const REGLAS = `Eres AerIA, la inteligencia de dirección de Aéreo SpA: una escuela profesional de pilotos de drones (RPAS) en Chile, aereo.cl. Aéreo vende cursos abiertos (Nivel 1 para la credencial DGAC, Niveles 2+3 de Matrice y vuelo nocturno, Pack AÉREO Profesional, revalidación) y B2B: grupos SENCE, cursos cerrados para empresas e instituciones, asesoría AOC y servicios de termografía y fotogrametría. Tiene una empresa relacionada, Aéreo OTEC (Aéreo Somos Drones SpA).
+  const REGLAS = `Eres AerIA, la inteligencia de dirección de Aéreo SpA: una escuela profesional de pilotos de drones (RPAS) en Chile, aereo.cl. Aéreo vende cursos abiertos (Nivel 1 para la credencial DGAC, Niveles 2+3 de Matrice y vuelo nocturno, Pack AÉREO Profesional, revalidación) y ventas a empresas (en los datos aparece como «B2B»): grupos SENCE, cursos cerrados para empresas e instituciones, asesoría AOC y servicios de termografía y fotogrametría. Tiene una empresa relacionada, Aéreo OTEC (Aéreo Somos Drones SpA).
 
-Hablas con quien dirige Aéreo. Tu trabajo es el de una jefa de gabinete y CFO a la vez: resumir, ordenar prioridades, alertar, anticipar lo que viene y aconsejar con criterio profesional, detalle a detalle.
+Hablas con quien dirige Aéreo. Tu trabajo: contarle cómo está su empresa, como una persona de confianza. Ordenas prioridades, avisas lo urgente, anticipas lo que viene y aconsejas con criterio. Partes por lo simple y das el detalle solo si te lo piden.
 
 Cómo respondes:
-- Habla simple, como una persona que le explica la empresa a su dueño, que no es financiero: frases cortas, palabras de todos los días, tuteo y español de Chile. Nada de jerga (B2B, pipeline, ponderado, flujo, factoring…) sin explicarla en la misma frase; mejor di «ventas a empresas», «lo que probablemente se cierre», «lo que entró menos lo que salió».
-- Primero la respuesta en una o dos frases; después el porqué en pocas líneas con las cifras justas; al final qué hacer (quién, qué, cuándo).
-- Cifras siempre con su fuente: Pasado (cartolas, SII y Mercado Pago del período), Presente (cursos en aereo.cl, cotizaciones, licitaciones, por cobrar) o Futuro (plan 2027). Distingue hecho, supuesto del plan e inferencia tuya.
+- Habla simple, como una persona que le explica la empresa a su dueño, que no es financiero: frases cortas, palabras de todos los días, tuteo y español de Chile. Nada de jerga (B2B, pipeline, ponderado, flujo, factoring, equilibrio, hallazgo, KPI, ticket, tasa de cierre, ciclo de venta…) sin explicarla en la misma frase. Usa las mismas palabras de la página: «ventas a empresas» (no B2B), «lo probable» (no ponderado), «lo que dejó la operación» (no flujo operacional), «lo mínimo para no perder plata» (no equilibrio), «gastos fijos» (no costos fijos), «esperando respuesta» (no cotizaciones abiertas), «medidas del plan» (no palancas), «concursos del Estado (licitaciones)», «lo que encontró la revisión contable» (no hallazgos) y «aviso» (no alerta).
+- Primero la respuesta en una o dos frases cortas; después el porqué en 2 a 4 frases con las cifras justas; al final qué hacer en 1 a 3 acciones (quién, qué, cuándo). Si hay muchos números, ofrece mostrarlos en vez de ponerlos todos.
+- Cifras siempre con su fuente, dicha en simple: el banco (cartolas), el SII o Mercado Pago del período; los cursos de aereo.cl, las cotizaciones, los concursos del Estado o lo que nos deben; o el plan 2027. Distingue lo que es un hecho, lo que supone el plan y lo que deduces tú.
 - Montos en pesos chilenos: $1.234.567, o en millones con coma ($6,1M).
 - Breve: 80 a 180 palabras salvo que te pidan detalle. Listas cortas; tablas solo si comparan. Si el tema es largo, ofrece seguir paso a paso en vez de decirlo todo de una vez.
 - No inventes datos. Si algo no está en tus fuentes, dilo y di de dónde sacarlo.
 - En temas tributarios, laborales o legales da tu lectura y recomienda confirmarla con contador(a) o abogado(a).
 - Si el usuario te pide recordar algo o toma una decisión, guárdala con la herramienta guardar_nota (si la tienes) y confírmalo en una línea.
 - Puedes consultar el detalle con tus herramientas: úsalas cuando la pregunta pida datos finos (movimientos, facturas, secciones del plan, licitaciones, simulaciones, cotizaciones).
-- Manejas el dashboard comercial de Aéreo (pestaña Comercial): puedes buscar, crear y actualizar cotizaciones y anotar seguimientos con tus herramientas. Hazlo solo cuando el usuario lo pida o lo confirme («marca la de X como ganada», «anota que llamé a Y»). Si no está claro de qué cotización se trata, pregunta antes de cambiar. Cada cambio queda en el historial y el usuario lo puede deshacer; al terminar, di en una línea qué cambiaste.
-- Lo ganado y lo cotizado alimentan el futuro: cuando hables de 2027 o de la meta B2B, usa el pronóstico comercial (ganado + abierto ponderado) junto al modelo del plan.
+- Manejas las cotizaciones de Aéreo (pestaña Ventas): puedes buscar, crear y actualizar cotizaciones y anotar seguimientos con tus herramientas. Hazlo solo cuando el usuario lo pida o lo confirme («marca la de X como ganada», «anota que llamé a Y»). Si no está claro de qué cotización se trata, pregunta antes de cambiar. Cada cambio queda en el historial y el usuario lo puede deshacer; al terminar, di en una línea qué cambiaste.
+- Lo ganado y lo cotizado alimentan el futuro: cuando hables de 2027 o de la meta de ventas a empresas, usa el pronóstico comercial (lo ganado + lo probable de lo que espera respuesta) junto al modelo del plan.
 
 Abajo está tu lectura actual de la empresa.`;
 
@@ -768,7 +783,7 @@ Abajo está tu lectura actual de la empresa.`;
           return { total: l.length, suma: l.reduce((a, q) => a + (q.monto || 0), 0), cotizaciones: l.slice(0, Math.min(40, Number(i.limite) || 40)).map(resumenCot) };
         } },
       { name: 'comercial_resumen', description: 'Resumen del dashboard comercial: abierto y ponderado, ganado (mes, 90 días, año), tasa de cierre, ciclo de venta, por línea, pronóstico de venta B2B por mes contra equilibrio y meta, y las alertas comerciales.',
-        execute: () => { avance('Leyendo el dashboard comercial…'); const R = Rc(); return { conectado_al_dashboard: M.dashboardConectado(R), total: R.total, abiertas: R.abiertas, ganadas: Object.assign({}, R.ganadas, { sinFactura: R.ganadas.sinFactura.length, porCobrar: R.ganadas.porCobrar.length, porEjecutar: R.ganadas.porEjecutar.length }), perdidas: R.perdidas, tasa: R.tasa, ciclo_dias: R.ciclo, por_linea: R.porLinea, pronostico: R.pronostico, alertas: R.alertas.map(a => a.titulo), agregado_dashboard: { corte: I.cot.corte, abiertas: I.cot.abiertasMonto, tasa_cierre: I.cot.tasaCierre } }; } },
+        execute: () => { avance('Revisando tus ventas…'); const R = Rc(); return { conectado_al_dashboard: M.dashboardConectado(R), total: R.total, abiertas: R.abiertas, ganadas: Object.assign({}, R.ganadas, { sinFactura: R.ganadas.sinFactura.length, porCobrar: R.ganadas.porCobrar.length, porEjecutar: R.ganadas.porEjecutar.length }), perdidas: R.perdidas, tasa: R.tasa, ciclo_dias: R.ciclo, por_linea: R.porLinea, pronostico: R.pronostico, alertas: R.alertas.map(a => a.titulo), agregado_dashboard: { corte: I.cot.corte, abiertas: I.cot.abiertasMonto, tasa_cierre: I.cot.tasaCierre } }; } },
       { name: 'cotizacion_ver', description: 'Todo sobre una cotización (por id, folio o cliente si es único): campos, notas, origen e historial de cambios.',
         inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
         execute: i => { avance('Abriendo la cotización…'); const q = encontrar(i.id); return Object.assign({}, q, { historial: (q.historial || []).slice(-10) }); } },
@@ -812,10 +827,10 @@ Abajo está tu lectura actual de la empresa.`;
         execute: async i => { avance('Guardando en la memoria…'); vigente(); const n = { id: 'n' + Date.now().toString(36), texto: String(i.texto).slice(0, 600), fecha: new Date().toISOString() }; S.notas = S.notas.concat([n]); await guardar('notas'); pintarMemoria(); return { guardada: n.texto }; } },
       { name: 'buscar_movimientos', description: 'Busca movimientos de las cuentas de Aéreo (' + Object.values(M.cuentas(D0.finanzas)).join(' y ') + ', ' + D0.finanzas.serie[0].fecha + ' a ' + D0.finanzas.periodo.hasta + '). Devuelve cuántos hay, la suma con signo (+ ingreso, − egreso) y hasta 30 movimientos ordenados por monto.',
         inputSchema: { type: 'object', properties: { texto: { type: 'string', description: 'Texto a buscar en glosa, contraparte, nota o categoría (sin importar tildes)' }, categoria: { type: 'string', description: 'Código de categoría. ' + cats }, mes: { type: 'string', description: 'AAAA-MM' }, tipo: { type: 'string', enum: ['ingreso', 'egreso'] }, monto_minimo: { type: 'number' }, limite: { type: 'number' } } },
-        execute: i => { avance('Consultando movimientos bancarios…'); return M.buscarMovimientos(Dt, i || {}); } },
+        execute: i => { avance('Revisando el banco…'); return M.buscarMovimientos(Dt, i || {}); } },
       { name: 'ver_hallazgo', description: 'Detalle completo y acción de un hallazgo del informe financiero. Ids: ' + D0.finanzas.hallazgos.map(h => h.id).join(', ') + '.',
         inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-        execute: i => { avance('Leyendo el hallazgo…'); const q = F.plano(String(i.id || '')); const h = D0.finanzas.hallazgos.find(x => x.id === i.id || F.plano(x.titulo).includes(q)); if (!h) throw new Error('No existe ese hallazgo'); return h; } },
+        execute: i => { avance('Leyendo la revisión contable…'); const q = F.plano(String(i.id || '')); const h = D0.finanzas.hallazgos.find(x => x.id === i.id || F.plano(x.titulo).includes(q)); if (!h) throw new Error('No existe ese hallazgo'); return h; } },
       { name: 'facturas_emitidas', description: 'Facturas de venta en el SII (' + rangoSII('sii') + ') con su estado de cobro y detalle del cruce con el banco y el registro interno. Filtra por texto de cliente o estado.',
         inputSchema: { type: 'object', properties: { cliente: { type: 'string' }, estado: { type: 'string' } } },
         execute: i => { avance('Revisando facturas emitidas…'); return D0.finanzas.sii.filter(s => (!i.cliente || F.plano(s.cliente).includes(F.plano(i.cliente))) && (!i.estado || F.plano(s.estado).includes(F.plano(i.estado)))); } },
@@ -827,10 +842,10 @@ Abajo está tu lectura actual de la empresa.`;
         execute: i => { avance('Leyendo el plan 2027…'); const q = F.plano(String(i.seccion || '')); const s = D0.plan.secciones.find(x => F.plano(x.titulo).includes(q)) || D0.plan.secciones.find(x => q.split(' ').some(w => w.length > 3 && F.plano(x.titulo).includes(w))); if (!s) throw new Error('No encontré esa sección'); return s; } },
       { name: 'licitaciones_abiertas', description: 'Licitaciones y compras ágiles abiertas sobre drones (Mercado Público). Filtra por encaje (capacitacion, asesoria, servicio, equipo, otro) o texto.',
         inputSchema: { type: 'object', properties: { encaje: { type: 'string' }, texto: { type: 'string' } } },
-        execute: i => { avance('Revisando licitaciones…'); return I.lic.abiertas.filter(l => (!i.encaje || l.encaje === i.encaje) && (!i.texto || F.plano(l.nombre + ' ' + l.organismo).includes(F.plano(i.texto)))).map(l => ({ ...l, cierra: F.horasA(l.cierre, new Date()) })); } },
+        execute: i => { avance('Revisando concursos del Estado…'); return I.lic.abiertas.filter(l => (!i.encaje || l.encaje === i.encaje) && (!i.texto || F.plano(l.nombre + ' ' + l.organismo).includes(F.plano(i.texto)))).map(l => ({ ...l, cierra: F.horasA(l.cierre, new Date()) })); } },
       { name: 'simular_2027', description: 'Calcula el resultado anual 2027 con el modelo del plan. Palancas (ids): ' + D0.modelo.palancas.map(p => p.id + ' ' + p.nombre).join('; ') + '. Sin palancas indicadas usa las del plan.',
         inputSchema: { type: 'object', properties: { b2b_mensual: { type: 'number' }, escuela: { type: 'string', enum: ['realista', 'llena'] }, palancas: { type: 'array', items: { type: 'string' } } }, required: ['b2b_mensual'] },
-        execute: i => { avance('Simulando 2027…'); return M.resultado2027(D0.modelo, Number(i.b2b_mensual), i.escuela === 'llena' ? 'llena' : 'realista', Array.isArray(i.palancas) ? i.palancas.map(String) : undefined); } },
+        execute: i => { avance('Haciendo la cuenta de 2027…'); return M.resultado2027(D0.modelo, Number(i.b2b_mensual), i.escuela === 'llena' ? 'llena' : 'realista', Array.isArray(i.palancas) ? i.palancas.map(String) : undefined); } },
     ];
     // Orden de prioridad por si la vista permite menos herramientas: comercial, memoria, finanzas, plan
     return S.tools ? lista.slice(0, S.tools) : [];
@@ -871,19 +886,19 @@ Abajo está tu lectura actual de la empresa.`;
           <form class="componer" id="f-chat">
             <div id="aviso-ia"></div>
             <div class="fila"><label class="sr" for="in-chat">Mensaje para AerIA</label>
-              <textarea id="in-chat" rows="2" placeholder="Pregunta, pide un análisis o dile algo que deba recordar…"></textarea>
+              <textarea id="in-chat" rows="2" placeholder="Pregúntale lo que quieras o dile algo que deba recordar…"></textarea>
               <button class="btn" type="submit" id="b-enviar">Enviar</button>
               <button class="btn sec" type="button" id="b-parar" data-accion="chat-parar" hidden>Detener</button></div>
-            <div class="opciones"><label class="chk"><input type="checkbox" id="chk-profundo"${S.profundo ? ' checked' : ''}> Análisis profundo (más lento)</label>
+            <div class="opciones"><label class="chk"><input type="checkbox" id="chk-profundo"${S.profundo ? ' checked' : ''}> Pensar con más calma (tarda más)</label>
               <button class="enlace-btn" type="button" data-accion="chat-limpiar">Nueva conversación</button>
               <span id="estado-ia"></span></div>
           </form>
         </section>
         <div class="lado">
-          <section class="panel"><div class="panel-c"><h2>Memoria</h2><span class="bajada">Decisiones y contexto que AerIA tiene en cuenta siempre.</span></div>
+          <section class="panel"><div class="panel-c"><h2>Lo que AerIA recuerda</h2><span class="bajada">Decisiones y datos que AerIA siempre tiene en cuenta.</span></div>
             <div id="memoria"></div>
-            <form class="form-nota" id="f-nota"><label class="sr" for="in-nota">Nueva nota</label><input id="in-nota" placeholder="Ej.: La meta de ventas a empresas de noviembre es $6M"><button class="btn sm" type="submit">Guardar</button></form></section>
-          <section class="panel"><div class="panel-c"><h2>Lo que AerIA lee</h2></div><div id="fuentes-ia"></div></section>
+            <form class="form-nota" id="f-nota"><label class="sr" for="in-nota">Nueva nota</label><input id="in-nota" placeholder="Ej.: Este mes priorizamos los cursos para empresas"><button class="btn sm" type="submit">Guardar</button></form></section>
+          <section class="panel"><div class="panel-c"><h2>De dónde saca AerIA los datos</h2></div><div id="fuentes-ia"></div></section>
         </div></div>`;
     }
     pintarMensajes(); pintarMemoria(); pintarFuentes(); pintarAvisoIA();
@@ -893,30 +908,34 @@ Abajo está tu lectura actual de la empresa.`;
     if (!a) return;
     const txt = {
       cargando: '', lista: '',
-      no: 'La conversación con AerIA funciona cuando abres esta página en claude.ai con tu cuenta. Aquí puedes ver todo el análisis; para preguntarle, ábrela desde claude.ai.',
-      denegada: 'AerIA no tiene permiso para usar Claude en esta vista. Puedes permitirlo la próxima vez que abras la página.',
+      no: 'Para conversar con AerIA, abre esta página en claude.ai con tu cuenta. Aquí igual puedes ver todo lo demás.',
+      denegada: 'AerIA no tiene permiso para usar Claude aquí. Puedes dárselo la próxima vez que abras la página.',
     }[S.ia] || '';
     a.innerHTML = txt ? '<div class="aviso">' + esc(txt) + '</div>' : '';
-    if (e) e.textContent = S.ia === 'lista' ? (S.tools ? 'Con acceso a ' + S.tools + ' herramientas de datos' : 'Responde con el resumen de datos') : S.ia === 'cargando' ? 'Conectando…' : '';
+    if (e) e.textContent = S.ia === 'lista' ? (S.tools ? 'Puede revisar el detalle de tus datos' : 'Responde con el resumen de tus datos') : S.ia === 'cargando' ? 'Conectando…' : '';
     const b = $('#b-enviar'); if (b) b.disabled = S.ia !== 'lista' || S.enCurso;
   }
   function pintarMensajes() {
     const c = $('#mensajes'); if (!c) return;
     if (!S.chat.length) {
       c.innerHTML = `<div class="vacio-chat"><div class="ceja"><span class="iso tinta chico" aria-hidden="true"></span>AerIA</div>
-        <p>Conozco tus finanzas de ${esc(I.pasado.etiqueta)}, los cursos publicados, las cotizaciones, las licitaciones abiertas y el plan 2027. Pregúntame lo que necesites para dirigir Aéreo: te respondo con cifras, te digo de dónde salen y qué haría yo.</p>
+        <p>Conozco la plata de ${esc(I.pasado.etiqueta)}, los cursos, tus cotizaciones, los concursos del Estado y el plan 2027. Pregúntame lo que quieras: te respondo simple, te digo de dónde salen los números y qué haría yo.</p>
         <div class="chips">${SUGERENCIAS.map(q => `<button class="chip" type="button" data-accion="preguntar" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div></div>`;
       return;
     }
     c.innerHTML = S.chat.map((m, i) => m.role === 'user'
       ? `<div class="msj yo">${esc(m.content)}</div>`
-      : `<div class="msj aeria${S.enCurso && i === S.chat.length - 1 ? ' pensando' : ''}"><span class="quien"><span class="iso" aria-hidden="true"></span>AerIA${m.profundo ? ' · análisis profundo' : ''}</span>
+      : `<div class="msj aeria${S.enCurso && i === S.chat.length - 1 ? ' pensando' : ''}"><span class="quien"><span class="iso" aria-hidden="true"></span>AerIA${m.profundo ? ' · pensado con calma' : ''}</span>
           <span class="herr">${esc(m.herr || '')}</span><div class="md">${m.content ? md(m.content) : ''}</div>${m.error ? '<p class="aviso">' + esc(m.error) + '</p>' : ''}${cambiosHtml(m, i)}</div>`).join('');
   }
   function cambiosHtml(m, i) {
     if (!m.cambios || !m.cambios.length) return '';
     const txt = { creada: 'creó', actualizada: 'actualizó', seguimiento: 'anotó un seguimiento en' };
-    return `<div class="cambios-ia"><b>AerIA ${m.deshecho ? 'había cambiado' : 'cambió'} en Comercial:</b><ul>${m.cambios.map(c => `<li>${txt[c.tipo] || c.tipo} <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(c.id)}">${esc(c.cliente || c.id)}</button>${c.campos && c.campos.length && c.tipo !== 'creada' ? ' (' + esc(c.campos.join(', ')) + ')' : ''}</li>`).join('')}</ul>
+    // los campos con su nombre de todos los días (los mismos de la ficha en Ventas)
+    const campo = { estado: 'en qué va', monto: 'monto', monto_tipo: 'si incluye IVA', probabilidad: 'qué tan seguro', fecha_cotizacion: 'día que se cotizó', fecha_cierre_estimada: 'cuándo debería decidir', fecha_cierre: 'día que respondió',
+      fecha_ejecucion: 'día del curso o servicio', proximo_seguimiento: 'próxima llamada', ultimo_contacto: 'última vez que hablaron', factura_folio: 'n° de factura', cobrada: 'si ya pagó', motivo_perdida: 'por qué se perdió',
+      descripcion: 'qué se cotizó', contacto: 'persona de contacto', email: 'correo', telefono: 'teléfono', linea: 'tipo de venta', folio: 'n° de cotización', cliente: 'cliente', rut: 'RUT', notas: 'notas' };
+    return `<div class="cambios-ia"><b>AerIA ${m.deshecho ? 'había cambiado' : 'cambió'} en Ventas:</b><ul>${m.cambios.map(c => `<li>${txt[c.tipo] || c.tipo} <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(c.id)}">${esc(c.cliente || c.id)}</button>${c.campos && c.campos.length && c.tipo !== 'creada' ? ' (' + esc(c.campos.map(k => campo[k] || k).join(', ')) + ')' : ''}</li>`).join('')}</ul>
       ${m.deshecho ? '<span class="c-sub">Cambios deshechos.</span>' : `<button class="btn sm sec" type="button" data-accion="deshacer-ia" data-i="${i}">Deshacer estos cambios</button>`}</div>`;
   }
   /* Deshace de una vez lo que AerIA cambió en esa respuesta (las entradas del historial
@@ -925,7 +944,7 @@ Abajo está tu lectura actual de la empresa.`;
      en el mensaje (m.hechas): un reintento sigue con lo que faltó. */
   async function deshacerIA(i) {
     const m = S.chat[i]; if (!m || !m.cambios || m.deshecho || m.deshaciendo) return;
-    if (!m.inicio) { avisar('Este mensaje es de una versión anterior de AerIA: revisa los cambios en Comercial → historial de cada cotización.'); return; }
+    if (!m.inicio) { avisar('Este mensaje es antiguo y sus cambios no se pueden deshacer de una vez. Revísalos en cada cotización, en Ventas.'); return; }
     m.deshaciendo = true;
     m.hechas = m.hechas || [];
     let conflictos = 0, fallas = 0;
@@ -946,7 +965,7 @@ Abajo está tu lectura actual de la empresa.`;
     m.deshecho = !conflictos && !fallas;
     guardarChat();
     pintarMensajes(); recalcular(); if (S.tab !== 'hablar') pintar();
-    avisar(conflictos ? 'Deshice lo que pude; ' + conflictos + (conflictos === 1 ? ' cotización cambió' : ' cotizaciones cambiaron') + ' después (otra respuesta o alguien más) y no las toqué. Revísalas en Comercial.'
+    avisar(conflictos ? 'Deshice lo que pude. ' + conflictos + (conflictos === 1 ? ' cotización cambió' : ' cotizaciones cambiaron') + ' después (otra respuesta o alguien más), así que no las toqué. Revísalas en Ventas.'
       : fallas ? 'No pude guardar ' + fallas + (fallas === 1 ? ' cambio' : ' cambios') + '. Intenta de nuevo.' : 'Listo: deshice los cambios de AerIA.');
   }
   const guardarChat = () => LS.set('chat', S.chat.slice(-40).map(m => ({ role: m.role, content: m.content, profundo: m.profundo, cambios: m.cambios, deshecho: m.deshecho, inicio: m.inicio, hechas: m.hechas })));
@@ -955,18 +974,18 @@ Abajo está tu lectura actual de la empresa.`;
     const c = $('#memoria'); if (!c) return;
     c.innerHTML = S.notas.length ? S.notas.slice().reverse().map(n => `<div class="nota-mem"><span>${esc(n.texto)}<small>${esc(F.fCorta((n.fecha || '').slice(0, 10)))}</small></span><button type="button" data-accion="nota-borrar" data-id="${esc(n.id)}" aria-label="Borrar nota">×</button></div>`).join('')
       : '<p class="nota-panel" style="padding-top:12px">Aún no hay notas. Dile a AerIA «recuerda que…» o escribe una aquí.</p>';
-    if (!S.db) c.insertAdjacentHTML('beforeend', '<p class="nota-panel">Se guarda solo en este navegador.</p>');
+    if (!S.db) c.insertAdjacentHTML('beforeend', '<p class="nota-panel">Solo se guarda en este computador.</p>');
   }
   function pintarFuentes() {
     const c = $('#fuentes-ia'); if (!c) return;
     const Q = D0.cotizaciones;
     const f = [
-      ['Pasado', 'Finanzas ' + I.pasado.etiqueta, 'Cartolas, SII y Mercado Pago · corte ' + F.fCorta(I.pasado.fechaCorte)],
-      ['Presente', 'Cursos de aereo.cl', D0.cursos.nivel1.length + ' fechas N1 y ' + D0.cursos.niveles23.length + ' N2+N3 · commit ' + (D0.cursos.commit || '?').split(' ')[0]],
-      ['Comercial', 'Cotizaciones', (I.comercial ? I.comercial.total : 0) + ' en AerIA' + (M.dashboardConectado(I.comercial) ? ' · dashboard conectado' : ' · dashboard sin conectar (agregado al ' + F.fCorta(Q.corte) + ')')],
-      ['Presente', 'Licitaciones', D0.licitaciones.abiertas.length + ' abiertas al ' + (D0.licitaciones.generado_fuente || '').slice(0, 10)],
-      ['Futuro', 'Plan de rentabilidad 2027', D0.plan.secciones.length + ' secciones · modelo v4 del 8-oct'],
-      ['Memoria', 'Notas', S.notas.length + ' guardadas'],
+      ['La plata', 'Finanzas ' + I.pasado.etiqueta, 'Banco (cartolas), SII y Mercado Pago · hasta el ' + F.fCorta(I.pasado.fechaCorte)],
+      ['Cursos', 'Cursos de aereo.cl', D0.cursos.nivel1.length + ' fechas de Nivel 1 y ' + D0.cursos.niveles23.length + ' de Niveles 2 y 3'],
+      ['Ventas', 'Cotizaciones', (I.comercial ? I.comercial.total : 0) + ' en AerIA' + (M.dashboardConectado(I.comercial) ? ' · dashboard conectado' : ' · dashboard sin conectar (último resumen del ' + F.fCorta(Q.corte) + ')')],
+      ['Concursos', 'Concursos del Estado', D0.licitaciones.abiertas.length + ' abiertos al ' + (D0.licitaciones.generado_fuente ? F.fCorta(D0.licitaciones.generado_fuente.slice(0, 10)) : '?')],
+      ['2027', 'Plan de rentabilidad 2027', D0.plan.secciones.length + ' secciones · modelo v4 del 8-oct'],
+      ['Memoria', 'Lo que AerIA recuerda', S.notas.length + ' notas guardadas'],
     ];
     c.innerHTML = f.map(([t, n, d]) => `<div class="fuente"><span class="f-t">${t}</span><span>${esc(n)}</span><span class="f-d">${esc(d)}</span></div>`).join('');
   }
@@ -974,7 +993,7 @@ Abajo está tu lectura actual de la empresa.`;
   const ERRORES = {
     rate_limited: 'Demasiadas consultas seguidas o llegaste a tu límite de uso. Intenta de nuevo en un rato.',
     session_expired: 'Tu sesión de claude.ai expiró. Vuelve a iniciar sesión y pregunta otra vez.',
-    refused: 'Claude no respondió a esa pregunta. Reformúlala.',
+    refused: 'Claude no respondió a esa pregunta. Pregúntala de otra forma.',
     prompt_too_large: 'La conversación quedó demasiado larga. Empieza una nueva conversación.',
     empty_completion: 'No llegó respuesta. Pregunta de otra forma o pide menos a la vez.',
     upstream_error: 'Se cortó la conexión con Claude. Puedes volver a preguntar.',
@@ -1000,13 +1019,13 @@ Abajo está tu lectura actual de la empresa.`;
     if (tools.length) opciones.tools = tools; else opciones.cache = false;
     try {
       const r = await S.sample(entrada, opciones);
-      resp.content = r.text; resp.herr = r.truncated ? 'Respuesta cortada por largo: pide menos a la vez.' : '';
+      resp.content = r.text; resp.herr = r.truncated ? 'La respuesta quedó cortada por larga. Pide menos cosas a la vez.' : '';
     } catch (e) {
       resp.content = e && e.text ? e.text : resp.content;
       resp.herr = '';
       if (e && e.code === 'cancelled') resp.herr = 'Detenida.';
-      else if (e && ['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(e.code)) { S.ia = 'denegada'; resp.error = 'AerIA no tiene permiso para usar Claude en esta vista.'; }
-      else if (e && e.code === 'tools_unavailable') { S.tools = 0; resp.error = 'Esta vista no permite que AerIA consulte el detalle. Vuelve a preguntar: responderá con el resumen.'; }
+      else if (e && ['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(e.code)) { S.ia = 'denegada'; resp.error = 'AerIA no tiene permiso para usar Claude aquí.'; }
+      else if (e && e.code === 'tools_unavailable') { S.tools = 0; resp.error = 'Aquí AerIA no puede revisar el detalle. Vuelve a preguntar y te responderá con el resumen.'; }
       else resp.error = ERRORES[e && e.code] || ERRORES.upstream_error;
       if (!resp.content) resp.content = '';
     } finally {
@@ -1063,7 +1082,7 @@ Abajo está tu lectura actual de la empresa.`;
     }
     else if (a === 'preguntar-alerta') {
       const al = I.alertas.find(x => x.id === id);
-      if (al) preguntar('Explícame la alerta «' + al.titulo + '»: qué significa para Aéreo, qué tan grave es y qué hago exactamente, paso a paso.');
+      if (al) preguntar('Explícame en simple el aviso «' + al.titulo + '»: qué pasa, qué tan grave es y qué hago, paso a paso.');
     } else if (a === 'filtro-lic') { S.filtroLic = t.dataset.valor; renderPresente(); }
     else if (a === 'sim-set') { simEstado().b2b = Number(t.dataset.valor); const r = $('#sim-b2b'); if (r) r.value = S.sim.b2b; pintarSim(); }
     else if (a === 'sim-escuela') { simEstado().escuela = t.dataset.valor; for (const b of $$('[data-accion="sim-escuela"]')) b.setAttribute('aria-pressed', String(b === t)); pintarSim(); }
@@ -1130,14 +1149,14 @@ Abajo está tu lectura actual de la empresa.`;
   const COM = window.AeriaComercialUI ? window.AeriaComercialUI({
     S, $, $$, esc, F, C, M, I: () => I, pintar, verTip, ocultarTip, avisar, enSimpleHtml, capa,
     cotizaciones: cotizacionesActuales, guardarCot, borrarCot,
-    persistencia: () => S.db ? 'db' : (window.claude ? 'conectando con la base…' : 'se guarda solo en este navegador'),
+    persistencia: () => S.db ? 'db' : (window.claude ? 'conectando…' : 'solo se guarda en este computador'),
     preguntar: q => preguntar(q), puedeIA: () => S.ia === 'lista' && !!S.sample,
     iaJSON: async prompt => {
       try { return await S.sample.json(prompt, { modelTier: 'quick' }); }
       catch (e) {
         const c = e && e.code;
-        if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(c)) { S.ia = 'denegada'; pintarAvisoIA(); const err = new Error('AerIA no tiene permiso para usar Claude en esta vista. Usa «Leer»: no lo necesita.'); err.iaCodigo = c; throw err; }
-        const err = new Error(c === 'invalid_json' ? 'AerIA no pudo leerlo como tabla. Prueba con el CSV del dashboard.' : (ERRORES[c] || 'No se pudo ordenar ahora.'));
+        if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(c)) { S.ia = 'denegada'; pintarAvisoIA(); const err = new Error('AerIA no tiene permiso para usar Claude aquí. Usa «Revisar lo pegado»: no lo necesita.'); err.iaCodigo = c; throw err; }
+        const err = new Error(c === 'invalid_json' ? 'AerIA no pudo leerlo como tabla. Prueba con el archivo CSV de tu dashboard.' : (ERRORES[c] || 'No se pudo ordenar ahora. Intenta de nuevo.'));
         err.iaCodigo = c || '';   // el código de Claude va aparte: «code» se reserva para los errores del navegador
         throw err;
       }
@@ -1194,7 +1213,7 @@ Abajo está tu lectura actual de la empresa.`;
         recalcular();
         if (S.tab !== 'hablar') pintar(); else pintarFuentes();
         intentarSync();
-      }, e => { console.warn('AerIA: suscripción a cotizaciones', e && e.code); avisar('No pude leer las cotizaciones de la base. Muestro las del paquete.'); });
+      }, e => { console.warn('AerIA: suscripción a cotizaciones', e && e.code); avisar('No pude leer las cotizaciones guardadas. Te muestro las últimas que AerIA tenía cargadas.'); });
       db.doc('estado/sync_dashboard').onSnapshot(snap => {
         if (snap.metadata && snap.metadata.hasPendingWrites) return;
         S.syncDash = snap.exists ? snap.data() : null; S.syncCargado = true;
