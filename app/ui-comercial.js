@@ -34,41 +34,44 @@
       const cot = ctx.I().cot;
       const kp = (l, val, s, cls) => `<div class="panel kpi"><span class="k-l">${l}</span><span class="k-v ${cls || ''}">${val}</span><span class="k-s">${s}</span></div>`;
       const f0 = Rc.pronostico.meses[0];
+      const Ps = (ctx.I().simple || {}).pestanas || {};
       v.innerHTML = `
+        ${Ps.comercial && ctx.enSimpleHtml ? ctx.enSimpleHtml({ texto: Ps.comercial.texto, datos: Ps.comercial.datos }) : ''}
         ${conectado ? '' : avisoConexion(cot, Rc)}
-        <div class="grilla g-5">
-          ${kp('Cotizado abierto', F.mm(Rc.abiertas.monto), Rc.abiertas.n + ' cotizaciones · ~' + F.mm(Rc.abiertas.ponderado) + ' ponderado')}
-          ${kp('Ganado en 90 días', F.mm(Rc.ganadas.ultimos90), F.mm(Rc.ganadas.anio) + ' en el año · ' + Rc.ganadas.n + ' ventas')}
-          ${kp('Venta B2B esperada · ' + esc(f0.etiqueta), F.mm(f0.total), conectado ? 'Equilibrio ' + F.mm(f0.equilibrio || 0) + ' · meta ' + F.mm(f0.meta || 0) : 'parcial: falta el dashboard', conectado && f0.equilibrio && f0.total < f0.equilibrio ? 'mal' : '')}
-          ${Rc.tasa.referencia
-            ? kp('Tasa de cierre', F.pct(Rc.tasa.referencia.valor), 'del dashboard al ' + esc(F.fCorta(Rc.tasa.referencia.corte)) + ' · por monto')
-            : kp('Tasa de cierre 12 meses', Rc.tasa.monto != null ? F.pct(Rc.tasa.monto) : '—', Rc.tasa.muestra ? 'por monto · ' + Rc.tasa.muestra + ' cerradas' : 'sin cotizaciones cerradas')}
-          ${kp('Ciclo de venta', Rc.ciclo != null ? Math.round(Rc.ciclo) + ' días' : '—', Rc.ganadas.ticket ? 'ticket ganado ' + F.mm(Rc.ganadas.ticket) : 'de cotización a ganada')}
-        </div>
-        <div class="grilla g-2">
-          <section class="panel"><div class="panel-c"><h2>Pronóstico de venta B2B</h2><span class="bajada">Por mes: lo ganado más lo esperable de lo abierto (monto × probabilidad, por fecha estimada de cierre). Las líneas son el equilibrio y la meta del plan 2027.</span></div>
-            <div class="panel-b"><div class="grafico" id="g-pronostico"></div></div>
-            ${conectado ? '' : '<p class="nota-panel"><b>Pronóstico parcial.</b> Solo ve las cotizaciones cargadas aquí; las de tu dashboard todavía no. Por eso no lo uso para alertas ni para el escenario 2027 hasta que lo conectes.</p>'}
-            ${Rc.pronostico.sinFechaEstimada ? `<p class="nota-panel">${Rc.pronostico.sinFechaEstimada} cotizaciones abiertas no tienen fecha estimada de cierre: las ubico con el ciclo de venta${Rc.ciclo != null ? ' histórico (' + Math.round(Rc.ciclo) + ' días)' : ' supuesto de 30 días'}.</p>` : ''}
-            ${Rc.abiertas.estancadas ? `<p class="nota-panel">${Rc.abiertas.estancadas === 1 ? 'Una cotización abierta está estancada' : Rc.abiertas.estancadas + ' cotizaciones abiertas están estancadas'} (${F.mm(Rc.abiertas.montoEstancadas)}): más de 90 días sin contacto, o viejas y sin cierre estimado. No las cuento en el pronóstico hasta que las retomes.</p>` : ''}</section>
-          <section class="panel"><div class="panel-c"><h2>Embudo</h2><span class="bajada">Cantidad y monto por estado.</span></div>
-            <div class="panel-b ras">${embudoHtml(Rc)}</div>
-            <div class="panel-b ras">${lineasHtml(Rc)}</div></section>
-        </div>
         <div class="grilla g-7-5 arriba">
-          <section class="panel" id="panel-cotizaciones"><div class="panel-c"><h2>Cotizaciones</h2><span class="bajada">${Rc.total} en AerIA${ctx.persistencia() === 'db' ? ' · se guardan para todos los que abren AerIA' : ' · ' + esc(ctx.persistencia())}</span>
+          <section class="panel" id="panel-cotizaciones"><div class="panel-c"><h2>Cotizaciones</h2><span class="bajada">${Rc.total} en AerIA${ctx.persistencia() === 'db' ? ' · las ve todo el equipo' : ' · ' + esc(ctx.persistencia())}. Toca una para ver su ficha.</span>
               <span class="acc"><button class="btn sm" type="button" data-com="nueva">Nueva cotización</button><button class="btn sm sec" type="button" data-com="importar">Importar</button><button class="btn sm sec" type="button" data-com="exportar">Exportar CSV</button></span></div>
             ${conectado ? `<div class="panel-b sync" data-sync>${syncHtml()}</div>` : ''}
             <div class="panel-b" style="padding-bottom:10px">${filtrosHtml(Rc)}</div>
             <div class="panel-b ras" id="tabla-cot">${tablaHtml(Rc)}</div></section>
           <div class="lado">
-            <section class="panel"><div class="panel-c"><h2>Hay que mover</h2><span class="bajada">Seguimientos, cierres y facturas pendientes.</span></div>
+            <section class="panel"><div class="panel-c"><h2>Hay que mover</h2><span class="bajada">Llamadas pendientes, cierres y facturas por emitir.</span></div>
               <div class="agenda">${accionesHtml(Rc)}</div></section>
-            <section class="panel"><div class="panel-c"><h2>Lo ganado</h2><span class="bajada">Por mes de cierre.</span></div>
-              <div class="panel-b ras">${ganadoHtml(Rc)}</div></section>
           </div>
         </div>
-        <section class="panel" id="panel-importar"${L.imp ? '' : ' hidden'}>${L.imp ? importadorHtml() : ''}</section>`;
+        <section class="panel" id="panel-importar"${L.imp ? '' : ' hidden'}>${L.imp ? importadorHtml() : ''}</section>
+        ${(ctx.capa || ((id, t, b, c) => c))('com-numeros', 'Los números de las ventas', 'Lo que se espera vender cada mes, cuántas cotizaciones hay en cada etapa y lo ganado.', `
+        <div class="grilla g-5">
+          ${kp('Esperando respuesta', F.mm(Rc.abiertas.monto), Rc.abiertas.n + ' cotizaciones · lo probable: ' + F.mm(Rc.abiertas.ponderado))}
+          ${kp('Ganado en 90 días', F.mm(Rc.ganadas.ultimos90), F.mm(Rc.ganadas.anio) + ' en el año · ' + Rc.ganadas.n + ' ventas')}
+          ${kp('Se espera vender a empresas · ' + esc(f0.etiqueta), F.mm(f0.total), conectado ? 'para no perder: ' + F.mm(f0.equilibrio || 0) + ' · meta ' + F.mm(f0.meta || 0) : 'parcial: falta el dashboard', conectado && f0.equilibrio && f0.total < f0.equilibrio ? 'mal' : '')}
+          ${Rc.tasa.referencia
+            ? kp('Cuánto se gana de lo cotizado', F.pct(Rc.tasa.referencia.valor), 'del dashboard al ' + esc(F.fCorta(Rc.tasa.referencia.corte)) + ' · por monto')
+            : kp('Cuánto se gana de lo cotizado', Rc.tasa.monto != null ? F.pct(Rc.tasa.monto) : '—', Rc.tasa.muestra ? 'por monto, últimos 12 meses · ' + Rc.tasa.muestra + ' decididas' : 'sin cotizaciones decididas')}
+          ${kp('Días que tarda una venta', Rc.ciclo != null ? Math.round(Rc.ciclo) + ' días' : '—', Rc.ganadas.ticket ? 'venta promedio ' + F.mm(Rc.ganadas.ticket) : 'de la cotización a ganada')}
+        </div>
+        <div class="grilla g-2">
+          <section class="panel"><div class="panel-c"><h2>Lo que se espera vender a empresas</h2><span class="bajada">Por mes: lo ya ganado más lo probable de lo cotizado (monto × probabilidad de cada cotización). Las líneas son lo mínimo para no perder plata y la meta del plan 2027.</span></div>
+            <div class="panel-b"><div class="grafico" id="g-pronostico"></div></div>
+            ${conectado ? '' : '<p class="nota-panel"><b>Pronóstico parcial.</b> Solo ve las cotizaciones cargadas aquí; las de tu dashboard todavía no. Por eso no lo uso para alertas ni para el escenario 2027 hasta que lo conectes.</p>'}
+            ${Rc.pronostico.sinFechaEstimada ? `<p class="nota-panel">${Rc.pronostico.sinFechaEstimada} cotizaciones abiertas no tienen fecha estimada de cierre: las ubico con el ciclo de venta${Rc.ciclo != null ? ' histórico (' + Math.round(Rc.ciclo) + ' días)' : ' supuesto de 30 días'}.</p>` : ''}
+            ${Rc.abiertas.estancadas ? `<p class="nota-panel">${Rc.abiertas.estancadas === 1 ? 'Una cotización abierta está estancada' : Rc.abiertas.estancadas + ' cotizaciones abiertas están estancadas'} (${F.mm(Rc.abiertas.montoEstancadas)}): más de 90 días sin contacto, o viejas y sin cierre estimado. No las cuento en el pronóstico hasta que las retomes.</p>` : ''}</section>
+          <section class="panel"><div class="panel-c"><h2>En qué etapa están</h2><span class="bajada">Cuántas cotizaciones hay en cada etapa y por cuánto.</span></div>
+            <div class="panel-b ras">${embudoHtml(Rc)}</div>
+            <div class="panel-b ras">${lineasHtml(Rc)}</div></section>
+        </div>
+        <section class="panel"><div class="panel-c"><h2>Lo ganado</h2><span class="bajada">Por mes de cierre.</span></div>
+          <div class="panel-b ras">${ganadoHtml(Rc)}</div></section>`)}`;
       if (impVivo) $('#panel-importar').replaceWith(impVivo);
       graficoPronostico($('#g-pronostico'), Rc);
       if (filaAct) { const f = $$('.fila-cot').find(r => r.dataset.id === filaAct); if (f) f.focus({ preventScroll: true }); }
@@ -150,8 +153,17 @@
     }
     function accionesHtml(Rc) {
       if (!Rc.acciones.length) return '<p class="nota-panel" style="padding-top:12px">Nada pendiente: no hay seguimientos vencidos, cierres atrasados ni ventas sin factura.</p>';
+      // dicho en simple: a quién llamar o qué facturar, y por cuánto; la descripción completa está en la ficha
+      const simple = a => {
+        const q = Rc.cotizaciones.find(x => x.id === a.cotizacion);
+        if (!q) return a.titulo;
+        if (/^com-seg-/.test(a.id)) return 'Llamar a ' + q.cliente + ' por su cotización de ' + F.mm(q.monto);
+        if (/^com-fac-/.test(a.id)) return 'Facturar la venta a ' + q.cliente + ' (' + F.mm(q.monto) + ') o anotar su factura';
+        if (/^com-cierre-/.test(a.id)) return 'Preguntarle a ' + q.cliente + ' si ya decidió (' + F.mm(q.monto) + ')';
+        return a.titulo;
+      };
       return Rc.acciones.map(a => `<div class="ag-item${a.cuando === 'hoy' ? ' hoy' : ''}"><span></span>
-        <button class="enlace-btn ag-tit" type="button" data-com="abrir" data-id="${esc(a.cotizacion)}">${esc(a.titulo)}</button>
+        <button class="enlace-btn ag-tit" type="button" data-com="abrir" data-id="${esc(a.cotizacion)}">${esc(simple(a))}</button>
         <span class="por">${esc(a.por)}</span></div>`).join('');
     }
     function ganadoHtml(Rc) {

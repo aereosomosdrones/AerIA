@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* Corre el motor de AerIA sobre datos/ y muestra lo que vería la página.
-   Uso: node tools/probar_motor.js [AAAA-MM-DD] [--resumen] */
+   Uso: node tools/probar_motor.js [AAAA-MM-DD] [--resumen | --simple] */
 const fs = require('fs'), path = require('path');
 const raiz = path.resolve(__dirname, '..');
 const leer = p => JSON.parse(fs.readFileSync(path.join(raiz, 'datos', p), 'utf8'));
@@ -13,6 +13,19 @@ const D = {
 };
 const hoy = process.argv.find(a => /^\d{4}-\d{2}-\d{2}$/.test(a)) || M.fmt.iso(new Date());
 const I = M.analizar(D, hoy, new Date(hoy + 'T13:00:00-03:00'));
+if (process.argv.includes('--simple')) {
+  // lo que AerIA dice en simple en «Hoy» y al tope de cada pestaña
+  const S = I.simple;
+  console.log('# ' + S.titular); for (const r of S.resumen) console.log('  ' + r);
+  for (const t of S.temas) {
+    console.log('\n[' + t.semaforo + '] ' + t.pregunta + '\n  ' + t.frase);
+    for (const p of t.porque) console.log('   · ' + p);
+    for (const h of t.hacer) console.log('   → ' + h.texto);
+    for (const n of t.numeros) console.log('   = ' + n.l + (n.s ? ' (' + n.s + ')' : '') + ': ' + n.v);
+  }
+  for (const [k, v] of Object.entries(S.pestanas)) console.log('\n== ' + k + '\n  ' + v.texto.join('\n  '));
+  process.exit(0);
+}
 if (process.argv.includes('--resumen')) { const r = M.resumenParaIA(D, I); console.log(r); console.log('\n[' + Buffer.byteLength(r) + ' bytes]'); process.exit(0); }
 console.log('== BRIEFING:', I.briefing.titular); I.briefing.parrafos.forEach(p => console.log('  ' + p));
 console.log('\n== ALERTAS (' + I.alertas.length + ')'); I.alertas.forEach(a => console.log(' ', a.nivel.padEnd(11), a.foco.padEnd(8), a.titulo));

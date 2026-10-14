@@ -706,6 +706,248 @@
     return { titular, parrafos: p, criticas };
   }
 
+  /* ---------- EN SIMPLE: la empresa contada con palabras de todos los días ----------
+     Cada tema es una pregunta que se responde en una frase y se abre paso a paso:
+     por qué, qué hacer y los números. Nada se calcula aquí que no venga de analizar;
+     solo se elige qué decir y cómo. Sin jerga: «ventas a empresas» en vez de B2B,
+     «lo mínimo para no perder plata» en vez de equilibrio, «lo probable» en vez de ponderado. */
+  function fDia(s) { const d = fecha(s); return d.getDate() + ' de ' + MESES[d.getMonth()]; }
+  const yLista = a => a.length > 1 ? a.slice(0, -1).join(', ') + ' y ' + a[a.length - 1] : (a[0] || '');
+  const mayus = t => String(t || '').replace(/^./, c => c.toUpperCase());
+  const sinJerga = t => String(t || '').replace(/\bel B2B\b/g, 'la venta a empresas').replace(/\bB2B\b/g, 'venta a empresas');
+  function diasTxt(n) { const r = Math.round(n); return n < 1 ? 'menos de un día' : r === 1 ? 'un día' : 'unos ' + r + ' días'; }
+  function explicar(D, I) {
+    const { pasado: P, futuro: U, cursos: Cu, lic, porCobrar, despues: Dp, comercial: R } = I;
+    const Mo = D.modelo;
+    const conectado = dashboardConectado(R);
+    const hayCom = !!(R && R.total);
+    const cot = id => hayCom ? R.cotizaciones.find(q => q.id === id) : null;
+    // una tarea de la agenda dicha en simple: un seguimiento es «llamar a quién y por cuánto»
+    const tareaSimple = it => {
+      const q = it.cotizacion && cot(it.cotizacion);
+      if (q && /^com-seg-/.test(it.id)) return 'Llamar a ' + q.cliente + ' por su cotización de ' + mm(q.monto);
+      if (q && /^com-fac-/.test(it.id)) return 'Facturar la venta a ' + q.cliente + ' (' + mm(q.monto) + ') o anotar su factura';
+      return sinJerga(it.titulo);
+    };
+    const hacerDe = (f, n) => I.agenda.filter(f).slice(0, n || 3).map(it => ({ id: it.id, texto: tareaSimple(it), cotizacion: it.cotizacion || '' }));
+    const nivelAlerta = id => (I.alertas.find(a => a.id === id) || {}).nivel;
+    const temas = [];
+
+    // 1) la plata en el banco
+    const salioSocios = -((P.socioNeto || 0) + (P.cofundador || 0));
+    const corteViejo = diasEntre(P.fechaCorte, I.hoy) > 7;
+    const meses = P.meses.map(m => mesNombre(m.mes));
+    temas.push({
+      id: 'plata', pregunta: '¿Cuánta plata tenemos?',
+      semaforo: P.cajaFinal < Mo.costos_fijos_mes ? (U.runwayDias < 10 ? 'urgente' : 'ojo') : 'bien',
+      frase: 'Al ' + fDia(P.fechaCorte) + ' había ' + clp(P.cajaFinal) + ' en el banco. Alcanza para ' + diasTxt(U.runwayDias) + ' de trabajo.',
+      porque: [
+        P.flujoOperacional >= 0
+          ? 'En ' + yLista(meses) + ' la escuela y las ventas dejaron ' + mm(P.flujoOperacional) + ' a favor: entró más plata de la que se gastó en operar.'
+          : 'En ' + yLista(meses) + ' se gastó en operar ' + mm(-P.flujoOperacional) + ' más de lo que entró.',
+        salioSocios > 0 ? 'Pero salieron ' + mm(salioSocios) + ' a los socios, así que esa plata no se quedó en la empresa.' : null,
+        'El plan pide tener siempre en el banco al menos un mes de gastos fijos: ' + mm(Mo.costos_fijos_mes) + '.',
+        corteViejo ? 'Es el último dato del banco que tengo. Si después entraron pagos, hoy debería haber más.' : null,
+        Dp && Dp.cobradoRegistro ? 'Después del ' + fDia(P.fechaCorte) + ' tu registro de ventas anota ' + mm(Dp.cobradoRegistro) + ' cobrados; el banco todavía no lo confirma.' : null,
+      ].filter(Boolean),
+      hacer: hacerDe(it => it.id === 'caja' || (/^fin-/.test(it.id) && nivelAlerta(it.id) === 'critica')),
+      numeros: [
+        { l: 'Plata en el banco al ' + fCorta(P.fechaCorte), v: clp(P.cajaFinal), cls: P.cajaFinal < Mo.costos_fijos_mes ? 'mal' : '' },
+        { l: 'Un mes de gastos fijos', v: mm(Mo.costos_fijos_mes, 2) },
+        { l: 'Lo que dejó la operación', s: P.etiqueta, v: mm(P.flujoOperacional), cls: P.flujoOperacional >= 0 ? 'bien' : 'mal' },
+        { l: 'Lo que salió a los socios', s: P.etiqueta, v: mm(-salioSocios), cls: salioSocios > 0 ? 'mal' : '' },
+      ],
+      detalle: { tab: 'pasado', texto: 'Ver la plata en detalle' },
+      fuente: 'cartolas del banco, SII y Mercado Pago (' + P.etiqueta + ')',
+    });
+
+    // 2) las ventas a empresas, las que deciden 2027
+    const u = P.meses[P.meses.length - 1];
+    const f0 = hayCom ? R.pronostico.meses[0] : null, f1 = hayCom ? R.pronostico.meses[1] : null;
+    const mesHoy = MESES[fecha(I.hoy).getMonth()];
+    const facturadoMes = Dp && Dp.b2bN && String(Dp.hasta).slice(0, 7) === I.hoy.slice(0, 7) ? Dp.b2b : null;
+    const base = conectado && f0 ? Math.max(f0.total, facturadoMes || 0) : (facturadoMes != null ? facturadoMes : u.b2b);
+    const comoVa = v => v >= Mo.b2b_meta_mes ? 'sobre la meta del mes' : v >= U.equilibrio ? 'sobre lo mínimo para no perder plata' : 'bajo lo mínimo para no perder plata';
+    const flojo = conectado && f1 && f1.total < U.equilibrio;
+    temas.push({
+      id: 'ventas', pregunta: '¿Cuánto le vendemos a empresas?',
+      semaforo: base >= U.equilibrio ? (flojo ? 'ojo' : 'bien') : base >= Mo.b2b_minimo_mes ? 'ojo' : 'urgente',
+      frase: (facturadoMes != null
+        ? 'En ' + mesHoy + ' ya facturaste ' + mm(facturadoMes) + ' a empresas e instituciones: ' + comoVa(facturadoMes) + '.'
+        : 'En ' + mesNombre(u.mes) + ' le vendiste ' + mm(u.b2b) + ' a empresas e instituciones: ' + comoVa(u.b2b) + '.') +
+        (flojo ? ' ' + mayus(mesNombre(f1.mes)) + ' se ve más flojo.' : ''),
+      porque: [
+        'Las ventas a empresas (cursos cerrados, SENCE, asesorías y servicios con drones) son las que deciden si 2027 deja plata.',
+        'Hay que venderles ' + mm(U.equilibrio) + ' al mes para no perder plata, y la meta es ' + mm(Mo.b2b_meta_mes) + '.',
+        facturadoMes != null ? 'En ' + mesNombre(u.mes) + ' fueron ' + mm(u.b2b) + '.' : null,
+        flojo ? (f1.ganado > 0 ? 'Para ' + mesNombre(f1.mes) + ' llevas ' + mm(f1.ganado) + ' ganados, y de lo cotizado lo probable es cerrar ' + mm(f1.esperado) + ' más: ' + mm(f1.total) + ' en total.'
+          : 'Para ' + mesNombre(f1.mes) + ' todavía no hay nada ganado; de lo cotizado, lo probable es cerrar ' + mm(f1.esperado) + '.') : null,
+      ].filter(Boolean),
+      hacer: hacerDe(it => /^com-pronostico-|^b2b-|^preventa$/.test(it.id)),
+      numeros: [
+        facturadoMes != null ? { l: 'Facturado a empresas en ' + mesHoy, s: 'al ' + fCorta(Dp.hasta) + ', sin IVA', v: mm(facturadoMes), cls: facturadoMes >= U.equilibrio ? 'bien' : '' } : null,
+        { l: 'Vendido a empresas en ' + mesNombre(u.mes), v: mm(u.b2b), cls: u.b2b >= U.equilibrio ? 'bien' : 'mal' },
+        { l: 'Lo mínimo al mes para no perder plata', v: mm(U.equilibrio) },
+        { l: 'La meta al mes', v: mm(Mo.b2b_meta_mes) },
+        conectado && f1 ? { l: 'Lo que se espera para ' + mesNombre(f1.mes), s: 'ganado + lo probable de lo cotizado', v: mm(f1.total), cls: f1.total < U.equilibrio ? 'mal' : 'bien' } : null,
+      ].filter(Boolean),
+      detalle: { tab: 'comercial', texto: 'Ver las ventas' },
+      fuente: 'SII, cartolas y cotizaciones de Comercial; mínimo y meta del plan 2027',
+    });
+
+    // 3) los clientes que están por decidir (lo que el equipo tiene en curso)
+    if (hayCom) {
+      const ab = R.cotizaciones.filter(q => q.abierta && !q.estancada);
+      const frias = ab.filter(q => q.diasSinContacto != null && q.diasSinContacto > 14);
+      const tasa = R.tasa && (R.tasa.cantidad != null ? R.tasa.cantidad : R.tasa.monto);
+      temas.push({
+        id: 'clientes', pregunta: '¿Qué clientes están por decidir?',
+        semaforo: frias.length >= 3 ? 'ojo' : ab.length ? 'bien' : 'ojo',
+        frase: ab.length
+          ? 'Hay ' + ab.length + (ab.length === 1 ? ' cotización esperando respuesta' : ' cotizaciones esperando respuesta') + ' por ' + mm(ab.reduce((a, q) => a + (q.monto || 0), 0)) + '.' +
+            (frias.length ? ' ' + (frias.length === 1 ? 'Una lleva' : frias.length + ' llevan') + ' más de 2 semanas sin contacto.' : '')
+          : 'No hay cotizaciones esperando respuesta: conviene cotizar más.',
+        porque: [
+          ab.length ? 'De eso, lo probable es cerrar unos ' + mm(R.abiertas.ponderado) + ', según la probabilidad de cada una.' : null,
+          tasa != null && R.tasa.muestra ? 'De cada 10 cotizaciones que los clientes deciden, ganas ' + Math.round(tasa * 10) + '.' : null,
+          R.ciclo != null ? 'Una venta tarda unos ' + Math.round(R.ciclo) + ' días desde que envías la cotización.' : null,
+          frias.length ? 'Una cotización que nadie sigue se enfría: llamar a tiempo es lo que más ayuda a cerrarla.' : null,
+          R.abiertas.estancadas ? (R.abiertas.estancadas === 1 ? 'Una cotización lleva' : R.abiertas.estancadas + ' cotizaciones llevan') + ' tanto tiempo quieta que ya no la cuento como probable.' : null,
+          lic && lic.relevantes.length ? 'Además hay ' + lic.relevantes.length + (lic.relevantes.length === 1 ? ' licitación del Estado abierta que calza' : ' licitaciones del Estado abiertas que calzan') + ' con lo que hace Aéreo.' : null,
+        ].filter(Boolean),
+        hacer: hacerDe(it => /^com-seg-|^lic-/.test(it.id)),
+        numeros: [
+          { l: 'Esperando respuesta', s: ab.length + ' cotizaciones', v: mm(ab.reduce((a, q) => a + (q.monto || 0), 0)) },
+          { l: 'Lo probable de cerrar', v: mm(R.abiertas.ponderado) },
+          { l: 'Ganado en los últimos 90 días', v: mm(R.ganadas.ultimos90), cls: 'bien' },
+          tasa != null && R.tasa.muestra ? { l: 'De cada 10 que se deciden, ganas', v: String(Math.round(tasa * 10)) } : null,
+          R.ciclo != null ? { l: 'Días que tarda una venta', v: String(Math.round(R.ciclo)) } : null,
+        ].filter(Boolean),
+        detalle: { tab: 'comercial', texto: 'Ver las cotizaciones' },
+        fuente: 'cotizaciones de Comercial' + (conectado ? ' (tu dashboard)' : ''),
+      });
+    }
+
+    // 4) lo que nos deben
+    const suma = l => l.reduce((a, p) => a + p.saldo, 0);
+    const venc = porCobrar.filter(p => p.grupo === 'vencida'), pv = porCobrar.filter(p => p.grupo === 'por_vencer'), conf = porCobrar.filter(p => p.grupo === 'por_confirmar');
+    const sinFac = hayCom ? (R.ganadas.sinFactura || []) : [];
+    const totalCobrar = suma(porCobrar);
+    const top = porCobrar.slice().sort((a, b) => b.saldo - a.saldo)[0];
+    const vences = pv.map(p => p.vence).sort();
+    temas.push({
+      id: 'cobros', pregunta: '¿Quién nos debe plata?',
+      semaforo: venc.length ? 'urgente' : (conf.length || sinFac.length) ? 'ojo' : 'bien',
+      frase: totalCobrar
+        ? 'Te deben ' + mm(totalCobrar) + ' en facturas.' + (venc.length ? ' ' + mm(suma(venc)) + ' ya pasaron su plazo de pago.' : pv.length ? ' Lo grueso (' + mm(suma(pv)) + ') vence entre el ' + fDia(vences[0]) + ' y el ' + fDia(vences[vences.length - 1]) + '.' : '')
+        : 'No hay facturas pendientes de cobro en lo que tengo.',
+      porque: [
+        totalCobrar ? 'Son facturas que ya emitiste y el cliente todavía no paga. El plazo normal es de ' + (Mo.plazo_cobro_dias || 30) + ' días.' : null,
+        top ? 'La más grande es de ' + top.cliente + ': ' + mm(top.saldo) + '.' : null,
+        conf.length ? 'De ' + mm(suma(conf)) + ' no está claro si ya se pagaron (por ejemplo, una factura que se le vendió a una financiera): hay que confirmarlo.' : null,
+        sinFac.length ? (sinFac.length === 1 ? 'Una venta ganada no tiene' : sinFac.length + ' ventas ganadas no tienen') + ' factura anotada (' + mm(sinFac.reduce((a, q) => a + (q.monto || 0), 0)) + '): falta facturar o anotar el número en Comercial.' : null,
+      ].filter(Boolean),
+      hacer: hacerDe(it => /^cobrar|^com-fac-|^com-cobrar-/.test(it.id)),
+      numeros: [
+        { l: 'Atrasado', s: 'ya pasó el plazo de pago', v: mm(suma(venc)), cls: venc.length ? 'mal' : '' },
+        { l: 'Vence pronto', s: pv.length ? 'entre el ' + fCorta(vences[0]) + ' y el ' + fCorta(vences[vences.length - 1]) : '', v: mm(suma(pv)) },
+        { l: 'Por confirmar', s: 'no está claro si ya se pagó', v: mm(suma(conf)) },
+        sinFac.length ? { l: 'Ventas ganadas sin factura anotada', s: sinFac.length + ' ventas', v: mm(sinFac.reduce((a, q) => a + (q.monto || 0), 0)) } : null,
+      ].filter(Boolean),
+      detalle: { tab: 'presente', texto: 'Ver quién debe' },
+      fuente: 'SII y cartolas' + (D.finanzas.sii_hasta ? ' (SII al ' + fCorta(D.finanzas.sii_hasta) + ')' : '') + ', y ventas ganadas de Comercial',
+    });
+
+    // 5) los cursos abiertos
+    const prox = Cu.proximos.filter(c => c.dias >= 0);
+    const pronto = prox.filter(c => c.dias <= 21 && c.libres >= 3).slice(0, 2);
+    const feriados = prox.filter(c => c.feriados.length);
+    const vacios = prox.filter(c => c.vendidos === 0 && c.dias > 21);
+    const vend = Cu.resN1.vendidos + Cu.resN23.vendidos, cup = Cu.resN1.cupos + Cu.resN23.cupos, libres = Cu.resN1.libres + Cu.resN23.libres;
+    temas.push({
+      id: 'cursos', pregunta: '¿Cómo van los cursos?',
+      semaforo: feriados.length || pronto.some(c => c.dias <= 10) ? 'ojo' : 'bien',
+      frase: (Cu.racha.length >= 3 ? 'El Nivel 1 se agotó ' + Cu.racha.length + ' meses seguidos. ' : '') +
+        'De las próximas fechas ya vendiste ' + vend + ' de ' + cup + ' cupos.',
+      porque: [
+        libres ? 'Quedan ' + libres + ' cupos libres; a precio de hoy son ' + mm(Cu.resN1.libreMonto + Cu.resN23.libreMonto) + '.' : null,
+        ...pronto.map(c => 'El ' + c.corto + ' del ' + fDia(c.inicio) + ' tiene ' + c.libres + ' de ' + c.max + ' cupos libres y empieza ' + cuando(c.dias) + '.'),
+        ...feriados.slice(0, 2).map(c => 'El ' + c.corto + ' del ' + fDia(c.inicio) + ' cae en feriado (' + c.feriados[0].nombre + '): hay que moverlo.'),
+        vacios.length >= 3 ? 'Hay ' + vacios.length + ' fechas sin ningún cupo vendido todavía.' : null,
+      ].filter(Boolean),
+      hacer: hacerDe(it => /^feriado-|^vender-|^preventa$/.test(it.id)),
+      numeros: [
+        { l: 'Nivel 1: cupos vendidos', s: Cu.resN1.fechas + ' fechas publicadas', v: Cu.resN1.vendidos + ' de ' + Cu.resN1.cupos },
+        { l: 'Niveles 2 y 3: cupos vendidos', s: Cu.resN23.fechas + ' fechas publicadas', v: Cu.resN23.vendidos + ' de ' + Cu.resN23.cupos },
+        { l: 'Cupos libres', s: 'a precio de hoy', v: mm(Cu.resN1.libreMonto + Cu.resN23.libreMonto) },
+      ],
+      detalle: { tab: 'presente', texto: 'Ver los cursos' },
+      fuente: 'cursos publicados en aereo.cl',
+    });
+
+    // 6) 2027
+    const ritmo = U.escenarios.find(e => e.id === 'ultimo');
+    const b2bAl = I.alertas.find(a => /^b2b-/.test(a.id));
+    temas.push({
+      id: 'futuro', pregunta: '¿Cómo se ve 2027?',
+      semaforo: ritmo.resultado < 0 ? 'ojo' : 'bien',
+      frase: 'Si 2027 se vende como ' + mesNombre(u.mes) + ', el año cerraría ' + (ritmo.resultado < 0 ? 'perdiendo ' + mm(-ritmo.resultado) : 'ganando ' + mm(ritmo.resultado)) +
+        '. Para no perder hay que venderles ' + mm(U.equilibrio) + ' al mes a empresas.',
+      porque: [
+        'Los gastos fijos de un año suman ' + mm(Mo.costos_fijos_anio) + '. Los cursos abiertos y las medidas del plan ayudan, pero el resto tiene que venir de ventas a empresas.',
+        'Cada millón más al mes en ventas a empresas deja ' + mm(12e6 * Mo.margen_b2b) + ' más en el año.',
+        'El ' + fDia(U.hito.fecha) + ' es el día clave (faltan ' + U.diasHito + ' días): ' + sinJerga(U.hito.regla).replace(/^./, c => c.toLowerCase()),
+      ],
+      hacer: b2bAl ? [{ id: b2bAl.id, texto: sinJerga(b2bAl.accion.split(/(?<=\.)\s/)[0]) }] : [],
+      numeros: [
+        { l: 'Resultado de 2027 al ritmo de ' + mesNombre(u.mes), v: mm(ritmo.resultado), cls: ritmo.resultado < 0 ? 'mal' : 'bien' },
+        { l: 'Venta a empresas para no perder', s: 'al mes', v: mm(U.equilibrio) },
+        { l: 'Venta a empresas de la meta', s: 'al mes', v: mm(Mo.b2b_meta_mes) },
+        { l: 'Días para el ' + fCorta(U.hito.fecha), v: String(U.diasHito) },
+      ],
+      detalle: { tab: 'futuro', texto: 'Ver 2027' },
+      fuente: 'modelo del plan de rentabilidad 2027',
+    });
+
+    // lo que AerIA diría primero
+    const t = id => temas.find(x => x.id === id);
+    const titular = P.cajaFinal < Mo.costos_fijos_mes && Cu.racha.length >= 4 ? 'Vendes bien, pero falta plata en el banco'
+      : P.cajaFinal < Mo.costos_fijos_mes ? 'Lo urgente es la plata en el banco'
+      : ritmo.resultado < 0 ? 'Vas bien, pero 2027 pide vender más' : 'Aéreo va por buen camino';
+    const urgentes = temas.filter(x => x.semaforo === 'urgente'), ojos = temas.filter(x => x.semaforo === 'ojo');
+    const minus = s => s.replace(/^./, c => c.toLowerCase());
+    // lo bueno se dice primero, aunque el tema tenga otra cosa que mirar
+    const buenas = [
+      Cu.racha.length >= 3 ? 'el Nivel 1 se agotó ' + Cu.racha.length + ' meses seguidos' : null,
+      facturadoMes != null && facturadoMes >= U.equilibrio ? 'en ' + mesHoy + ' ya facturaste ' + mm(facturadoMes) + ' a empresas, ' + comoVa(facturadoMes) : null,
+      hayCom && R.ganadas.ultimos90 ? 'en los últimos 90 días ganaste ' + mm(R.ganadas.ultimos90) + ' en ventas' : null,
+    ].filter(Boolean).slice(0, 2);
+    const resumen = [
+      buenas.length ? 'Lo bueno: ' + yLista(buenas) + '.' : null,
+      urgentes.length ? 'Lo urgente: ' + minus(urgentes[0].frase) : ojos.length ? 'Para tener a la vista: ' + minus(ojos[0].frase) : null,
+      'Abajo te lo cuento por partes. Abre cada pregunta para ver el porqué, qué hacer y los números.',
+    ].filter(Boolean);
+    const tareas = I.agenda.map(it => ({ id: it.id, texto: tareaSimple(it), por: sinJerga(it.por), cuando: it.cuando, cotizacion: it.cotizacion || '', url: it.url || '' }));
+    const pestanas = {
+      pasado: { texto: [t('plata').frase].concat(t('plata').porque.slice(0, 2)), datos: [
+        { l: 'Entró por la operación', s: P.etiqueta, v: mm(P.ingresos) },
+        { l: 'Se gastó en operar', s: P.etiqueta, v: mm(Math.abs(P.egresos)) },
+        { l: 'Quedó a favor', s: 'antes de los socios', v: mm(P.flujoOperacional), cls: P.flujoOperacional >= 0 ? 'bien' : 'mal' },
+        { l: 'Salió a los socios', v: mm(-salioSocios), cls: salioSocios > 0 ? 'mal' : '' },
+        { l: 'En el banco al ' + fCorta(P.fechaCorte), v: clp(P.cajaFinal), cls: P.cajaFinal < Mo.costos_fijos_mes ? 'mal' : '' },
+      ] },
+      presente: { texto: [t('cursos').frase, t('cobros').frase, lic && lic.relevantes.length ? 'Hay ' + lic.relevantes.length + (lic.relevantes.length === 1 ? ' licitación del Estado abierta que calza' : ' licitaciones del Estado abiertas que calzan') + ' con lo que hace Aéreo.' : null].filter(Boolean), datos: [
+        { l: 'Nivel 1 vendido', v: Cu.resN1.vendidos + ' de ' + Cu.resN1.cupos, s: 'cupos de las próximas fechas' },
+        { l: 'Niveles 2 y 3 vendido', v: Cu.resN23.vendidos + ' de ' + Cu.resN23.cupos, s: 'cupos de las próximas fechas' },
+        { l: 'Te deben', v: mm(totalCobrar), s: venc.length ? mm(suma(venc)) + ' atrasado' : 'nada atrasado', cls: venc.length ? 'mal' : '' },
+        { l: 'Licitaciones que calzan', v: String(lic ? lic.relevantes.length : 0) },
+      ] },
+      comercial: { texto: [t('ventas').frase].concat(t('clientes') ? [t('clientes').frase] : []), datos: t('clientes') ? t('clientes').numeros.slice(0, 4) : [] },
+      futuro: { texto: [t('futuro').frase].concat(t('futuro').porque.slice(0, 2)), datos: t('futuro').numeros },
+    };
+    return { titular, resumen, temas, tareas, pestanas };
+  }
+
   /* ---------- análisis completo ---------- */
   function analizar(D, hoy, ahora) {
     hoy = hoy || iso(new Date());
@@ -732,7 +974,9 @@
     const agenda = construirAgenda(D, X, alertas, hoy);
     const viene = construirViene(D, X, hoy);
     const briefing = construirBriefing(D, X, alertas, hoy);
-    return { hoy, ...X, alertas, agenda, viene, briefing };
+    const R0 = { hoy, ...X, alertas, agenda, viene, briefing };
+    R0.simple = explicar(D, R0);
+    return R0;
   }
 
   /* ---------- consultas para el chat (herramientas de AerIA) ---------- */
@@ -803,8 +1047,8 @@
   }
 
   const API = {
-    analizar, resultado2027, buscarMovimientos, resumenParaIA, cuentas, dashboardConectado,
-    fmt: { clp, mm, pct, fCorta, fLarga, mesNombre, cuando, horasA, plano, diasEntre, sumarDias, iso },
+    analizar, explicar, resultado2027, buscarMovimientos, resumenParaIA, cuentas, dashboardConectado,
+    fmt: { clp, mm, pct, fCorta, fLarga, fDia, mesNombre, cuando, horasA, plano, diasEntre, sumarDias, iso },
     FERIADOS, MESES,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

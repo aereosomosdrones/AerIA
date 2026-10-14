@@ -20,21 +20,28 @@ cuenta de claude.ai del dueño o de quien él comparta).
 
 ## Qué hace la página
 
-- **Mando**: el briefing del día en la voz de AerIA, el estado de pasado, presente y
-  futuro, las alertas (crítica, alta, oportunidad, media, baja) con qué hacer y de
-  dónde sale cada una, la lista «Te ordeno» y lo que viene en 90 días.
-- **Pasado**: caja diaria, adónde se fue la caja, venta por línea, egresos por
-  categoría, mes a mes y los hallazgos contables.
-- **Presente**: cupos vendidos por fecha, por cobrar (banco + SII), resumen comercial
-  y licitaciones abiertas.
-- **Comercial**: el dashboard comercial dentro de AerIA. Cotizaciones editables con
-  historial y deshacer, embudo, lo ganado por mes y línea, tasa de cierre, ciclo de
-  venta, pronóstico de venta B2B por mes contra el equilibrio y la meta del plan,
-  «Hay que mover» (seguimientos, cierres y facturas pendientes), importador y
-  exportación a CSV. Lo ganado y lo esperable de lo abierto alimentan el Futuro.
-- **Futuro**: simulador 2027 con el modelo del plan, tablero mensual, el hito del
-  31 de marzo y el plan completo.
-- **Hablar con AerIA**: conversación con Claude. AerIA consulta los datos con
+AerIA habla simple, como una persona que te cuenta la empresa, y el detalle se abre
+paso a paso: cada tema es una pregunta («¿Cuánta plata tenemos?», «¿Quién nos debe
+plata?») con un semáforo (bien, ojo, urgente) y una respuesta de una frase; debajo se
+abren «¿Por qué?», «¿Qué hago?» y «Ver los números». Cada pestaña parte con un resumen
+«En simple» y deja los gráficos y tablas detrás de secciones que se abren.
+
+- **Hoy**: lo bueno y lo urgente en dos frases, lo que tienes que hacer (las llamadas y
+  facturas pendientes agrupadas), seis preguntas sobre la plata, las ventas, los clientes
+  por decidir, los cobros, los cursos y 2027, y más abajo todos los avisos, la lista
+  completa de tareas y lo que viene en 90 días.
+- **La plata**: la plata día a día, adónde se fue, ventas y gastos por categoría, mes a
+  mes y lo que encontró la revisión contable.
+- **Cursos y cobros**: cupos vendidos por fecha, quién debe (banco + SII), resumen de
+  ventas y los concursos del Estado (licitaciones) que calzan.
+- **Ventas**: el dashboard comercial dentro de AerIA. Cotizaciones editables con
+  historial y deshacer, «Hay que mover» (a quién llamar, qué facturar), importador y
+  exportación a CSV; y detrás de «Los números de las ventas», lo que se espera vender
+  cada mes contra lo mínimo para no perder plata y la meta, las etapas, lo ganado y cuánto
+  se gana de lo cotizado. Lo ganado y lo probable de lo cotizado alimentan 2027.
+- **2027**: cómo cerraría el año, un simulador para probar más o menos ventas, los
+  números que se revisan cada mes, el día clave del 31 de marzo y el plan completo.
+- **Pregúntale a AerIA**: conversación con Claude, que responde en simple. AerIA consulta los datos con
   herramientas (movimientos, facturas, plan, licitaciones, simulaciones,
   cotizaciones), **maneja el dashboard comercial** cuando se lo pides («marca la de X
   como ganada», «anota que llamé a Y») y guarda en su **memoria** las decisiones que

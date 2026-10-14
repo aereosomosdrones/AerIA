@@ -23,7 +23,7 @@
     tab: 'mando', filtroAlertas: 'principales', filtroLic: 'calzan', abiertas: new Set(),
     sim: null, alertas: {}, agenda: {}, notas: [],
     chat: [], ctl: null, profundo: false, enCurso: false,
-    sample: null, tools: 0, ia: 'cargando', db: null,
+    sample: null, tools: 0, ia: 'cargando', db: null, pasos: new Set(),
     comDocs: new Map(), comCargado: false, comUI: null,
   };
   let I = null;
@@ -49,6 +49,7 @@
   }
   for (const k of Object.keys(DOCS)) S[k] = LS.get(k, S[k]);
   S.chat = LS.get('chat', []);
+  S.pasos = new Set(LS.get('pasos', []));
 
   /* ---------- cotizaciones: una por documento en cotizaciones/<id> ----------
      Con base de datos: lo que hay en la base (antes de que responda, el paquete).
@@ -111,15 +112,68 @@
   }
   const ocultarTip = () => { tip.hidden = true; };
 
+  /* ---------- en simple: piezas que se abren paso a paso ---------- */
+  const SEMAFORO_TXT = { urgente: 'Urgente', ojo: 'Ojo', bien: 'Bien', info: 'Para saber' };
+  // las palabras que no se pueden evitar se explican al pasar el cursor (o con el foco del teclado)
+  const GLOSARIO = {
+    'ventas a empresas': 'Cursos cerrados, SENCE, asesoría AOC y servicios con drones que compran empresas e instituciones. No incluye los cupos sueltos de los cursos abiertos.',
+    'punto de equilibrio': 'Lo que hay que vender cada mes para no perder plata: ni ganar ni perder.',
+    'costos fijos': 'Lo que Aéreo gasta cada mes aunque no venda nada: sueldos, arriendos, sistemas.',
+    'factoring': 'Venderle una factura a una financiera para recibir la plata antes, a cambio de una comisión.',
+    'cotización abierta': 'Una propuesta enviada que el cliente todavía no acepta ni rechaza.',
+    'lo probable': 'Lo cotizado multiplicado por la probabilidad de cerrar cada cotización: una estimación realista, no lo máximo.',
+    'por cobrar': 'Facturas emitidas que el cliente todavía no paga.',
+    'vencida': 'Una factura cuyo plazo de pago (30 días) ya pasó.',
+    'licitación': 'Un concurso público del Estado (Mercado Público) en que Aéreo puede postular.',
+    'palanca': 'Una medida del plan 2027 que suma plata: subir precios, vender almuerzos, abrir revalidación.',
+    'caja': 'La plata disponible en las cuentas del banco de Aéreo.',
+    'SII': 'Servicio de Impuestos Internos: ahí quedan todas las facturas que Aéreo emite.',
+    'cartola': 'El detalle de movimientos que entrega el banco.',
+    'ciclo de venta': 'Los días que pasan, en promedio, desde que cotizas hasta que el cliente acepta.',
+  };
+  const RX_GLOSA = new RegExp('\\b(' + Object.keys(GLOSARIO).map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b', 'i');
+  // marca en un texto ya escapado la primera palabra del glosario que aparezca
+  const glosar = html => html.replace(RX_GLOSA, m => '<dfn class="glosa" tabindex="0" data-glosa="' + esc(Object.keys(GLOSARIO).find(k => k.toLowerCase() === m.toLowerCase()) || m) + '">' + m + '</dfn>');
+  const simple = t => glosar(fuerte(t));
+  // un tema: la pregunta y la frase siempre a la vista; el porqué, qué hacer y los números se abren en orden
+  function temaHtml(h) {
+    const abierto = n => S.pasos.has(h.id + '-' + n) ? ' open' : '';
+    const paso = (n, titulo, cuerpo) => cuerpo ? `<details class="paso-d" data-paso="${esc(h.id + '-' + n)}"${abierto(n)}><summary><span class="n-paso">${n}</span><span>${titulo}</span></summary><div class="paso-cuerpo">${cuerpo}</div></details>` : '';
+    const porque = (h.porque || []).map(p => '<p>' + simple(p) + '</p>').join('');
+    const hacer = (h.hacer || []).length ? '<ul class="hacer-lista">' + h.hacer.map(x => '<li><span>' + simple(x.texto || x) + (x.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(x.cotizacion)}">abrir</button>` : '') + '</span></li>').join('') + '</ul>' : '';
+    const nums = (h.numeros || []).length ? '<dl class="numeros">' + h.numeros.map(x => `<dt>${glosar(esc(x.l))}${x.s ? '<small>' + esc(x.s) + '</small>' : ''}</dt><dd class="${x.cls || ''}">${esc(x.v)}</dd>`).join('') + '</dl>' : '';
+    const ir = h.detalle && h.detalle.tab ? `<button class="btn sm sec ir-detalle" type="button" data-tab="${esc(h.detalle.tab)}">${esc(h.detalle.texto || 'Ver el detalle')} →</button>` : '';
+    const fuente = h.fuente ? `<p class="c-sub">De dónde sale: ${esc(h.fuente)}</p>` : '';
+    return `<article class="panel tema" id="tema-${esc(h.id)}">
+      <div class="tema-cab"><div class="tema-pregunta"><span class="semaforo ${esc(h.semaforo)}">${SEMAFORO_TXT[h.semaforo] || ''}</span><h3>${esc(h.pregunta)}</h3></div>
+        <p class="tema-frase">${simple(h.frase)}</p></div>
+      <div class="pasos-tema">
+        ${paso(1, '¿Por qué?', porque)}
+        ${paso(2, '¿Qué hago?', hacer)}
+        ${paso(3, 'Ver los números', nums + fuente + ir)}
+      </div></article>`;
+  }
+  // el resumen «En simple» que abre cada pestaña
+  function enSimpleHtml(o) {
+    const datos = (o.datos || []).length ? '<dl class="datos-simples">' + o.datos.map(d => `<div><dt>${glosar(esc(d.l))}</dt><dd class="${d.cls || ''}">${esc(d.v)}${d.s ? '<small>' + esc(d.s) + '</small>' : ''}</dd></div>`).join('') + '</dl>' : '';
+    return `<section class="panel en-simple" aria-label="En simple">
+      <div class="ceja"><span class="iso chico tinta" aria-hidden="true"></span>En simple</div>
+      <div class="voz">${(o.texto || []).map(p => '<p>' + simple(p) + '</p>').join('')}</div>${datos}${o.extra || ''}</section>`;
+  }
+  // el detalle completo, cerrado hasta que se pide
+  function capa(id, titulo, bajada, cuerpo) {
+    return `<details class="capa" data-paso="capa-${esc(id)}"${S.pasos.has('capa-' + id) ? ' open' : ''}><summary><h2>${esc(titulo)}</h2>${bajada ? '<span class="bajada">' + esc(bajada) + '</span>' : ''}</summary><div class="capa-cuerpo">${cuerpo}</div></details>`;
+  }
+
   /* ========================================================================
      BANDA, PESTAÑAS Y PIE
      ======================================================================== */
   function renderBanda() {
     const crit = I.alertas.filter(a => a.nivel === 'critica' && !resuelta(a)).length;
     $('#banda-estado').innerHTML =
-      '<span><span class="led' + (crit ? ' rojo' : '') + '"></span><b>' + crit + '</b> ' + (crit === 1 ? 'alerta crítica' : 'alertas críticas') + '</span>' +
-      '<span>Pasado al <b>' + F.fCorta(I.pasado.fechaCorte) + '</b></span>' +
-      '<span>Presente al <b>' + F.fCorta((D0.cursos.extraido || '').slice(0, 10)) + '</b></span>' +
+      '<span><span class="led' + (crit ? ' rojo' : '') + '"></span><b>' + crit + '</b> ' + (crit === 1 ? 'aviso urgente' : 'avisos urgentes') + '</span>' +
+      '<span>Banco al <b>' + F.fCorta(I.pasado.fechaCorte) + '</b></span>' +
+      '<span>Cursos al <b>' + F.fCorta((D0.cursos.extraido || '').slice(0, 10)) + '</b></span>' +
       '<span>Hoy <b>' + F.fLarga(I.hoy) + '</b></span>';
     const c = $('#cuenta-criticas');
     c.hidden = !crit; c.textContent = crit;
@@ -150,6 +204,8 @@
      ======================================================================== */
   const SUGERENCIAS = [
     '¿Qué hago hoy y por qué?',
+    'Explícame en simple cómo está la plata',
+    '¿Llegamos bien a 2027? Dímelo con peras y manzanas',
     '¿Dónde se fue la plata del último período?',
     '¿Llegamos a la meta 2027 al ritmo actual? ¿Qué palanca mueve más?',
     '¿Qué licitaciones vale la pena postular esta semana?',
@@ -166,71 +222,74 @@
 
   function renderMando() {
     const v = $('#v-mando');
-    const P = I.pasado, C = I.cursos, U = I.futuro, Q = I.cot, L = I.lic;
-    const ritmo = U.escenarios.find(e => e.id === 'ultimo');
-    const urg = L.capacitacion.filter(l => l.horas <= 72).length;
+    const Sm = I.simple;
     const d = new Date(); const dd = d.getDate() + '·' + (d.getMonth() + 1);
+    const n = I.alertas.filter(a => !resuelta(a)).length;
     v.innerHTML = `
-      <div class="grilla g-7-5">
-        <article class="panel briefing">
+      <div class="grilla g-7-5 arriba">
+        <article class="panel hoy-cab">
           <span class="fondo-num" aria-hidden="true">${dd}</span>
-          <div class="ceja"><span class="iso" aria-hidden="true"></span>AerIA · lectura del ${esc(F.fLarga(I.hoy))}</div>
-          <h2 class="titular">${titular(I.briefing.titular)}</h2>
-          <div class="voz">${I.briefing.parrafos.map(p => '<p>' + fuerte(p) + '</p>').join('')}</div>
+          <div class="ceja"><span class="iso chico tinta" aria-hidden="true"></span>AerIA · ${esc(F.fLarga(I.hoy))}</div>
+          <h2 class="titular">${titular(Sm.titular)}</h2>
+          <div class="voz">${Sm.resumen.map(p => '<p>' + simple(p) + '</p>').join('')}</div>
           <form class="pregunta" id="f-pregunta">
             <label class="sr" for="in-pregunta">Pregúntale a AerIA</label>
-            <input id="in-pregunta" autocomplete="off" placeholder="Pregúntale a AerIA sobre tu empresa…">
+            <input id="in-pregunta" autocomplete="off" placeholder="Pregúntale lo que quieras sobre Aéreo…">
             <button class="btn" type="submit">Preguntar</button>
           </form>
-          <div class="chips">${SUGERENCIAS.slice(0, 4).map(q => `<button class="chip" type="button" data-accion="preguntar" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
+          <div class="chips">${SUGERENCIAS.slice(0, 3).map(q => `<button class="chip" type="button" data-accion="preguntar" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
         </article>
-        <div class="tiempos">
-          <button class="tiempo" type="button" data-tab="pasado">
-            <div class="t-cab"><h3>Pasado</h3><span class="t-que">Lo que ya hicimos · ${esc(P.etiqueta)}</span></div><span class="t-ir">Ver →</span>
-            <dl>
-              <div><dt>Caja al ${esc(F.fCorta(P.fechaCorte))}</dt><dd class="mal">${F.clp(P.cajaFinal)}<small>${U.runwayDias.toFixed(1).replace('.', ',')} días hábiles</small></dd></div>
-              <div><dt>Flujo operacional</dt><dd>${F.mm(P.flujoOperacional)}<small>${P.meses.length} meses</small></dd></div>
-              <div><dt>Hallazgos contables</dt><dd>${D0.finanzas.hallazgos.length}<small>${P.hallazgosSev.alta} de severidad alta</small></dd></div>
-            </dl>
-          </button>
-          <button class="tiempo" type="button" data-tab="presente">
-            <div class="t-cab"><h3>Presente</h3><span class="t-que">Lo que estamos haciendo</span></div><span class="t-ir">Ver →</span>
-            <dl>
-              <div><dt>Cupos N1 vendidos</dt><dd>${C.resN1.vendidos}/${C.resN1.cupos}<small>${C.resN1.fechas} fechas publicadas</small></dd></div>
-              ${M.dashboardConectado(I.comercial)
-                ? `<div><dt>Cotizaciones abiertas</dt><dd>${F.mm(I.comercial.abiertas.monto)}<small>~${F.mm(I.comercial.abiertas.ponderado)} ponderado · ${I.comercial.abiertas.n} abiertas</small></dd></div>`
-                : `<div><dt>Cotizaciones abiertas</dt><dd>${F.mm(Q.abiertasMonto)}<small>dato del ${esc(F.fCorta(Q.corte))} · falta conectar el dashboard</small></dd></div>`}
-              <div><dt>Licitaciones que calzan</dt><dd>${L.relevantes.length}<small>${urg ? urg + ' de capacitación cierran en 72 h' : 'de ' + L.abiertas.length + ' abiertas'}</small></dd></div>
-            </dl>
-          </button>
-          <button class="tiempo" type="button" data-tab="futuro">
-            <div class="t-cab"><h3>Futuro</h3><span class="t-que">Lo que viene · plan 2027</span></div><span class="t-ir">Ver →</span>
-            <dl>
-              <div><dt>2027 al ritmo de ${esc(F.mesNombre(P.meses[P.meses.length - 1].mes))}</dt><dd class="${ritmo.resultado < 0 ? 'mal' : 'bien'}">${F.mm(ritmo.resultado)}<small>B2B ${F.mm(ritmo.b2b)} al mes</small></dd></div>
-              ${M.dashboardConectado(I.comercial)
-                ? `<div><dt>Venta B2B esperada · ${esc(I.comercial.pronostico.meses[0].etiqueta)}</dt><dd class="${I.comercial.pronostico.meses[0].total < U.equilibrio ? 'mal' : 'bien'}">${F.mm(I.comercial.pronostico.meses[0].total)}<small>equilibrio ${F.mm(U.equilibrio)} al mes</small></dd></div>`
-                : `<div><dt>Equilibrio</dt><dd>${F.mm(U.equilibrio)}<small>de B2B al mes</small></dd></div>`}
-              <div><dt>Hito del plan</dt><dd>${U.diasHito} días<small>al ${esc(F.fCorta(U.hito.fecha))} de 2027</small></dd></div>
-            </dl>
-          </button>
-        </div>
+        <section class="panel tareas-hoy" aria-labelledby="h-tareas">
+          <div class="panel-c"><h2 id="h-tareas">Lo que tienes que hacer</h2><span class="bajada">Lo más importante primero. Marca lo que ya hiciste: se guarda para todo el equipo.</span></div>
+          <div class="agenda" id="tareas-hoy">${tareasHtml()}</div>
+        </section>
       </div>
-      <div class="grilla g-7-5 arriba">
-        <section class="panel" aria-labelledby="h-alertas">
-          <div class="panel-c"><h2 id="h-alertas">Alertas</h2><span class="bajada">${resumenAlertas()}</span></div>
-          <div class="panel-b" style="padding-bottom:10px">${chipsAlertas()}</div>
+      <div class="panel-c" style="padding:4px 0 0"><h2>Lo importante, en ${Sm.temas.length} preguntas</h2><span class="bajada">Cada respuesta se abre paso a paso: primero el porqué, después qué hacer y al final los números.</span></div>
+      <div class="temas">${Sm.temas.map(temaHtml).join('')}</div>
+      ${capa('alertas', 'Todo lo que AerIA revisó', n + ' avisos, del más importante al menos. Cada uno dice de dónde sale y qué hacer.', `
+        <section class="panel" aria-label="Avisos">
+          <div class="panel-b" style="padding-top:14px;padding-bottom:10px">${chipsAlertas()}</div>
           <div class="alertas" id="lista-alertas">${listaAlertas()}</div>
-        </section>
-        <section class="panel" aria-labelledby="h-agenda">
-          <div class="panel-c"><h2 id="h-agenda">Te ordeno</h2><span class="bajada">Lo que hay que hacer, en orden de prioridad. Se guarda para todos los que abren AerIA.</span></div>
-          <div class="agenda" id="agenda">${agendaHtml()}</div>
-        </section>
-      </div>
-      <section class="panel" aria-labelledby="h-viene">
-        <div class="panel-c"><h2 id="h-viene">Lo que viene</h2><span class="bajada">Próximos 90 días: cursos, cierres de licitaciones que calzan, vencimientos e hitos del plan.</span></div>
-        <div class="panel-b ras"><div class="viene" id="viene">${vieneHtml()}</div></div>
-      </section>`;
+        </section>`)}
+      ${capa('agenda', 'La lista completa de tareas', I.agenda.length + ' tareas, ordenadas por urgencia.', `<section class="panel"><div class="agenda" id="agenda">${agendaHtml()}</div></section>`)}
+      ${capa('viene', 'Lo que viene', 'Los próximos 90 días: cursos, cobros, concursos del Estado, impuestos e hitos del plan.', `<section class="panel"><div class="panel-b ras"><div class="viene" id="viene">${vieneHtml()}</div></div></section>`)}`;
   }
+  // las primeras tareas pendientes, dichas en simple (la lista completa está más abajo).
+  // Las llamadas y las facturas por emitir se agrupan en una sola tarea que se abre.
+  const GRUPOS_TAREA = [
+    { k: 'llamar', re: /^com-seg-/, titulo: n => 'Llamar a ' + n + (n === 1 ? ' cliente que espera respuesta' : ' clientes que esperan respuesta') },
+    { k: 'facturar', re: /^com-fac-/, titulo: n => 'Facturar ' + n + (n === 1 ? ' venta ganada o anotar su factura' : ' ventas ganadas o anotar sus facturas') },
+  ];
+  function tareaItem(t, pre) {
+    const h = S.agenda[t.id] && S.agenda[t.id].hecho, id = (pre || 'th-') + t.id.replace(/[^a-z0-9-]/gi, '');
+    return `<div class="ag-item${h ? ' hecho' : ''}${t.cuando === 'hoy' && !pre ? ' hoy' : ''}">
+      <input type="checkbox" id="${id}" data-accion="agenda" data-id="${esc(t.id)}"${h ? ' checked' : ''}>
+      <label for="${id}">${esc(t.texto)}</label>
+      <span class="por">${[t.cuando === 'hoy' || pre ? '' : esc(mayus1(t.cuando)), t.por ? fuerte(t.por) : ''].filter(Boolean).join(' · ')}${t.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(t.cotizacion)}">ver cotización</button>` : ''}${t.url ? ` · <a href="${esc(t.url)}" target="_blank" rel="noopener">ficha ↗</a>` : ''}</span></div>`;
+  }
+  function tareasHtml() {
+    const hecho = id => S.agenda[id] && S.agenda[id].hecho;
+    const filas = [], vistos = new Set();
+    for (const t of I.simple.tareas) {
+      const g = GRUPOS_TAREA.find(x => x.re.test(t.id));
+      if (!g) { if (!hecho(t.id) || String(S.agenda[t.id].fecha || '').slice(0, 10) === I.hoy) filas.push({ t }); continue; }
+      if (vistos.has(g.k)) continue;
+      vistos.add(g.k);
+      const miembros = I.simple.tareas.filter(x => g.re.test(x.id));
+      const pend = miembros.filter(x => !hecho(x.id));
+      if (pend.length) filas.push({ g, miembros, pend, cuando: miembros.some(x => x.cuando === 'hoy') ? 'hoy' : miembros[0].cuando });
+    }
+    const pendientes = filas.filter(f => f.g || !hecho(f.t.id));
+    const ver = filas.slice(0, 7);
+    if (!pendientes.length) return '<p class="panel-b mudo">No hay tareas pendientes. Buen trabajo.</p>';
+    return ver.map(f => {
+      if (!f.g) return tareaItem(f.t);
+      return `<div class="ag-item grupo${f.cuando === 'hoy' ? ' hoy' : ''}"><span class="ag-n" aria-hidden="true">${f.pend.length}</span>
+        <details data-paso="tareas-${f.g.k}"${S.pasos.has('tareas-' + f.g.k) ? ' open' : ''}><summary>${esc(f.g.titulo(f.pend.length))}<span class="por">${f.cuando === 'hoy' ? '' : esc(mayus1(f.cuando)) + ' · '}Toca para ver a quién y marcar lo que hagas.</span></summary>
+          <div class="ag-sub">${f.miembros.map(t => tareaItem(t, 'tg-')).join('')}</div></details></div>`;
+    }).join('') + (filas.length > ver.length ? `<div class="pie-lista"><span class="mudo">Y ${filas.length - ver.length} más en «La lista completa de tareas», abajo.</span></div>` : '');
+  }
+  const mayus1 = t => String(t || '').replace(/^./, c => c.toUpperCase());
 
   function resumenAlertas() {
     const act = I.alertas.filter(a => !resuelta(a));
@@ -320,34 +379,32 @@
      ======================================================================== */
   function renderPasado() {
     const v = $('#v-pasado'); const P = I.pasado; const Fi = D0.finanzas;
-    const kp = (l, val, s, cls, punto) => `<div class="panel kpi"><span class="k-l">${punto ? '<span class="punto" style="background:var(' + punto + ')"></span>' : ''}${l}</span><span class="k-v ${cls || ''}">${val}</span><span class="k-s">${s}</span></div>`;
+    const Ps = I.simple.pestanas.pasado;
     v.innerHTML = `
-      <div class="grilla g-5">
-        ${kp('Ingresos operacionales', F.mm(P.ingresos), 'Cobrado a clientes, MP neto y factoring', '', '--s-1')}
-        ${kp('Egresos operacionales', F.mm(-P.egresos), 'Sueldos, proveedores, viajes, marketing…', '', '--s-2')}
-        ${kp('Flujo operacional', F.mm(P.flujoOperacional), 'Antes de socios y relacionadas')}
-        ${kp('Socio, neto', F.mm(P.socioNeto), 'Transferencias menos aportes', P.socioNeto < 0 ? 'mal' : '', '--s-3')}
-        ${kp('Caja al ' + F.fCorta(P.fechaCorte), F.clp(P.cajaFinal), F.mm(D0.modelo.costos_fijos_mes, 2) + ' es 1 mes de fijos', 'mal')}
-      </div>
+      ${enSimpleHtml({ texto: Ps.texto, datos: Ps.datos, extra: `<div class="chips"><button class="chip" type="button" data-accion="preguntar" data-q="Explícame en simple dónde se fue la plata de ${esc(P.etiqueta)} y qué debería hacer">Pregúntale a AerIA dónde se fue la plata</button></div>` })}
+      ${capa('pasado-caja', 'La plata día a día', 'Cuánto había en el banco cada día y por qué subió o bajó.', `
       <div class="grilla g-2">
         <section class="panel"><div class="panel-c"><h2>Caja diaria</h2><span class="bajada">${esc(Object.values(M.cuentas(Fi)).join(' + '))}, ${esc(F.fCorta(Fi.serie[0].fecha))} a ${esc(F.fCorta(P.fechaCorte))}. Pasa el cursor para ver cada día.</span></div>
           <div class="panel-b"><div class="grafico" id="g-caja"></div></div></section>
         <section class="panel"><div class="panel-c"><h2>Dónde se fue la caja</h2><span class="bajada">${esc(P.etiqueta)}, todo el período: de ${F.clp(P.cajaInicial)} a ${F.clp(P.cajaFinal)}.</span></div>
           <div class="panel-b ras">${puenteHtml(P)}</div>
-          <p class="nota-panel">Los traspasos entre cuentas propias se compensan y no aparecen. El flujo operacional ya descuenta los ${F.mm(-P.egresos)} de egresos.</p></section>
-      </div>
+          <p class="nota-panel">Los traspasos entre cuentas propias se compensan y no aparecen. «Lo que dejó la operación» ya descuenta los ${F.mm(-P.egresos)} que se gastaron en operar.</p></section>
+      </div>`)}
+      ${capa('pasado-ventas', 'Qué se vendió y en qué se gastó', 'Ventas por tipo de curso o servicio, y gastos por categoría.', `
       <div class="grilla g-2">
         <section class="panel"><div class="panel-c"><h2>Venta por línea</h2><span class="bajada">Bruto por mes. La línea punteada es la meta B2B 2027.</span></div>
           <div class="panel-b"><div class="grafico" id="g-lineas"></div></div></section>
         <section class="panel"><div class="panel-c"><h2>Egresos por categoría</h2><span class="bajada">Dos meses. Entre paréntesis, qué tan segura es la clasificación.</span></div>
           <div class="panel-b ras">${egresosHtml(P)}</div></section>
-      </div>
-      <section class="panel"><div class="panel-c"><h2>Mes a mes</h2></div>
-        <div class="panel-b ras"><div class="tabla-env">${tablaMeses(P)}</div></div></section>
-      <section class="panel"><div class="panel-c"><h2>Hallazgos del informe financiero</h2><span class="bajada">${Fi.hallazgos.length} hallazgos de la revisión de cartolas, SII, Mercado Pago y rendiciones. Cada uno es también una alerta en Mando.</span></div>
+      </div>`)}
+      ${capa('pasado-meses', 'Mes a mes', 'La tabla completa, mes por mes.', `
+      <section class="panel">
+        <div class="panel-b ras"><div class="tabla-env">${tablaMeses(P)}</div></div></section>`)}
+      ${capa('pasado-revision', 'Lo que encontró la revisión contable', Fi.hallazgos.length + ' puntos de la revisión del banco, el SII, Mercado Pago y las rendiciones. Cada uno también es un aviso en Hoy.', `
+      <section class="panel">
         <div class="panel-b ras"><div class="tabla-env alto"><table><thead><tr><th>Severidad</th><th>Hallazgo</th><th class="d">Monto</th><th>Qué hacer</th></tr></thead><tbody>
         ${Fi.hallazgos.map(h => `<tr><td><span class="pill ${h.sev === 'alta' ? 'alta' : h.sev === 'media' ? 'media' : ''}">${esc(h.sev)}</span></td><td class="ancho"><div class="c-main">${esc(h.titulo)}</div><div class="c-sub">${esc(h.detalle)}</div></td><td class="d">${h.monto ? F.clp(h.monto) : '—'}</td><td class="ancho">${esc(h.accion)}</td></tr>`).join('')}
-        </tbody></table></div></div></section>`;
+        </tbody></table></div></div></section>`)}`;
     graficoCaja($('#g-caja'), Fi.serie);
     graficoLineas($('#g-lineas'), P);
   }
@@ -479,18 +536,14 @@
   function renderPresente() {
     const v = $('#v-presente'); const C = I.cursos, Q = I.cot;
     const totCobrar = I.porCobrar.reduce((a, p) => a + p.saldo, 0);
-    const kp = (l, val, s) => `<div class="panel kpi"><span class="k-l">${l}</span><span class="k-v">${val}</span><span class="k-s">${s}</span></div>`;
+    const Ps = I.simple.pestanas.presente;
     v.innerHTML = `
-      <div class="grilla g-5">
-        ${kp('Cupos Nivel 1 vendidos', C.resN1.vendidos + ' de ' + C.resN1.cupos, C.resN1.fechas + ' fechas publicadas · ' + F.pct(C.resN1.ocupacion))}
-        ${kp('Cupos N2+N3 vendidos', C.resN23.vendidos + ' de ' + C.resN23.cupos, C.resN23.fechas + ' fechas publicadas · ' + F.pct(C.resN23.ocupacion))}
-        ${kp('Vendido en fechas próximas', F.mm(C.resN1.vendidoMonto + C.resN23.vendidoMonto), 'A precio de lista actual')}
-        ${kp('Por vender', F.mm(C.resN1.libreMonto + C.resN23.libreMonto), (C.resN1.libres + C.resN23.libres) + ' cupos libres')}
-        ${kp('Por cobrar', F.mm(totCobrar), (() => { const g = k => I.porCobrar.filter(p => p.grupo === k).reduce((a, p) => a + p.saldo, 0); return F.mm(g('vencida')) + ' vencido · ' + F.mm(g('por_vencer')) + ' por vencer · ' + F.mm(g('por_confirmar')) + ' por confirmar'; })())}
-      </div>
-      <section class="panel"><div class="panel-c"><h2>Cursos publicados en aereo.cl</h2><span class="bajada">Cada punto es un cupo: lleno = vendido. Meses agotados en 2026: ${C.racha.map(m => MES3[m]).join(', ')}.</span></div>
+      ${enSimpleHtml({ texto: Ps.texto, datos: Ps.datos })}
+      ${capa('presente-cursos', 'Los cursos, fecha por fecha', 'Cada punto es un cupo: relleno quiere decir vendido.', `
+      <section class="panel"><div class="panel-c"><h2>Cursos publicados en aereo.cl</h2><span class="bajada">Meses agotados en 2026: ${C.racha.map(m => MES3[m]).join(', ')}.</span></div>
         <div class="meses-cursos">${cursosHtml(C)}</div>
-        <p class="nota-panel">Fuente: datos/cursos-fechas.js y datos/n23-fechas.js del repo aereo-web (commit ${esc(D0.cursos.commit || '?')}). Para que AerIA vea una venta nueva, se baja el cupo ahí y se vuelve a armar AerIA.</p></section>
+        <p class="nota-panel">Fuente: datos/cursos-fechas.js y datos/n23-fechas.js del repo aereo-web (commit ${esc(D0.cursos.commit || '?')}). Para que AerIA vea una venta nueva, se baja el cupo ahí y se vuelve a armar AerIA.</p></section>`)}
+      ${capa('presente-cobros', 'Quién nos debe y cómo van las ventas', 'Las facturas por cobrar, una por una, y un resumen de las cotizaciones.', `
       <div class="grilla g-2">
         <section class="panel"><div class="panel-c"><h2>Por cobrar</h2><span class="bajada">Cartolas al ${esc(F.fCorta(I.pasado.fechaCorte))}${D0.finanzas.sii_hasta && D0.finanzas.sii_hasta > D0.finanzas.periodo.hasta ? '; SII y registro interno al ' + esc(F.fCorta(D0.finanzas.sii_hasta)) : ''}. Plazo de pago: ${D0.modelo.plazo_cobro_dias || 30} días.</span></div>
           <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>Cliente</th><th>Factura</th><th class="d">Saldo</th></tr></thead><tbody>
@@ -500,10 +553,11 @@
         <section class="panel"><div class="panel-c"><h2>Comercial</h2><span class="bajada">${M.dashboardConectado(I.comercial) ? 'Cotizaciones del dashboard en AerIA.' : 'El dashboard aún no está conectado: abajo, lo que reuní de otras fuentes.'}</span>
             <span class="acc"><button class="btn sm" type="button" data-tab="comercial">Abrir Comercial</button></span></div>
           ${comercialMirada(I.comercial, Q)}</section>
-      </div>
-      <section class="panel"><div class="panel-c"><h2>Licitaciones abiertas</h2><span class="bajada">Radar de Mercado Público y Compra Ágil, actualizado ${esc((D0.licitaciones.generado_fuente || '').slice(0, 16).replace('T', ' '))} UTC. «Calzan» = capacitación, asesoría o servicios aéreos.</span></div>
+      </div>`)}
+      ${capa('presente-licitaciones', 'Concursos del Estado (licitaciones)', I.lic.relevantes.length + ' abiertos calzan con lo que hace Aéreo: capacitación, asesoría o servicios con drones.', `
+      <section class="panel"><div class="panel-c"><h2>Licitaciones abiertas</h2><span class="bajada">Mercado Público y Compra Ágil, actualizado ${esc((D0.licitaciones.generado_fuente || '').slice(0, 16).replace('T', ' '))} UTC. «Calzan» = capacitación, asesoría o servicios con drones.</span></div>
         <div class="panel-b" style="padding-bottom:10px">${chipsLic()}</div>
-        <div class="panel-b ras"><div class="tabla-env">${tablaLic()}</div></div></section>`;
+        <div class="panel-b ras"><div class="tabla-env">${tablaLic()}</div></div></section>`)}`;
   }
 
   function cursosHtml(C) {
@@ -562,23 +616,27 @@
   function renderFuturo() {
     const v = $('#v-futuro'); const Mo = D0.modelo; const U = I.futuro; const sim = simEstado();
     const atajos = [['Mínimo', Mo.b2b_minimo_mes], [F.mesNombre(I.pasado.meses[I.pasado.meses.length - 1].mes).replace(/^./, c => c.toUpperCase()) + ' real', I.pasado.meses[I.pasado.meses.length - 1].b2b], ['Equilibrio', U.equilibrio], ['Meta', Mo.b2b_meta_mes], ['Promedio ' + I.pasado.etiqueta.replace(/ \d{4}$/, ''), I.pasado.b2b / I.pasado.meses.length]];
+    const Ps = I.simple.pestanas.futuro;
     v.innerHTML = `
-      <section class="panel"><div class="panel-c"><h2>Simulador 2027</h2><span class="bajada">El modelo del plan: margen de la escuela + 12 × B2B mensual × ${F.pct(Mo.margen_b2b, 1)} + palancas − ${F.mm(Mo.costos_fijos_anio)} de costos fijos.</span></div>
+      ${enSimpleHtml({ texto: Ps.texto, datos: Ps.datos })}
+      ${capa('futuro-sim', 'Prueba qué pasa si vendes más o menos', 'Mueve la venta a empresas y las medidas del plan, y mira cómo cerraría 2027.', `
+      <section class="panel"><div class="panel-c"><h2>Simulador 2027</h2><span class="bajada">Cómo calcula: lo que deja la escuela + 12 meses × venta a empresas × ${F.pct(Mo.margen_b2b, 1)} de margen + medidas del plan − ${F.mm(Mo.costos_fijos_anio)} de gastos fijos del año.</span></div>
         <div class="sim">
           <div class="sim-ctrl">
-            <div class="campo"><label for="sim-b2b">Venta B2B al mes <output id="sim-b2b-v">${F.mm(sim.b2b, 2)}</output></label>
+            <div class="campo"><label for="sim-b2b">Venta a empresas al mes <output id="sim-b2b-v">${F.mm(sim.b2b, 2)}</output></label>
               <input type="range" id="sim-b2b" min="2000000" max="12000000" step="10000" value="${sim.b2b}" data-accion="sim-b2b">
               <div class="chips">${atajos.map(([t, val]) => `<button class="chip" type="button" data-accion="sim-set" data-valor="${Math.round(val / 1e4) * 1e4}">${t} · ${F.mm(val)}</button>`).join('')}</div></div>
             <div class="campo"><span class="lab">Escuela</span><div class="seg" role="group" aria-label="Ocupación de la escuela">
               <button type="button" data-accion="sim-escuela" data-valor="realista" aria-pressed="${sim.escuela === 'realista'}">Ocupación realista</button>
               <button type="button" data-accion="sim-escuela" data-valor="llena" aria-pressed="${sim.escuela === 'llena'}">Todos los cursos llenos</button></div></div>
-            <div class="campo"><span class="lab">Palancas</span>
+            <div class="campo"><span class="lab">Medidas del plan</span>
               ${Mo.palancas.map(p => `<label class="palanca"><input type="checkbox" data-accion="sim-palanca" data-id="${p.id}"${sim.palancas.includes(p.id) ? ' checked' : ''}><span>${esc(p.nombre)}<small>${esc(p.estado)}</small></span><span class="pl-e">+${F.mm(p.efecto)}</span></label>`).join('')}</div>
           </div>
           <div class="sim-res" id="sim-res"></div>
-        </div></section>
+        </div></section>`)}
+      ${capa('futuro-tablero', 'Los números que se revisan cada mes', 'Siete números del plan y el día clave del 31 de marzo.', `
       <div class="grilla g-2">
-        <section class="panel"><div class="panel-c"><h2>Tablero mensual</h2><span class="bajada">Los siete números del plan para revisar cada día 5. Si dos meses seguidos fallan dos o más, se activa el plan B.</span></div>
+        <section class="panel"><div class="panel-c"><h2>Tablero mensual</h2><span class="bajada">Se revisan cada día 5. Si dos meses seguidos fallan dos o más, se activa el plan B.</span></div>
           <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>Indicador</th><th>Hoy</th><th>Meta 2027</th></tr></thead><tbody>
           ${I.tablero.map(t => `<tr><td><div class="c-main">${esc(t.indicador)}</div><div class="c-sub">${esc(t.nota)}</div></td><td class="nw"><span class="pill ${t.estado}">${{ bien: 'En meta', atencion: 'Atención', critico: 'Crítico', sindato: 'Sin dato' }[t.estado]}</span><div style="margin-top:4px;font-weight:500">${esc(t.valor)}</div></td><td>${esc(t.meta)}</td></tr>`).join('')}
           </tbody></table></div></div></section>
@@ -595,10 +653,11 @@
               <tr><td>SENCE por participante</td><td class="d">—</td><td class="d">${F.clp(Mo.precios_2027.sence_participante)}</td></tr>
             </tbody></table></div>
           </div></section>
-      </div>
-      <section class="panel"><div class="panel-c"><h2>${esc(D0.plan.titulo)}</h2><span class="bajada">El documento completo, por secciones. Es la base de todo lo que AerIA dice del futuro.</span>
+      </div>`)}
+      ${capa('futuro-plan', 'El plan 2027 completo', 'El documento, por secciones. Es la base de todo lo que AerIA dice del futuro.', `
+      <section class="panel"><div class="panel-c"><h2>${esc(D0.plan.titulo)}</h2><span class="bajada">El documento completo, por secciones.</span>
         ${D0.plan.url ? `<span class="acc"><a class="btn sm sec" href="${esc(D0.plan.url)}" target="_blank" rel="noopener">Abrir el plan ↗</a></span>` : ''}</div>
-        <div class="panel-b ras" style="padding-top:12px">${D0.plan.secciones.filter(s => !/^fuentes$/i.test(s.titulo)).map(planSeccion).join('')}</div></section>`;
+        <div class="panel-b ras" style="padding-top:12px">${D0.plan.secciones.filter(s => !/^fuentes$/i.test(s.titulo)).map(planSeccion).join('')}</div></section>`)}`;
     pintarSim();
   }
   function planSeccion(s) {
@@ -616,17 +675,18 @@
     const lim = Math.max(...filas.map(f => Math.abs(f.v)), 1);
     const barras = filas.map(f => {
       const w = Math.abs(f.v) / lim * 50;
-      return `<div class="hbar" style="grid-template-columns:minmax(120px,32%) minmax(0,1fr) 84px;${f.tuyo ? 'font-weight:700' : ''}"><span class="h-l">${esc(f.n)}<small>B2B ${F.mm(f.b2b)}</small></span>
+      return `<div class="hbar" style="grid-template-columns:minmax(120px,32%) minmax(0,1fr) 84px;${f.tuyo ? 'font-weight:700' : ''}"><span class="h-l">${esc(String(f.n).replace(/\bB2B\b/g, 'venta a empresas'))}<small>${F.mm(f.b2b)} al mes a empresas</small></span>
         <span class="h-p" style="height:14px"><span style="position:absolute;left:50%;top:-4px;bottom:-4px;width:1px;background:var(--linea-2)"></span>
         <i style="left:${f.v >= 0 ? 50 : 50 - w}%;width:${w}%;background:var(${f.v >= 0 ? '--s-1' : '--s-2'});border-radius:${f.v >= 0 ? '0 3px 3px 0' : '3px 0 0 3px'};${f.tuyo ? 'outline:2px solid var(--tinta);outline-offset:1px' : ''}"></i></span>
         <span class="h-v">${F.mm(f.v)}</span></div>`;
     }).join('');
     $('#sim-res').innerHTML = `
-      <span class="ceja">Resultado 2027</span>
+      <span class="ceja">Así cerraría 2027</span>
       <div class="gran-num ${r.resultado < 0 ? 'mal' : 'bien'}">${F.mm(r.resultado)}</div>
-      <div class="sim-datos"><span>Equilibrio con estas palancas <b>${F.mm(r.equilibrio, 2)}</b> de B2B al mes</span><span>Margen escuela <b>${F.mm(r.margenEscuela)}</b></span><span>Margen B2B <b>${F.mm(r.margenB2B)}</b></span><span>Palancas <b>+${F.mm(r.palancas)}</b></span><span>Costos fijos <b>−${F.mm(Mo.costos_fijos_anio)}</b></span></div>
-      <p class="c-sub">${sim.b2b >= r.equilibrio ? 'Con ' + F.mm(sim.b2b) + ' de B2B al mes el año queda en azul: cada $1M más al mes suma ' + F.mm(12e6 * Mo.margen_b2b) + '.' : 'Faltan ' + F.mm(r.equilibrio - sim.b2b, 2) + ' de B2B al mes para quedar en cero.'} El B2B paga a 30–60 días: la caja llega 1 a 2 meses después de la venta.</p>
-      <div><div class="leyenda"><span><span class="punto" style="background:var(--s-1)"></span>Utilidad</span><span><span class="punto" style="background:var(--s-2)"></span>Pérdida</span></div>${barras}</div>`;
+      <p>${sim.b2b >= r.equilibrio ? 'Con ' + F.mm(sim.b2b) + ' al mes en ventas a empresas, el año deja plata. Cada millón más al mes suma ' + F.mm(12e6 * Mo.margen_b2b) + ' en el año.' : 'Con ' + F.mm(sim.b2b) + ' al mes en ventas a empresas, el año pierde plata. Faltan ' + F.mm(r.equilibrio - sim.b2b, 2) + ' al mes para quedar en cero.'}</p>
+      <div class="sim-datos"><span>Para no perder: <b>${F.mm(r.equilibrio, 2)}</b> al mes a empresas</span><span>Deja la escuela <b>${F.mm(r.margenEscuela)}</b></span><span>Dejan las ventas a empresas <b>${F.mm(r.margenB2B)}</b></span><span>Suman las medidas <b>+${F.mm(r.palancas)}</b></span><span>Gastos fijos del año <b>−${F.mm(Mo.costos_fijos_anio)}</b></span></div>
+      <p class="c-sub">Las empresas pagan a 30–60 días: la plata llega al banco 1 a 2 meses después de la venta.</p>
+      <div><div class="leyenda"><span><span class="punto" style="background:var(--s-1)"></span>Gana plata</span><span><span class="punto" style="background:var(--s-2)"></span>Pierde plata</span></div>${barras}</div>`;
     const o = $('#sim-b2b-v'); if (o) o.textContent = F.mm(sim.b2b, 2);
   }
 
@@ -638,10 +698,11 @@
 Hablas con quien dirige Aéreo. Tu trabajo es el de una jefa de gabinete y CFO a la vez: resumir, ordenar prioridades, alertar, anticipar lo que viene y aconsejar con criterio profesional, detalle a detalle.
 
 Cómo respondes:
-- En español de Chile, directa y profesional. Primero la respuesta o la recomendación; después el porqué con cifras; al final la acción concreta (quién, qué, cuándo).
+- Habla simple, como una persona que le explica la empresa a su dueño, que no es financiero: frases cortas, palabras de todos los días, tuteo y español de Chile. Nada de jerga (B2B, pipeline, ponderado, flujo, factoring…) sin explicarla en la misma frase; mejor di «ventas a empresas», «lo que probablemente se cierre», «lo que entró menos lo que salió».
+- Primero la respuesta en una o dos frases; después el porqué en pocas líneas con las cifras justas; al final qué hacer (quién, qué, cuándo).
 - Cifras siempre con su fuente: Pasado (cartolas, SII y Mercado Pago del período), Presente (cursos en aereo.cl, cotizaciones, licitaciones, por cobrar) o Futuro (plan 2027). Distingue hecho, supuesto del plan e inferencia tuya.
 - Montos en pesos chilenos: $1.234.567, o en millones con coma ($6,1M).
-- Breve: 120 a 250 palabras salvo que te pidan detalle. Listas cortas; tablas solo si comparan.
+- Breve: 80 a 180 palabras salvo que te pidan detalle. Listas cortas; tablas solo si comparan. Si el tema es largo, ofrece seguir paso a paso en vez de decirlo todo de una vez.
 - No inventes datos. Si algo no está en tus fuentes, dilo y di de dónde sacarlo.
 - En temas tributarios, laborales o legales da tu lectura y recomienda confirmarla con contador(a) o abogado(a).
 - Si el usuario te pide recordar algo o toma una decisión, guárdala con la herramienta guardar_nota (si la tienes) y confírmalo en una línea.
@@ -805,7 +866,7 @@ Abajo está tu lectura actual de la empresa.`;
         <div class="lado">
           <section class="panel"><div class="panel-c"><h2>Memoria</h2><span class="bajada">Decisiones y contexto que AerIA tiene en cuenta siempre.</span></div>
             <div id="memoria"></div>
-            <form class="form-nota" id="f-nota"><label class="sr" for="in-nota">Nueva nota</label><input id="in-nota" placeholder="Ej.: La meta B2B de noviembre es $6M"><button class="btn sm" type="submit">Guardar</button></form></section>
+            <form class="form-nota" id="f-nota"><label class="sr" for="in-nota">Nueva nota</label><input id="in-nota" placeholder="Ej.: La meta de ventas a empresas de noviembre es $6M"><button class="btn sm" type="submit">Guardar</button></form></section>
           <section class="panel"><div class="panel-c"><h2>Lo que AerIA lee</h2></div><div id="fuentes-ia"></div></section>
         </div></div>`;
     }
@@ -985,7 +1046,9 @@ Abajo está tu lectura actual de la empresa.`;
     if (t.dataset.accion === 'agenda') {
       S.agenda = Object.assign({}, S.agenda);
       if (t.checked) S.agenda[t.dataset.id] = { hecho: true, fecha: new Date().toISOString() }; else delete S.agenda[t.dataset.id];
-      $('#agenda').innerHTML = agendaHtml(); guardar('agenda');
+      if ($('#agenda')) $('#agenda').innerHTML = agendaHtml();
+      if ($('#tareas-hoy')) $('#tareas-hoy').innerHTML = tareasHtml();
+      guardar('agenda');
     } else if (t.dataset.accion === 'sim-palanca') {
       const sim = simEstado(); sim.palancas = t.checked ? sim.palancas.concat([t.dataset.id]) : sim.palancas.filter(p => p !== t.dataset.id); pintarSim();
     } else if (t.id === 'chk-profundo') S.profundo = t.checked;
@@ -993,8 +1056,17 @@ Abajo está tu lectura actual de la empresa.`;
   document.addEventListener('input', ev => {
     if (ev.target.id === 'sim-b2b') { simEstado().b2b = Number(ev.target.value); pintarSim(); }
   });
+  // glosario: la explicación aparece al pasar el cursor o al llegar con el teclado
+  const verGlosa = (ev, el) => { const k = el.dataset.glosa; if (!GLOSARIO[k]) return; const r = el.getBoundingClientRect(); verTip(ev.clientX != null ? ev : { clientX: r.left, clientY: r.bottom }, '<div class="tt">' + esc(k.replace(/^./, c => c.toUpperCase())) + '</div>' + esc(GLOSARIO[k])); };
+  document.addEventListener('mouseover', ev => { const el = ev.target.closest && ev.target.closest('dfn.glosa'); if (el) verGlosa(ev, el); });
+  document.addEventListener('mouseout', ev => { if (ev.target.closest && ev.target.closest('dfn.glosa')) ocultarTip(); });
+  document.addEventListener('focusin', ev => { const el = ev.target.closest && ev.target.closest('dfn.glosa'); if (el) verGlosa({}, el); });
+  document.addEventListener('focusout', ev => { if (ev.target.closest && ev.target.closest('dfn.glosa')) ocultarTip(); });
   document.addEventListener('toggle', ev => {
-    const d = ev.target; if (!(d instanceof HTMLDetailsElement) || !d.dataset.id) return;
+    const d = ev.target; if (!(d instanceof HTMLDetailsElement)) return;
+    // los pasos abiertos se recuerdan en este navegador
+    if (d.dataset.paso) { if (d.open) S.pasos.add(d.dataset.paso); else S.pasos.delete(d.dataset.paso); LS.set('pasos', [...S.pasos].slice(-80)); return; }
+    if (!d.dataset.id) return;
     if (d.open) S.abiertas.add(d.dataset.id); else S.abiertas.delete(d.dataset.id);
   }, true);
   document.addEventListener('submit', ev => {
@@ -1015,7 +1087,7 @@ Abajo está tu lectura actual de la empresa.`;
      ARRANQUE
      ======================================================================== */
   const COM = window.AeriaComercialUI ? window.AeriaComercialUI({
-    S, $, $$, esc, F, C, M, I: () => I, pintar, verTip, ocultarTip, avisar,
+    S, $, $$, esc, F, C, M, I: () => I, pintar, verTip, ocultarTip, avisar, enSimpleHtml, capa,
     cotizaciones: cotizacionesActuales, guardarCot, borrarCot,
     persistencia: () => S.db ? 'db' : (window.claude ? 'conectando con la base…' : 'se guarda solo en este navegador'),
     preguntar: q => preguntar(q), puedeIA: () => S.ia === 'lista' && !!S.sample,
