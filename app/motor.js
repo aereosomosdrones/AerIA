@@ -60,7 +60,8 @@
     const v = (Math.abs(n) / 1e6).toFixed(dec == null ? 1 : dec).replace('.', ',');
     return (n < 0 ? '−' : '') + '$' + v + 'M';
   }
-  function pct(x, dec) { return (x * 100).toFixed(dec || 0).replace('.', ',') + '%'; }
+  // se redondea antes de poner el signo: así no sale «-0%», y el menos es el mismo de los montos
+  function pct(x, dec) { const f = 10 ** (dec || 0), v = Math.round(x * 100 * f) / f; return (v < 0 ? '−' : '') + Math.abs(v).toFixed(dec || 0).replace('.', ',') + '%'; }
   function fecha(s) { const [y, m, d] = String(s).slice(0, 10).split('-').map(Number); return new Date(y, m - 1, d); }
   function iso(d) {
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -380,42 +381,83 @@
   }
 
   /* ---------- EBITDA: lo que deja el negocio antes de impuestos, intereses y compras de equipos ----------
-     Base caja, mes a mes, con las cartolas: lo que entró por ventas menos los gastos de operar, sin
-     impuestos ni compras de equipos (no son parte del EBITDA). El plan 2027 cuenta el sueldo base del
-     socio como gasto fijo (modelo.sueldo_socio_mes); en el banco sale como transferencias sin clasificar,
-     así que se descuenta (menos lo que ya figure como «Remuneración de socios»). Los retiros del
-     cofundador no son gasto según el plan. Semáforo con las metas del plan: bajo $0 rojo, entre $0 y la
-     meta del mes amarillo, sobre la meta verde; la meta del mes es el resultado anual del plan con la
-     venta meta a empresas, dividido en 12. El año 2027 usa el mismo modelo del plan (resultado2027). */
-  const FUERA_EBITDA = ['imp', 'equip'];
-  function leerEbitda(D, X) {
+     Base caja, mes a mes, con las cartolas:
+       ventas cobradas (sin IVA)
+       − gastos de operar (incluye las cotizaciones del personal; sin el pago de impuestos al SII ni las
+         compras de equipos, que son inversión)
+       − el sueldo base del socio que el plan cuenta como gasto fijo (modelo.sueldo_socio_mes; si el banco
+         ya trae «Remuneración de socios», se usa lo mayor)
+       − lo pagado al cofundador, que el plan también tiene en sus costos fijos aunque para el SII sea retiro.
+     No entran las transferencias y aportes del socio, OTEC ni los traspasos.
+     Semáforo con las metas del plan: bajo $0 rojo; entre $0 y la meta amarillo; sobre la meta verde. La meta
+     del mes es el resultado anual del plan con la venta meta a empresas, dividido en 12 (sin estacionalidad).
+     El semáforo grande mira los últimos meses cerrados juntos (hasta 3), porque la caja de un mes sola sube y
+     baja con los cobros; un mes que la cartola corta a la mitad queda «en curso» y no se pinta. */
+  const ES_COTIZACION = /previred|afp|isapre|fonasa|mutual|achs|cotizaci/i;
+  function leerEbitda(D, X, hoy) {
     const P = X.pasado, M = D.modelo, Fi = D.finanzas;
+    if (!P || !P.meses.length) return null;
     const sueldo = M.sueldo_socio_mes || 0;
     const metaAnio = resultado2027(M, M.b2b_meta_mes).resultado, metaMes = metaAnio / 12;
-    const color = v => v == null ? 'sindato' : v < 0 ? 'urgente' : v < metaMes ? 'ojo' : 'bien';
+    const color = (v, meta) => v == null ? 'sindato' : v < 0 ? 'urgente' : v < meta ? 'ojo' : 'bien';
     const etiqueta = c => (Fi.cats[c] || {}).label || c;
+    const afectas = (Fi.sii || []).filter(x => /afecta/i.test(x.tipo || '') && x.monto > 0);
+    const finMes = ym => iso(new Date(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0));
+    const digitos = r => String(r || '').replace(/[^0-9kK]/g, '').replace(/^0+/, '').toUpperCase();
+    const rutGlosa = d => { const m = /^\s*(\d{8,10}[\dkK]?)\b/.exec(d || ''); return m ? digitos(m[1]) : ''; };
+    const usadas = new Set();
     const meses = P.meses.map(m => {
-      const fuera = FUERA_EBITDA.reduce((a, c) => a + (m.porCat[c] || 0), 0);
-      const gastos = -(m.egresos - fuera);
-      const sueldoSocio = Math.max(0, sueldo + (m.porCat.soc_rem || 0));   // soc_rem viene en negativo
-      const ebitda = m.ingresos - gastos - sueldoSocio;
+      const movs = Fi.movs.filter(x => x.mes === m.mes);
+      // del pago de impuestos, las cotizaciones del personal son costo; lo que va al SII (F29) queda fuera
+      const impSII = -movs.filter(x => x.cat === 'imp' && !ES_COTIZACION.test((x.desc || '') + ' ' + (x.contra || ''))).reduce((t, x) => t + x.monto, 0);
+      const equipos = -(m.porCat.equip || 0);
+      const rem = -(m.porCat.soc_rem || 0);
+      // un cobro que calza exacto con una factura afecta del SII (mismo monto y, si la glosa trae RUT, el mismo RUT)
+      // trae su IVA, que es del SII y no venta; cada factura se usa una sola vez
+      const ivaVentas = movs.filter(x => (x.cat === 'ing_b2b' || x.cat === 'ing_fact') && x.monto > 0).reduce((t, x) => {
+        const f = afectas.find(a => !usadas.has(a) && a.monto === x.monto && (!rutGlosa(x.desc) || rutGlosa(x.desc) === digitos(a.rut)));
+        if (!f) return t;
+        usadas.add(f);
+        return t + x.monto - Math.round(x.monto / 1.19);
+      }, 0);
+      const ingresos = m.ingresos - ivaVentas;
+      const gastos = -m.egresos - impSII - equipos - rem;
+      const sueldoSocio = Math.max(sueldo, rem);
+      const cofundador = Math.max(0, -(m.cofundador || 0));
+      const ebitda = ingresos - gastos - sueldoSocio - cofundador;
       const gastosTop = Object.entries(m.porCat)
-        .filter(([c, v]) => (Fi.cats[c] || {}).grupo === 'Egresos operacionales' && !FUERA_EBITDA.includes(c) && v < 0)
-        .map(([c, v]) => ({ cat: c, label: etiqueta(c), monto: -v })).sort((a, b) => b.monto - a.monto);
-      const empresas = (m.porCat.ing_b2b || 0) + (m.porCat.ing_fact || 0);
-      return { mes: m.mes, ingresos: m.ingresos, empresas, particulares: m.ingresos - empresas, gastos, sueldoSocio, fuera: -fuera, ebitda,
-        margen: m.ingresos > 0 ? ebitda / m.ingresos : null, estado: color(ebitda), gastosTop };
+        .filter(([c, v]) => (Fi.cats[c] || {}).grupo === 'Egresos operacionales' && !['imp', 'equip', 'soc_rem'].includes(c) && v < 0)
+        .map(([c, v]) => ({ cat: c, label: etiqueta(c), monto: -v })).sort((x, y) => y.monto - x.monto);
+      const empresas = (m.porCat.ing_b2b || 0) + (m.porCat.ing_fact || 0) - ivaVentas;
+      const parcial = P.fechaCorte.slice(0, 7) === m.mes && P.fechaCorte < finMes(m.mes);
+      return { mes: m.mes, ingresos, ivaVentas, empresas, particulares: ingresos - empresas, gastos, rem, sueldoSocio, cofundador, impSII, equipos, ebitda,
+        margen: ingresos > 0 ? ebitda / ingresos : null, estado: parcial ? 'sindato' : color(ebitda, metaMes), gastosTop, parcial, hasta: parcial ? P.fechaCorte : finMes(m.mes),
+        comprasSinPago: ((Fi.compras_resumen || {})[m.mes] || {}).sin_pago || 0 };
     });
-    const suma = k => meses.reduce((a, x) => a + x[k], 0);
-    const acumulado = { ingresos: suma('ingresos'), gastos: suma('gastos'), sueldoSocio: suma('sueldoSocio'), ebitda: suma('ebitda') };
-    acumulado.margen = acumulado.ingresos > 0 ? acumulado.ebitda / acumulado.ingresos : null;
-    acumulado.estado = color(meses.length ? acumulado.ebitda / meses.length : null);
-    const ritmo = X.futuro.escenarios.find(e => e.id === 'ultimo');
-    const anio = { resultado: ritmo.resultado, b2b: ritmo.b2b, meta: metaAnio, equilibrio: X.futuro.equilibrio,
-      estado: ritmo.resultado < 0 ? 'urgente' : ritmo.resultado < metaAnio ? 'ojo' : 'bien' };
-    const ultimo = meses[meses.length - 1];
-    return { meses, ultimo, anterior: meses.length > 1 ? meses[meses.length - 2] : null, acumulado, anio, metaMes, metaAnio, sueldo,
-      siguiente: ultimo ? sumarMesesISO(ultimo.mes, 1) : null, cofundador: etiqueta('cof'), fuera: FUERA_EBITDA.map(etiqueta) };
+    const cerrados = meses.filter(m => !m.parcial);
+    const sum = (l, k) => l.reduce((t, x) => t + (x[k] || 0), 0);
+    const juntar = l => {
+      const r = { meses: l.map(x => x.mes), n: l.length };
+      for (const k of ['ingresos', 'empresas', 'gastos', 'sueldoSocio', 'cofundador', 'ebitda', 'comprasSinPago', 'ivaVentas']) r[k] = sum(l, k);
+      r.meta = metaMes * l.length;
+      r.margen = r.ingresos > 0 ? r.ebitda / r.ingresos : null;
+      r.estado = l.length ? color(r.ebitda, r.meta) : 'sindato';
+      return r;
+    };
+    const periodo = juntar(cerrados.slice(-3));
+    const ultimo = cerrados[cerrados.length - 1] || null;
+    const siguiente = ultimo ? sumarMesesISO(ultimo.mes, 1) : null;
+    const prom = X.futuro.escenarios.find(e => e.id === 'promedio'), ritmo = X.futuro.escenarios.find(e => e.id === 'ultimo');
+    const est = r => r.resultado < 0 ? 'urgente' : r.resultado < metaAnio ? 'ojo' : 'bien';
+    const temporada = riesgoPlan(D.plan, /en rojo/i);
+    return {
+      meses, cerrados, ultimo, periodo, metaMes, metaAnio, sueldo, enCurso: meses.find(m => m.parcial) || null,
+      siguiente, siguienteCierra: siguiente ? finMes(siguiente) : null, siguienteCerro: siguiente ? hoy > finMes(siguiente) : false,
+      anio: { promedio: prom ? { resultado: prom.resultado, b2b: prom.b2b, estado: est(prom) } : null, ritmo: ritmo ? { resultado: ritmo.resultado, b2b: ritmo.b2b, estado: est(ritmo) } : null },
+      cofundador: etiqueta('cof'), temporada: temporada ? temporada[0] : '',
+      // hallazgos del informe que pueden cambiar el EBITDA (la lista vive en el modelo): si siguen abiertos, es provisorio
+      salvedades: (M.ebitda_salvedades || []).map(id => (Fi.hallazgos || []).find(h => h.id === id)).filter(Boolean).map(h => h.titulo),
+    };
   }
 
   function leerTablero(M, pasado, cursos, D, com) {
@@ -1180,37 +1222,52 @@
   function explicarEbitda(D, I) {
     const E = I.ebitda, M = D.modelo;
     if (!E || !E.ultimo) return null;
-    const u = E.ultimo, a = E.anterior, mesU = mesNombre(u.mes);
-    const meta = E.metaMes;
-    const frase = 'En ' + mesU + ', el EBITDA fue ' + mm(u.ebitda) + ': ' + (u.ebitda < 0
-      ? 'lo que entró por ventas no alcanzó para pagar los gastos de operar y tu sueldo. Faltaron ' + mm(-u.ebitda) + '.'
-      : u.ebitda < meta ? 'alcanzó para pagar todo, pero quedó bajo la meta del mes (' + mm(meta) + ').'
-      : 'quedó sobre la meta del mes (' + mm(meta) + ').');
+    const R = E.periodo, u = E.ultimo, mesU = mesNombre(u.mes);
+    const cuando = yLista(R.meses.map(mesNombre));
+    const solo = R.n === 1;
+    const frase = (solo ? 'En ' + cuando + ', el EBITDA fue ' : 'En ' + cuando + ', el EBITDA sumó ') + mm(R.ebitda) + ': ' + (R.ebitda < 0
+      ? 'lo que entró por ventas no alcanzó para los gastos de operar y lo que el plan cuenta para los socios. Faltaron ' + mm(-R.ebitda) + '.'
+      : R.ebitda < R.meta ? 'lo que entró por ventas cubrió los gastos de operar y lo de los socios, pero quedó bajo la meta del plan para ' + (solo ? 'el mes' : 'esos meses') + ' (' + mm(R.meta) + ').'
+      : 'quedó sobre la meta del plan para ' + (solo ? 'el mes' : 'esos meses') + ' (' + mm(R.meta) + ').') +
+      // si el último mes solo fue rojo, se dice aunque el período vaya bien
+      (!solo && u.estado === 'urgente' && R.estado !== 'urgente' ? ' Ojo: ' + mesU + ' solo dio ' + mm(u.ebitda) + '.' : '');
+    const delMes = !solo ? 'Mes a mes: ' + yLista(E.cerrados.slice(-R.n).map(m => mesNombre(m.mes) + ' ' + mm(m.ebitda))) + '. La caja de un mes sola sube y baja con los cobros; por eso el semáforo mira los meses juntos.' : null;
     const top = u.gastosTop.slice(0, 3);
-    const falta = Math.max(0, meta - u.ebitda);
     const porque = [
-      'Entraron ' + mm(u.ingresos) + ' por ventas: ' + mm(u.empresas) + ' de empresas e instituciones y ' + mm(u.particulares) + ' de alumnos particulares y Mercado Pago.',
+      'En ' + mesU + ' entraron ' + mm(u.ingresos) + ' por ventas' + (u.ivaVentas ? ' (sin ' + mm(u.ivaVentas) + ' de IVA)' : '') + ': ' + mm(u.empresas) + ' de empresas e instituciones y ' + mm(u.particulares) + ' de alumnos particulares y Mercado Pago.',
       'Operar costó ' + mm(u.gastos) + (top.length ? '. Lo que más pesó: ' + yLista(top.map(g => minus(g.label) + ' (' + mm(g.monto) + ')')) : '') + '.',
-      u.sueldoSocio ? 'Además cuento tu sueldo del plan, ' + mm(u.sueldoSocio) + '. En el banco no sale como sueldo, porque lo que te llevas son transferencias sin clasificar.' : null,
-      a ? 'En ' + mesNombre(a.mes) + ' el EBITDA fue ' + mm(a.ebitda) + ', con ' + mm(a.ingresos) + ' de ventas cobradas. El banco muestra lo cobrado, no lo vendido: un mes con cobros grandes sube y el siguiente puede bajar.' : null,
-      'Los ' + minus(E.cofundador) + ' no se cuentan: el plan los trata como retiros de socio, no como gasto.',
+      u.rem > 0 ? 'Tu sueldo: ' + mm(u.rem) + ' salieron del banco como remuneración de socios; cuento ' + mm(u.sueldoSocio) + ' (el sueldo del plan es ' + mm(E.sueldo) + ').'
+        : u.sueldoSocio ? 'Cuento tu sueldo del plan, ' + mm(u.sueldoSocio) + '. En el banco no sale como sueldo, porque lo que te llevas son transferencias sin clasificar.' : null,
+      u.cofundador ? 'Cuento también lo que se le pagó al cofundador (' + mm(u.cofundador) + '): el plan lo tiene en sus costos fijos, aunque para el SII sea retiro de socio.' : null,
+      delMes,
     ].filter(Boolean);
+    const promE = R.n ? R.empresas / R.n : 0;
+    const faltaVenta = Math.max(0, M.b2b_meta_mes - promE);
     const hacer = [
-      falta > 0 ? { texto: 'Vender ' + mm(falta / M.margen_b2b) + ' más al mes a empresas: de cada venta queda el ' + pct(M.margen_b2b, 1) + ', y eso cubre los ' + mm(falta) + ' que faltan para la meta del mes.' } : null,
+      R.ebitda < R.meta && faltaVenta > 0 ? { texto: 'El plan llega a la meta vendiéndoles ' + mm(M.b2b_meta_mes) + ' al mes a empresas. En ' + cuando + ' cobraste ' + (solo ? '' : 'en promedio ') + mm(promE) + (solo ? '' : ' al mes') + ' de empresas: faltan ' + mm(faltaVenta) + ' al mes.' } : null,
       top.length ? { texto: 'Revisar ' + minus(top[0].label) + ': fue el gasto más grande de ' + mesU + ' (' + mm(top[0].monto) + ').' } : null,
-      { texto: 'Actualizar el informe de finanzas con la cartola de ' + mesNombre(E.siguiente) + ' para ver su EBITDA.' },
+      E.salvedades.length ? { texto: 'Cerrar con tu contador lo que deja el EBITDA en duda: ' + yLista(E.salvedades.map(t => minus(t.replace(/\.$/, '')))) + '.' } : null,
+      E.siguiente ? { texto: E.siguienteCerro ? 'Actualizar el informe de finanzas con la cartola de ' + mesNombre(E.siguiente) + ' para ver su EBITDA.'
+        : 'Cuando cierre ' + mesNombre(E.siguiente) + ' (el ' + fDia(E.siguienteCierra) + '), actualizar el informe de finanzas con su cartola para ver su EBITDA.' } : null,
     ].filter(Boolean);
-    const anio = E.anio;
+    const sinPago = R.comprasSinPago;
+    const provisorio = E.salvedades.length || sinPago ? 'Es provisorio.' + (sinPago ? ' Hay compras de la empresa por ' + mm(sinPago) + ' que no pasaron por estas cuentas: si las pagó Aéreo por otro lado, el EBITDA es menor.' : '') +
+      (E.salvedades.length ? ' Y el informe de finanzas tiene puntos abiertos que pueden cambiarlo: ' + yLista(E.salvedades.map(t => minus(t.replace(/\.$/, '')))) + '.' : '') : '';
+    const pr = E.anio.promedio, rt = E.anio.ritmo;
     return {
-      texto: [frase, 'El EBITDA es lo que deja el negocio antes de impuestos, intereses y compras de equipos: lo que entra por ventas menos lo que cuesta operar, incluido tu sueldo.'],
+      texto: [frase, 'El EBITDA es lo que deja el negocio antes de impuestos, intereses y compras de equipos: lo que entra por ventas menos lo que cuesta operar, incluidos tu sueldo y lo del cofundador.'],
+      provisorio,
       que: [
-        'Es la plata que genera la operación del mes, antes de impuestos, intereses y compras de equipos.',
-        'Aquí se calcula con el banco: lo que entró por ventas, menos los gastos de operar, menos tu sueldo del plan (' + mm(E.sueldo) + ').',
-        'Verde: ' + mm(meta) + ' o más al mes, que es la meta del plan 2027 (' + mm(E.metaAnio) + ' en el año). Amarillo: entre $0 y la meta. Rojo: bajo $0, el mes perdió plata.',
-      ],
+        'Es la plata que genera la operación, antes de impuestos, intereses y compras de equipos.',
+        'Aquí se calcula con el banco: lo que entró por ventas (sin IVA), menos los gastos de operar, menos tu sueldo del plan (' + mm(E.sueldo) + ') y lo pagado al cofundador, que el plan también cuenta como costo.',
+        'Verde: ' + mm(E.metaMes) + ' o más al mes. Es el resultado que el plan 2027 espera con la venta meta a empresas (' + mm(E.metaAnio) + ' en el año), dividido en 12. Amarillo: entre $0 y eso. Rojo: bajo $0, se perdió plata.',
+        E.temporada ? 'El plan avisa que no todos los meses son iguales: «' + E.temporada.replace(/\.$/, '') + '». Por eso el semáforo grande mira hasta 3 meses juntos.' : null,
+        'Margen: el EBITDA dividido por lo que entró por ventas. Un margen de 20% quiere decir que de cada $100 cobrados quedaron $20.',
+      ].filter(Boolean),
       porque, hacer,
-      anioFrase: 'Si 2027 se vende como ' + mesU + ' (' + mm(anio.b2b) + ' al mes a empresas), el EBITDA del año sería ' + mm(anio.resultado) + '. Con la meta del plan sería ' + mm(anio.meta) + '.',
-      siguienteFrase: 'Aún no tengo la cartola de ' + mesNombre(E.siguiente) + '.' + (I.despues && I.despues.ventasRegistro ? ' Lo que ya se ve: tu registro anota ' + mm(I.despues.ventasRegistro) + ' en ventas al ' + fDia(I.despues.hasta) + '.' : ''),
+      anioFrase: pr ? 'Con el modelo del plan, si 2027 se vende como ' + cuando + ' (' + mm(pr.b2b) + ' al mes a empresas), el EBITDA del año sería ' + mm(pr.resultado) + '.' + (rt && R.n > 1 ? ' Si se vende solo como ' + mesU + ' (' + mm(rt.b2b) + ' al mes), sería ' + mm(rt.resultado) + '.' : '') + ' Con la meta del plan, ' + mm(E.metaAnio) + '.' : '',
+      siguienteFrase: E.siguiente ? (E.siguienteCerro ? 'Aún no tengo la cartola de ' + mesNombre(E.siguiente) + '.' : mayus(mesNombre(E.siguiente)) + ' todavía no termina.') +
+        (I.despues && I.despues.ventasRegistro ? ' Lo que ya se ve: tu registro anota ' + mm(I.despues.ventasRegistro - (I.despues.iva || 0)) + ' facturados sin IVA al ' + fDia(I.despues.hasta) + (I.despues.cobradoRegistro ? ', de los que van cobrados ' + mm(I.despues.cobradoRegistro) : '') + '.' : '') : '',
     };
   }
 
@@ -1236,7 +1293,7 @@
     const futuro = leerFuturo(D.modelo, pasado, hoy, comercial);
     const tablero = leerTablero(D.modelo, pasado, cursos, D, comercial);
     const X = { pasado, cursos, lic, cot, porCobrar, cruce, futuro, tablero, comercial, despues };
-    X.ebitda = leerEbitda(D, X);
+    X.ebitda = leerEbitda(D, X, hoy);
     const alertas = construirAlertas(D, X, hoy, ahora);
     const agenda = construirAgenda(D, X, alertas, hoy);
     const viene = construirViene(D, X, hoy);
@@ -1306,9 +1363,9 @@
     if (sit) L.push('- Lectura del plan: ' + [...sit.parrafos, ...sit.listas.flat()].join(' '));
     if (I.ebitda && I.ebitda.ultimo) {
       const E = I.ebitda;
-      L.push('\n## EBITDA (base caja: ventas cobradas − gastos de operar, sin impuestos ni compras de equipos, menos el sueldo base del socio del plan ' + clp(E.sueldo) + '/mes; retiros del cofundador no son gasto)');
-      for (const m of E.meses) L.push('- ' + m.mes + ': ingresos ' + clp(m.ingresos) + ', gastos ' + clp(m.gastos) + ', sueldo socio ' + clp(m.sueldoSocio) + ' → EBITDA ' + clp(m.ebitda) + (m.margen != null ? ' (' + pct(m.margen) + ')' : '') + ' [' + m.estado + '].');
-      L.push('- Semáforo: rojo < $0; amarillo $0 a ' + clp(E.metaMes) + '; verde ≥ ' + clp(E.metaMes) + ' (meta anual del plan ' + clp(E.metaAnio) + ' / 12). 2027 al ritmo del último mes: ' + clp(E.anio.resultado) + '.');
+      L.push('\n## EBITDA (base caja: ventas cobradas sin IVA − gastos de operar, con cotizaciones del personal y sin pagos de impuestos al SII ni compras de equipos − sueldo base del socio del plan ' + clp(E.sueldo) + '/mes − lo pagado al cofundador, que el plan cuenta en sus costos fijos)');
+      for (const m of E.meses) L.push('- ' + m.mes + (m.parcial ? ' (en curso, al ' + m.hasta + ')' : '') + ': ventas ' + clp(m.ingresos) + ', gastos ' + clp(m.gastos) + ', sueldo socio ' + clp(m.sueldoSocio) + ', cofundador ' + clp(m.cofundador) + ' → EBITDA ' + clp(m.ebitda) + (m.margen != null ? ' (' + pct(m.margen) + ')' : '') + ' [' + m.estado + '].');
+      L.push('- Semáforo de los últimos ' + E.periodo.n + ' meses cerrados: EBITDA ' + clp(E.periodo.ebitda) + ' contra una meta de ' + clp(E.periodo.meta) + ' [' + E.periodo.estado + ']. Rojo < $0; amarillo hasta la meta; verde ≥ meta (' + clp(E.metaMes) + '/mes = meta anual del plan ' + clp(E.metaAnio) + ' / 12).' + (E.salvedades.length ? ' Provisorio por: ' + E.salvedades.join('; ') + '.' : ''));
     }
     L.push('\n## ALERTAS ACTIVAS (de AerIA)');
     for (const a of I.alertas) L.push('- [' + a.nivel + '|' + a.foco + '] ' + a.titulo + ' → ' + a.accion);

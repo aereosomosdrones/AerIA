@@ -43,12 +43,15 @@ URL como `url`; nunca crear otra página.
   EBITDA, La plata, Cursos y cobros, Ventas, 2027 y Pregúntale a AerIA (sus ids son
   `mando`, `ebitda`, `pasado`, `presente`, `comercial`, `futuro`, `hablar`).
 - **EBITDA** (`leerEbitda` en `motor.js`, `I.ebitda`): base caja, mes a mes, con las cartolas:
-  ingresos operacionales − egresos operacionales (sin `imp` ni `equip`) − el sueldo base del
-  socio del plan (`sueldo_socio_mes` en `modelo2027.json`, menos lo que ya figure en `soc_rem`).
-  Los pagos al cofundador, las transferencias y aportes del socio, OTEC y los traspasos no
-  entran. Semáforo con las metas del plan: rojo bajo $0, amarillo entre $0 y la meta del mes,
-  verde sobre la meta; la meta del mes es `resultado2027(meta) / 12`. El mes siguiente al
-  corte queda «sin dato» hasta que llegue su cartola.
+  ventas cobradas sin IVA (un cobro que calza con una factura afecta del SII, por monto y RUT,
+  descuenta su 19 %) − gastos de operar (con las cotizaciones del personal; sin los pagos de
+  impuestos al SII ni `equip`) − el sueldo base del socio del plan (`sueldo_socio_mes` en
+  `modelo2027.json`, o lo que diga `soc_rem` si es mayor) − lo pagado al cofundador (el plan lo
+  cuenta en sus costos fijos). No entran las transferencias y aportes del socio, OTEC ni los
+  traspasos. Semáforo con las metas del plan: rojo bajo $0, amarillo hasta la meta, verde sobre
+  ella; la meta del mes es `resultado2027(meta) / 12`. El semáforo grande mira los últimos meses
+  cerrados juntos (hasta 3); un mes que la cartola corta a la mitad queda «en curso». Si los
+  hallazgos listados en `ebitda_salvedades` del modelo siguen abiertos, se muestra como provisorio.
 - Las pruebas usan datos ficticios: el repo es público.
 
 ## Recuperar los datos privados (sesión nueva)
