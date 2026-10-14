@@ -1,7 +1,7 @@
 {
  "fuente": "aereo.cl · datos/cursos-fechas.js y datos/n23-fechas.js (repo aereo-web)",
- "commit": "8d4cc5b 2026-10-08T16:32:37-03:00",
- "extraido": "2026-10-10T16:24:16+00:00",
+ "commit": "332efb5 2026-10-14T15:11:38-03:00",
+ "extraido": "2026-10-14T19:05:55+00:00",
  "precios_web": {
   "nivel1": 149000,
   "nivel23": 189000,
@@ -74,9 +74,9 @@
   {
    "inicio": "2026-10-28",
    "fin": "2026-10-30",
-   "libres": 5,
+   "libres": 0,
    "max": 6,
-   "vendidos": 1,
+   "vendidos": 6,
    "extra": false
   },
   {
