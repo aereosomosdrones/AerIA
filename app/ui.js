@@ -486,15 +486,15 @@
         ${kp('Cupos N2+N3 vendidos', C.resN23.vendidos + ' de ' + C.resN23.cupos, C.resN23.fechas + ' fechas publicadas · ' + F.pct(C.resN23.ocupacion))}
         ${kp('Vendido en fechas próximas', F.mm(C.resN1.vendidoMonto + C.resN23.vendidoMonto), 'A precio de lista actual')}
         ${kp('Por vender', F.mm(C.resN1.libreMonto + C.resN23.libreMonto), (C.resN1.libres + C.resN23.libres) + ' cupos libres')}
-        ${kp('Por cobrar', F.mm(totCobrar), I.porCobrar.length + ' facturas · banco + SII')}
+        ${kp('Por cobrar', F.mm(totCobrar), (() => { const g = k => I.porCobrar.filter(p => p.grupo === k).reduce((a, p) => a + p.saldo, 0); return F.mm(g('vencida')) + ' vencido · ' + F.mm(g('por_vencer')) + ' por vencer · ' + F.mm(g('por_confirmar')) + ' por confirmar'; })())}
       </div>
       <section class="panel"><div class="panel-c"><h2>Cursos publicados en aereo.cl</h2><span class="bajada">Cada punto es un cupo: lleno = vendido. Meses agotados en 2026: ${C.racha.map(m => MES3[m]).join(', ')}.</span></div>
         <div class="meses-cursos">${cursosHtml(C)}</div>
         <p class="nota-panel">Fuente: datos/cursos-fechas.js y datos/n23-fechas.js del repo aereo-web (commit ${esc(D0.cursos.commit || '?')}). Para que AerIA vea una venta nueva, se baja el cupo ahí y se vuelve a armar AerIA.</p></section>
       <div class="grilla g-2">
-        <section class="panel"><div class="panel-c"><h2>Por cobrar</h2><span class="bajada">Según cartolas y SII al ${esc(F.fCorta(I.pasado.fechaCorte))}. Las pendientes de antes del período están por confirmar.</span></div>
+        <section class="panel"><div class="panel-c"><h2>Por cobrar</h2><span class="bajada">Cartolas al ${esc(F.fCorta(I.pasado.fechaCorte))}${D0.finanzas.sii_hasta && D0.finanzas.sii_hasta > D0.finanzas.periodo.hasta ? '; SII y registro interno al ' + esc(F.fCorta(D0.finanzas.sii_hasta)) : ''}. Plazo de pago: ${D0.modelo.plazo_cobro_dias || 30} días.</span></div>
           <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>Cliente</th><th>Factura</th><th class="d">Saldo</th></tr></thead><tbody>
-          ${I.porCobrar.map(p => `<tr><td><div class="c-main">${esc(p.cliente)}</div><div class="c-sub">${esc(p.tipoDeuda)}</div></td><td class="nw">${esc(p.folio)} · ${esc(F.fCorta(p.fecha))}</td><td class="d">${F.clp(p.saldo)}</td></tr>`).join('')}
+          ${I.porCobrar.map(p => `<tr><td><div class="c-main">${esc(p.cliente)}</div><div class="c-sub">${esc(p.tipoDeuda)}</div></td><td class="nw">${esc(p.folio)} · ${esc(F.fCorta(p.fecha))}<div class="c-sub">${p.grupo === 'vencida' ? '<span class="pill critica">vencida</span>' : p.grupo === 'por_vencer' ? 'vence el ' + esc(F.fCorta(p.vence)) : 'por confirmar'}</div></td><td class="d">${F.clp(p.saldo)}</td></tr>`).join('')}
           </tbody><tfoot><tr><td colspan="2" style="font-weight:700">Total</td><td class="d" style="font-weight:700">${F.clp(totCobrar)}</td></tr></tfoot></table></div></div>
           ${I.cruce ? `<p class="nota-panel">Ojo: el plan 2027 decía «${esc(I.cruce.frase)}». Las cartolas muestran: ${esc(I.cruce.estado.map(e => e.cliente + ' ' + e.leido).join('; '))}.</p>` : ''}</section>
         <section class="panel"><div class="panel-c"><h2>Comercial</h2><span class="bajada">${M.dashboardConectado(I.comercial) ? 'Cotizaciones del dashboard en AerIA.' : 'El dashboard aún no está conectado: abajo, lo que reuní de otras fuentes.'}</span>
@@ -651,6 +651,8 @@ Cómo respondes:
 
 Abajo está tu lectura actual de la empresa.`;
 
+  // rango de fechas de una lista del informe (p. ej. «02-06 a 13-10-2026»), para describir las herramientas sin fechas fijas
+  const rangoSII = k => { const f = (D0.finanzas[k] || []).map(x => x.fecha).filter(Boolean).sort(); return f.length ? F.fCorta(f[0]) + ' a ' + F.fCorta(f[f.length - 1]) + ' de ' + f[f.length - 1].slice(0, 4) : 'sin datos'; };
   function herramientas(resp, signal) {
     const Dt = datos();
     const cats = Object.entries(D0.finanzas.cats).map(([k, c]) => k + '=' + c.label).join('; ');
@@ -737,10 +739,10 @@ Abajo está tu lectura actual de la empresa.`;
       { name: 'ver_hallazgo', description: 'Detalle completo y acción de un hallazgo del informe financiero. Ids: ' + D0.finanzas.hallazgos.map(h => h.id).join(', ') + '.',
         inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
         execute: i => { avance('Leyendo el hallazgo…'); const q = F.plano(String(i.id || '')); const h = D0.finanzas.hallazgos.find(x => x.id === i.id || F.plano(x.titulo).includes(q)); if (!h) throw new Error('No existe ese hallazgo'); return h; } },
-      { name: 'facturas_emitidas', description: 'Facturas de venta en el SII (jun–sep 2026) con su estado de cobro y detalle del cruce con el banco. Filtra por texto de cliente o estado.',
+      { name: 'facturas_emitidas', description: 'Facturas de venta en el SII (' + rangoSII('sii') + ') con su estado de cobro y detalle del cruce con el banco y el registro interno. Filtra por texto de cliente o estado.',
         inputSchema: { type: 'object', properties: { cliente: { type: 'string' }, estado: { type: 'string' } } },
         execute: i => { avance('Revisando facturas emitidas…'); return D0.finanzas.sii.filter(s => (!i.cliente || F.plano(s.cliente).includes(F.plano(i.cliente))) && (!i.estado || F.plano(s.estado).includes(F.plano(i.estado)))); } },
-      { name: 'facturas_proveedores', description: 'Registro de compras del SII (facturas de proveedores jun–sep 2026) con estado de pago y medio. Filtra por proveedor o por estado de pago (ej. "sin pago").',
+      { name: 'facturas_proveedores', description: 'Registro de compras del SII (facturas de proveedores, ' + rangoSII('compras') + ') con estado de pago y medio. Filtra por proveedor o por estado de pago (ej. "sin pago").',
         inputSchema: { type: 'object', properties: { proveedor: { type: 'string' }, pago: { type: 'string' } } },
         execute: i => { avance('Revisando facturas de proveedores…'); const r = D0.finanzas.compras.filter(c => (!i.proveedor || F.plano(c.prov).includes(F.plano(i.proveedor))) && (!i.pago || F.plano(c.pago).includes(F.plano(i.pago)))); return { n: r.length, total: r.reduce((a, c) => a + c.monto, 0), facturas: r.slice(0, 40) }; } },
       { name: 'leer_plan_2027', description: 'Devuelve una sección del plan de rentabilidad 2027 con sus párrafos, listas y tablas. Secciones: ' + D0.plan.secciones.map(s => s.titulo).join(' | ') + '.',

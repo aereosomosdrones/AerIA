@@ -416,9 +416,15 @@
     for (const q of ganadas) {
       const s = R.sii.find(x => x.id === q.id);
       q.cobroSII = s && s.como === 'registrada' ? s.cobro : '';
-      q.porCobrar = !!q.factura_folio && (q.cobrada === 'no' || q.cobrada === 'parcial' || ((q.cobrada === '' || q.cobrada === 'desconocido') && q.cobroSII !== 'si'));
+      // un «no» que puso una siembra o una importación cede ante el SII; el que escribió una persona se respeta
+      const ultimoCobro = (q.historial || []).filter(h => !h.deshecha && h.cambios && h.cambios.cobrada).pop();
+      const deCarga = !ultimoCobro || /siembra|importaci|dashboard/i.test(ultimoCobro.por || '');
+      q.cobroDesactualizado = q.cobroSII === 'si' && q.cobrada === 'no' && deCarga;
+      const cobrada = q.cobroDesactualizado ? 'si' : q.cobrada;
+      q.porCobrar = !!q.factura_folio && (cobrada === 'no' || cobrada === 'parcial' || ((cobrada === '' || cobrada === 'desconocido') && q.cobroSII !== 'si'));
     }
     R.ganadas.porCobrar = ganadas.filter(q => q.porCobrar);
+    R.siiSinVenta = siiSinVenta(qs, ctx.sii || [], hoy);
     R.alertas = alertas(R, hoy, ctx);
     R.acciones = acciones(R, hoy);
     R.eventos = eventos(R, hoy);
@@ -466,15 +472,23 @@
     if (!A.size && !B.size) return true;
     return [...A].some(k => B.has(k));
   }
+  // nombre sin la forma jurídica ni lo que va entre paréntesis («Servicios y Consultores SpA (proyecto X)» → «servicios y consultores»)
+  const nombreBase = t => plano(t).replace(/\([^)]*\)/g, ' ').replace(/\b(spa|ltda|limitada|s\.?\s?a|eirl)\b\.?/g, ' ').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
   function parecido(a, b) {
+    if (!mismoTipo(a, b)) return 0;
     const A = new Set(fichas(a)), B = fichas(b);
-    if (!A.size || !B.length || !mismoTipo(a, b)) return 0;
+    // un nombre hecho solo de palabras comunes («Servicios y Consultores SpA») se compara entero
+    if (!A.size || !B.length) { const x = nombreBase(a), y = nombreBase(b); return x && x === y ? 1 : 0; }
     return B.filter(w => A.has(w)).length / Math.max(A.size, B.length);
   }
   // todas las palabras distintivas del nombre más corto están en el otro («Empresa Alfa» ⊂ «Alfa Ingeniería Ambiental SpA»)
   function contenido(a, b) {
+    if (!mismoTipo(a, b)) return false;
     const A = fichas(a), B = fichas(b);
-    if (!A.length || !B.length || !mismoTipo(a, b)) return false;
+    if (!A.length || !B.length) {
+      const x = nombreBase(a), y = nombreBase(b);
+      return !!(x && y && (x === y || (Math.min(x.length, y.length) >= 12 && (x.startsWith(y) || y.startsWith(x)))));
+    }
     const [corto2, largo] = A.length <= B.length ? [A, new Set(B)] : [B, new Set(A)];
     return corto2.every(w => largo.has(w)) && corto2.some(w => w.length >= 5);
   }
@@ -488,7 +502,8 @@
   // cobro según el SII cruzado con el banco y el registro interno («Cobrada…», «Cobro del período, facturado tarde», o «se pagó el…» en el detalle)
   const cobroSII = s => {
     const e = (s && s.estado) || '', d = (s && s.det) || '';
-    if (/^cobrada|^cobro del per|factoring/i.test(e) || /se pag[oó] el \d/i.test(d)) return 'si';
+    // «Posible cobro del período»: el registro interno la da por cobrada; el abono exacto queda por confirmar
+    if (/^cobrada|^cobro del per|^posible cobro|factoring/i.test(e) || /se pag[oó] el \d/i.test(d)) return 'si';
     return /por cobrar|pendiente/i.test(e) ? 'no' : '';
   };
 
@@ -518,6 +533,18 @@
       } else res.push({ id: q.id, folio: '', como: 'sin-factura' });
     }
     return res;
+  }
+
+  /* Facturas del SII a empresas e instituciones de los últimos 120 días que no tienen una
+     venta en Comercial (ni por folio ni sugerida): lo ganado que Comercial no ve. Las de
+     «cobros del período, facturados tarde» también cuentan: son ventas sin registrar. */
+  const rutPJ = r => (Number(rutN(r).slice(0, -1)) || 0) >= 50e6;
+  const nombrePJ = t => /\b(spa|ltda|limitada|s\.a|eirl|e\.i\.r\.l)\b|municipal|ministerio|universidad|servicio|gobierno|corporaci|fundaci|bomber|direcci/i.test(plano(t));
+  function siiSinVenta(qs, sii, hoy) {
+    const usados = new Set(qs.filter(q => q.factura_folio).map(q => folioN(q.factura_folio)));
+    const desde = sumarDias(hoy, -120);
+    return (sii || []).filter(s => !/nota de cr|anulad/i.test((s.tipo || '') + ' ' + (s.estado || '')) && esFecha(s.fecha) && s.fecha >= desde &&
+      !usados.has(folioN(s.folio)) && (s.rut ? rutPJ(s.rut) : nombrePJ(s.cliente)));
   }
 
   /* ---------- alertas (mismo formato que motor.js) ----------
@@ -570,6 +597,13 @@
         detalle: top(sinFac, 6).map(q => { const s = sug(q.id); return nombre(q) + (s ? ': ¿es la factura ' + s.folio + (s.fechaFactura ? ' del ' + s.fechaFactura : '') + '?' : ''); }).join('; ') + '.',
         accion: (nSin ? 'Facturar el día en que termina cada curso o servicio y registrar el folio en Comercial.' : '') +
           (nSug ? (nSin ? ' ' : '') + 'Confirmar el folio de las que calzan con el SII (Comercial → editar).' : ''), fuente: 'Comercial × SII' });
+    }
+    if (R.siiSinVenta && R.siiSinVenta.length) {
+      const l = R.siiSinVenta, m = l.reduce((a, s) => a + (s.monto || 0), 0);
+      A.push({ id: 'com-sii-sin-venta-' + hash(l.map(s => s.folio).sort().join('|')).slice(0, 6), nivel: 'media', foco: 'comercial', monto: m,
+        titulo: l.length + (l.length === 1 ? ' factura a empresa o institución no está' : ' facturas a empresas o instituciones no están') + ' como venta en Comercial',
+        detalle: l.slice().sort((a, b) => b.monto - a.monto).slice(0, 6).map(s => (s.cliente || '?') + ' · factura ' + s.folio + ' del ' + s.fecha + ' · ' + mm(s.monto)).join('; ') + '. Sin ellas, lo ganado y el pronóstico se quedan cortos.',
+        accion: 'Registrarlas como ventas ganadas en Comercial (o pedírselo a AerIA en el chat).', fuente: 'Comercial × SII' });
     }
     // Lo facturado que viene del SII ya lo sigue el informe financiero (Presente → Por cobrar): aquí solo lo registrado en Comercial
     const cobrar = R.ganadas.porCobrar.filter(q => esFecha(q.fecha_cierre) && dias(q.fecha_cierre, hoy) > 30 && !/SII/.test(q.origen || ''));
@@ -918,6 +952,7 @@
     if (ab.length) L.push('- Mayores abiertas: ' + ab.map(q => '[' + q.id + '] ' + (q.cliente || '?') + ' · ' + corto(q.descripcion, 50) + ' · ' + clp(q.monto) + ' · ' + q.estadoLabel + (q.estancada ? ' · estancada' : ' · prob ' + Math.round(q.prob * 100) + '%') + (q.proximo_seguimiento ? ' · seguimiento ' + q.proximo_seguimiento : '') + (q.diasSinContacto != null ? ' · sin contacto ' + q.diasSinContacto + 'd' : '')).join(' | '));
     const gan = R.cotizaciones.filter(q => q.estado === 'ganada').sort((a, b) => String(b.fecha_cierre).localeCompare(String(a.fecha_cierre))).slice(0, 12);
     if (gan.length) L.push('- Últimas ganadas: ' + gan.map(q => (q.fecha_cierre || '?') + ' ' + (q.cliente || '?') + ' ' + clp(q.monto) + (q.monto_tipo === 'con_iva' ? ' con IVA' : '') + ' [' + q.lineaLabel + ']' + (q.factura_folio ? ' f.' + q.factura_folio : ' sin factura')).join(' | '));
+    if (R.siiSinVenta && R.siiSinVenta.length) L.push('- Facturas del SII a empresas sin venta en Comercial (' + R.siiSinVenta.length + '): ' + R.siiSinVenta.map(s => (s.cliente || '?') + ' f.' + s.folio + ' ' + s.fecha + ' ' + clp(s.monto) + ' [' + (s.estado || '') + ']').join('; ') + '.');
     if (R.clientes && R.clientes.length) L.push('- Clientes 2026 sin monto registrado (de cartas, blog y Notion): ' + R.clientes.map(c => c.cliente + (c.detalle ? ' (' + corto(c.detalle, 90) + ')' : '')).join('; ') + '.');
     return L.join('\n');
   }

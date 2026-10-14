@@ -391,5 +391,36 @@ prueba('«Total Chile SpA» con estado es un cliente; la fila «Total» sola no'
   igual(C.mapear(c.filas, c.mapeo).map(q => q.cliente), ['Total Ficticia SpA']);
 });
 
+console.log('Informe contable con facturas posteriores al corte');
+prueba('«Posible cobro del período» no queda por cobrar', () => {
+  const g = [{ folio: 'M1', cliente: 'Empresa Catorce SpA', monto: 150000, estado: 'ganada', factura_folio: '301', fecha_cierre: '2026-08-21', cobrada: '' }];
+  const s = [{ folio: 301, fecha: '2026-10-13', cliente: 'Empresa Catorce SpA', monto: 150000, estado: 'Posible cobro del período', tipo: 'Factura exenta' }];
+  igual(C.analizar(g, HOY, { sii: s }).ganadas.porCobrar.length, 0);
+});
+prueba('nombres hechos solo de palabras comunes se comparan enteros', () => {
+  igual(C.parecido('Servicios y Consultores SpA', 'Servicios y Consultores SpA (proyecto X)'), 1);
+  igual(C.parecido('Servicios y Consultores SpA', 'Sociedad Comercial SpA'), 0);
+});
+prueba('un «no cobrada» de la siembra cede ante el SII; el de una persona se respeta', () => {
+  const sem = C.aplicar(null, { cliente: 'Empresa Quince', monto: 200000, estado: 'ganada', factura_folio: '302', fecha_cierre: '2026-09-22', cobrada: 'no' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion;
+  const man = C.aplicar(C.aplicar(null, { cliente: 'Empresa Dieciséis', monto: 300000, estado: 'ganada', factura_folio: '303', fecha_cierre: '2026-09-22' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion,
+    { cobrada: 'no' }, 'usuario', '', '2026-10-02T10:00:00Z').cotizacion;
+  const s = [{ folio: 302, fecha: '2026-09-22', cliente: 'Empresa Quince', monto: 200000, estado: 'Por cobrar al 30-09', det: 'Según el registro interno, se pagó el 07-10.', tipo: 'Factura exenta' },
+    { folio: 303, fecha: '2026-09-22', cliente: 'Empresa Dieciséis', monto: 300000, estado: 'Cobrada', tipo: 'Factura exenta' }];
+  const R7 = C.analizar([sem, man], HOY, { sii: s });
+  igual(R7.ganadas.porCobrar.map(q => q.cliente), ['Empresa Dieciséis']);
+  cierto(R7.cotizaciones.find(q => q.cliente === 'Empresa Quince').cobroDesactualizado, 'debía marcar el cobro desactualizado');
+});
+prueba('facturas del SII a empresas sin venta en Comercial', () => {
+  const g = [{ folio: 'N1', cliente: 'Empresa Diecisiete SpA', monto: 100000, estado: 'ganada', factura_folio: '310', fecha_cierre: '2026-10-01' }];
+  const s = [{ folio: 310, fecha: '2026-10-01', cliente: 'Empresa Diecisiete SpA', rut: '76.000.001-1', monto: 100000, estado: 'Cobrada', tipo: 'Factura exenta' },
+    { folio: 311, fecha: '2026-10-08', cliente: 'Empresa Dieciocho SpA', rut: '77.000.002-2', monto: 2000000, estado: 'Por cobrar, según el registro', tipo: 'Factura exenta' },
+    { folio: 312, fecha: '2026-10-08', cliente: 'Persona Ficticia', rut: '12.345.678-5', monto: 149000, estado: 'Cobrada', tipo: 'Factura exenta' },
+    { folio: 9, fecha: '2026-10-09', cliente: 'Empresa Dieciocho SpA', rut: '77.000.002-2', monto: 2000000, estado: 'Nota de crédito', tipo: 'Nota de crédito' }];
+  const R8 = C.analizar(g, HOY, { sii: s });
+  igual(R8.siiSinVenta.map(x => x.folio), [311]);
+  cierto(R8.alertas.some(a => a.id.startsWith('com-sii-sin-venta-')), 'falta la alerta');
+});
+
 console.log('\n' + ok + ' pruebas bien, ' + mal + ' con error');
 process.exit(mal ? 1 : 0);

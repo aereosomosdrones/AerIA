@@ -250,7 +250,19 @@
     }
     return m;
   }
-  function leerPorCobrar(F) {
+  /* Por cobrar en tres grupos: «vencida» (pasó el plazo de pago), «por_vencer» (emitida hace
+     menos del plazo) y «por_confirmar» (pendientes de antes del período, saldos de factoring o
+     facturas que el informe dice que podrían cubrir otros pagos). El plazo sale del modelo. */
+  function leerPorCobrar(F, hoy, plazo) {
+    plazo = plazo || 30;
+    const out = leerPorCobrarFilas(F).map(p => {
+      const confirmar = /pendiente desde antes/i.test(p.estado) || /factoring/i.test(p.estado) || /podr[ií]a (respaldar|cubrir|corresponder)/i.test(p.det || '');
+      const vence = sumarDias(p.fecha, plazo);
+      return Object.assign(p, { vence, grupo: confirmar ? 'por_confirmar' : (hoy && vence >= hoy ? 'por_vencer' : 'vencida') });
+    });
+    return out;
+  }
+  function leerPorCobrarFilas(F) {
     const corte = fCorta(F.periodo.hasta);
     const pagadas = cobradasDespues(F);
     const out = [];
@@ -266,6 +278,33 @@
       }
     }
     return out.sort((a, b) => b.saldo - a.saldo);
+  }
+
+  /* Lo que el SII y el registro interno traen después del corte de las cartolas. Las facturas
+     de «cobros del período, facturados tarde» son ventas de antes del corte y van aparte. A
+     empresas e instituciones = RUT de persona jurídica y monto que no es un puñado de cupos a
+     precio de lista (eso es venta de la escuela). */
+  function leerDespues(F, precios) {
+    if (!F || !F.periodo) return null;
+    const corte = F.periodo.hasta;
+    const docs = (F.sii || []).filter(s => s.fecha > corte && !/nota de cr|anulad/i.test((s.tipo || '') + ' ' + (s.estado || '')));
+    if (!docs.length) return null;
+    const tarde = docs.filter(s => /del per[ií]odo/i.test(s.estado || ''));
+    const nuevas = docs.filter(s => !tarde.includes(s));
+    const rutNum = r => Number(String(r || '').replace(/[^0-9kK]/g, '').slice(0, -1)) || 0;
+    const listas = Object.values(precios || F.precios || {}).filter(Boolean);
+    const cupos = m => listas.some(p => m % p === 0 && m / p <= 6);
+    const sinIva = s => /afecta/i.test(s.tipo || '') ? Math.round(s.monto / 1.19) : s.monto;
+    const b2b = nuevas.filter(s => rutNum(s.rut) >= 50e6 && !cupos(s.monto));
+    const P = F.registro_post || {};
+    const cobradasAntes = (P.cobradas_del_periodo || []).reduce((a, x) => a + (x.total || 0), 0);
+    return {
+      hasta: F.sii_hasta || docs.map(s => s.fecha).sort().pop(), n: nuevas.length, monto: nuevas.reduce((a, s) => a + s.monto, 0),
+      b2b: b2b.reduce((a, s) => a + sinIva(s), 0), b2bN: b2b.length,
+      iva: nuevas.filter(s => /afecta/i.test(s.tipo || '')).reduce((a, s) => a + s.monto - sinIva(s), 0),
+      tardias: tarde.length, tardiasMonto: tarde.reduce((a, s) => a + s.monto, 0),
+      ventasRegistro: P.ventas || 0, cobradoRegistro: (P.cobrado || 0), cobradoPeriodo: cobradasAntes, pendienteRegistro: P.pendiente || 0,
+    };
   }
 
   /* Cruce: lo que el plan 2027 da por cobrar contra lo que muestran las cartolas */
@@ -334,6 +373,8 @@
         valor = mm(u.b2b) + ' en ' + mesNombre(u.mes);
         est = estado(u.b2b >= M.b2b_meta_mes, u.b2b < M.b2b_minimo_mes);
         nota = 'Venta a empresas e instituciones según las cartolas (incluye anticipos de factoring).';
+        const dsp = leerDespues(D.finanzas, D.cursos && D.cursos.precios_web);
+        if (dsp && dsp.b2bN) nota += ' Después del corte, al ' + fCorta(dsp.hasta) + ': ' + mm(dsp.b2b) + ' sin IVA facturados a empresas (SII).';
         if (dashboardConectado(com)) {
           const f = com.pronostico.meses[0];
           nota += ' Comercial: ' + f.etiqueta + ' lleva ' + mm(f.ganado) + ' ganado y ' + mm(f.esperado) + ' esperable de lo abierto.';
@@ -383,13 +424,16 @@
     // Caja (la acción sale del hallazgo de liquidez del informe, si lo trae)
     const liquidez = D.finanzas.hallazgos.find(h => h.id === 'liquidez');
     if (pasado.cajaFinal < M.costos_fijos_mes) {
+      const viejo = diasEntre(pasado.fechaCorte, hoy) > 7;
+      const dsp = X.despues;
       add({
         id: 'caja', nivel: 'critica', foco: 'cruce', monto: pasado.cajaFinal,
-        titulo: 'La caja cubre ' + futuro.runwayDias.toFixed(1).replace('.', ',') + ' días hábiles de operación',
+        titulo: (viejo ? 'Al ' + fCorta(pasado.fechaCorte) + ' la caja cubría ' : 'La caja cubre ') + futuro.runwayDias.toFixed(1).replace('.', ',') + ' días hábiles de operación',
         detalle: 'Al ' + fCorta(pasado.fechaCorte) + ' las dos cuentas sumaban ' + clp(pasado.cajaFinal) +
           '. La regla del plan 2027 es nunca bajar de 1 mes de costos fijos (' + mm(M.costos_fijos_mes, 2) + '). ' +
           'En ' + pasado.etiqueta.replace(/ \d{4}$/, '') + ' la operación dejó ' + mm(pasado.flujoOperacional) + ', pero socio, cofundador y Aéreo OTEC restaron ' +
-          mm(-(pasado.socioNeto + pasado.cofundador + pasado.otec)) + ' netos. La caja más baja fue ' + clp(pasado.cajaMin.total) + ' el ' + fCorta(pasado.cajaMin.fecha) + '.',
+          mm(-(pasado.socioNeto + pasado.cofundador + pasado.otec)) + ' netos. La caja más baja fue ' + clp(pasado.cajaMin.total) + ' el ' + fCorta(pasado.cajaMin.fecha) + '.' +
+          (dsp && dsp.cobradoRegistro ? ' Después del corte, el registro interno anota cobros por ' + mm(dsp.cobradoRegistro) + ' al ' + fCorta(dsp.hasta) + ' (sin cartola que lo confirme).' : ''),
         accion: (liquidez && liquidez.accion ? liquidez.accion.replace(/\.?$/, '. ') : 'Fijar un saldo mínimo de operación. ') +
           'Cobrar lo pendiente y hacer preventa de ' + mesNombre(sumarMesesISO(hoy, 1)) + ' y ' + mesNombre(sumarMesesISO(hoy, 2)) + '.',
         fuente: 'Finanzas ' + pasado.etiqueta + ' + Plan 2027 (Tablero mensual)',
@@ -529,12 +573,20 @@
         add({ id: a.id, cuando: 'hoy', titulo: 'Ofertar: ' + a.titulo.replace(/^[^:]+: /, ''), por: a.detalle, foco: 'presente', url: a.url, prioridad: 0 });
       }
     }
-    const totalCobrar = porCobrar.reduce((s, p) => s + p.saldo, 0);
-    if (totalCobrar > 0) {
+    const vencidas = porCobrar.filter(p => p.grupo === 'vencida'), confirmar = porCobrar.filter(p => p.grupo === 'por_confirmar');
+    const suma = l => l.reduce((s, p) => s + p.saldo, 0);
+    if (vencidas.length) {
       add({
         id: 'cobrar', cuando: 'esta semana', foco: 'presente', prioridad: 1,
-        titulo: 'Cobrar ' + mm(totalCobrar) + ' pendientes',
-        por: porCobrar.map(p => p.cliente + ' ' + clp(p.saldo) + ' (f. ' + p.folio + ')').join(' · '),
+        titulo: 'Cobrar ' + mm(suma(vencidas)) + (vencidas.length === 1 ? ' vencido' : ' vencidos'),
+        por: vencidas.map(p => p.cliente + ' ' + clp(p.saldo) + ' (f. ' + p.folio + ', venció el ' + fCorta(p.vence) + ')').join(' · '),
+      });
+    }
+    if (confirmar.length) {
+      add({
+        id: 'cobrar-confirmar', cuando: 'esta semana', foco: 'presente', prioridad: 2,
+        titulo: 'Confirmar si siguen por cobrar ' + mm(suma(confirmar)),
+        por: confirmar.map(p => p.cliente + ' ' + clp(p.saldo) + ' (f. ' + p.folio + ': ' + p.tipoDeuda.replace(/\s*\(por confirmar\)/, '') + ')').join(' · '),
       });
     }
     const primera = t => String(t || '').split(/(?<=\.)\s/)[0].replace(/\.$/, '');
@@ -597,6 +649,8 @@
         ev.push({ fecha: f, tipo: 'impuesto', titulo: 'Vence el F29 de ' + MESES[prev.getMonth()] + ' (IVA, PPM y retenciones)', estado: 'tributario' });
       }
     }
+    for (const p of X.porCobrar.filter(x => x.grupo === 'por_vencer' && x.vence >= hoy && x.vence <= hasta))
+      ev.push({ fecha: p.vence, tipo: 'cobro', titulo: 'Vence la factura ' + p.folio + ' de ' + p.cliente + ' · ' + mm(p.saldo), estado: 'por cobrar' });
     if (X.comercial) for (const e of X.comercial.eventos) if (e.fecha <= hasta) ev.push(e);
     const fijos = [
       { fecha: '2026-12-31', tipo: 'hito', titulo: 'Cierre 2026 · se fijan precios y fechas de 2027', estado: 'hito' },
@@ -609,10 +663,11 @@
 
   /* ---------- BRIEFING: la voz de AerIA ---------- */
   function construirBriefing(D, X, alertas, hoy) {
-    const { pasado, cursos, futuro, cot, lic, porCobrar } = X;
+    const { pasado, cursos, futuro, cot, lic, porCobrar, despues } = X;
     const u = pasado.meses[pasado.meses.length - 1];
     const criticas = alertas.filter(a => a.nivel === 'critica').length;
-    const totalCobrar = porCobrar.reduce((s, p) => s + p.saldo, 0);
+    const totalCobrar = porCobrar.filter(p => p.grupo === 'vencida').reduce((s, p) => s + p.saldo, 0);
+    const porVencer = porCobrar.filter(p => p.grupo === 'por_vencer');
     const capUrg = lic.capacitacion.filter(l => l.horas <= 72);
     const titular = cursos.racha.length >= 4 && pasado.cajaFinal < D.modelo.costos_fijos_mes
       ? 'Aéreo vende bien y se queda sin caja'
@@ -632,6 +687,8 @@
     const f0 = com && com.total ? com.pronostico.meses[0] : null;
     p.push('Hacia 2027 el punto es el B2B. En ' + mesNombre(u.mes) + ' le vendiste ' + mm(u.b2b) + ' a empresas e instituciones; el equilibrio del plan es ' +
       mm(futuro.equilibrio) + ' al mes y la meta ' + mm(D.modelo.b2b_meta_mes) + '. ' +
+      (despues && despues.b2bN ? 'Después del corte, al ' + fCorta(despues.hasta) + ', el SII ya trae ' + mm(despues.b2b) + ' sin IVA facturados a empresas e instituciones (' + despues.b2bN + (despues.b2bN === 1 ? ' factura' : ' facturas') + ', sin contar cupos sueltos)' +
+        (despues.b2b >= D.modelo.b2b_meta_mes ? ', sobre la meta del mes' : despues.b2b >= futuro.equilibrio ? ', sobre el equilibrio' : '') + '. ' : '') +
       (dashboardConectado(com)
         ? 'En Comercial tienes ' + com.abiertas.n + ' cotizaciones abiertas por ' + mm(com.abiertas.monto) + ' (~' + mm(com.abiertas.ponderado) + ' ponderado), en los últimos 90 días ganaste ' + mm(com.ganadas.ultimos90) +
           ' y para ' + f0.etiqueta + ' espero ' + mm(f0.total) + ' de venta B2B'
@@ -641,7 +698,8 @@
     const hoyTxt = [];
     if (!dashboardConectado(com)) hoyTxt.push('conectar el dashboard comercial a AerIA');
     if (capUrg.length) hoyTxt.push('ofertar a ' + capUrg.length + (capUrg.length === 1 ? ' licitación' : ' licitaciones') + ' de capacitación que ' + (capUrg.length === 1 ? 'cierra' : 'cierran') + ' en menos de 72 horas');
-    if (totalCobrar) hoyTxt.push('cobrar ' + mm(totalCobrar));
+    if (totalCobrar) hoyTxt.push('cobrar ' + mm(totalCobrar) + ' vencidos');
+    if (porVencer.length) hoyTxt.push('seguir ' + mm(porVencer.reduce((s, x) => s + x.saldo, 0)) + ' facturados que vencen entre el ' + fCorta(porVencer.map(x => x.vence).sort()[0]) + ' y el ' + fCorta(porVencer.map(x => x.vence).sort().pop()));
     if (hCrit.length) hoyTxt.push('resolver ' + (hCrit.length === 1 ? 'el hallazgo crítico' : 'los ' + hCrit.length + ' hallazgos críticos') + ' de finanzas');
     if (pasado.cajaFinal < D.modelo.costos_fijos_mes) hoyTxt.push('fijar un saldo mínimo de caja');
     p.push('Mi recomendación para esta semana: ' + (hoyTxt.length > 1 ? hoyTxt.slice(0, -1).join(', ') + ' y ' + hoyTxt[hoyTxt.length - 1] : hoyTxt[0]) + '.');
@@ -656,7 +714,8 @@
     const cursos = leerCursos(D.cursos, hoy);
     const lic = leerLicitaciones(D.licitaciones, ahora);
     const cot = leerCotizaciones(D.cotizaciones, hoy);
-    const porCobrar = leerPorCobrar(D.finanzas);
+    const porCobrar = leerPorCobrar(D.finanzas, hoy, D.modelo.plazo_cobro_dias);
+    const despues = leerDespues(D.finanzas, D.cursos && D.cursos.precios_web);
     const cruce = cruzarPorCobrarPlan(D.plan, D.finanzas);
     const equilibrio = resultado2027(D.modelo, 0).equilibrio;
     const conectado = !!(D.comercial && deDashboard(D.comercial.cotizaciones));
@@ -668,7 +727,7 @@
     }) : null;
     const futuro = leerFuturo(D.modelo, pasado, hoy, comercial);
     const tablero = leerTablero(D.modelo, pasado, cursos, D, comercial);
-    const X = { pasado, cursos, lic, cot, porCobrar, cruce, futuro, tablero, comercial };
+    const X = { pasado, cursos, lic, cot, porCobrar, cruce, futuro, tablero, comercial, despues };
     const alertas = construirAlertas(D, X, hoy, ahora);
     const agenda = construirAgenda(D, X, alertas, hoy);
     const viene = construirViene(D, X, hoy);
@@ -714,7 +773,14 @@
     for (const c of cursos.proximos) L.push('  · ' + c.nombre + ' ' + c.inicio + (c.nivel === 'n1' ? '→' + c.fin : '/' + c.fin) + ': ' + c.vendidos + '/' + c.max + ' vendidos' + (c.feriados.length ? ' — FERIADO ' + c.feriados.map(f => f.fecha + ' ' + f.nombre).join(', ') : ''));
     L.push('- Agregado del dashboard comercial (' + (dashboardConectado(I.comercial) ? 'ya reemplazado por el detalle en Comercial' : 'su detalle aún no está en AerIA') + ', corte ' + cot.corte + '): abiertas ' + clp(cot.abiertasMonto) + ', cierre por monto ' + (cot.tasaCierre ? pct(cot.tasaCierre) : '?') + (cot.esperado ? ', esperable ' + clp(cot.esperado) : '') + '. ' + cot.notas.join(' '));
     if (cot.mayores.length) L.push('  Mayores abiertas: ' + cot.mayores.map(i => (i.cliente || '?') + ' ' + clp(i.monto) + ' [' + (i.estado || '') + ']').join('; '));
-    L.push('- Por cobrar (banco + SII): ' + porCobrar.map(p => p.cliente + ' f.' + p.folio + ' ' + clp(p.saldo) + ' — ' + p.tipoDeuda).join('; ') + '.');
+    const GR = { vencida: 'vencida', por_vencer: 'por vencer', por_confirmar: 'por confirmar' };
+    L.push('- Por cobrar (banco + SII + registro interno; plazo de pago ' + (D.modelo.plazo_cobro_dias || 30) + ' días): ' + porCobrar.map(p => p.cliente + ' f.' + p.folio + ' ' + clp(p.saldo) + ' [' + GR[p.grupo] + (p.grupo === 'por_vencer' ? ', vence ' + p.vence : '') + '] — ' + p.tipoDeuda).join('; ') + '.');
+    if (I.despues) {
+      const d = I.despues;
+      L.push('- Después del corte de las cartolas (SII y registro interno al ' + d.hasta + '): ' + d.n + ' facturas nuevas por ' + clp(d.monto) + (d.b2bN ? ', de ellas ' + d.b2bN + ' a empresas e instituciones por ' + clp(d.b2b) + ' sin IVA (sin contar cupos sueltos)' : '') +
+        (d.iva ? '; IVA débito de facturas afectas ' + clp(d.iva) + ' (va al F29 del mes siguiente)' : '') + (d.tardias ? '; además ' + d.tardias + ' facturas emitidas tarde por ventas cobradas en el período (' + clp(d.tardiasMonto) + ')' : '') +
+        (d.ventasRegistro ? '. Registro interno: ventas posteriores ' + clp(d.ventasRegistro) + ', cobrado ' + clp(d.cobradoRegistro) + ', pendiente ' + clp(d.pendienteRegistro) : '') + '.');
+    }
     L.push('- Licitaciones abiertas que calzan (' + lic.relevantes.length + ' de ' + lic.abiertas.length + '): ' + lic.relevantes.map(l => l.encaje_label + ' · ' + l.nombre.slice(0, 80) + ' · ' + l.organismo + ' · ' + (l.monto ? clp(l.monto) : 's/monto') + ' · cierra ' + l.cierre.slice(0, 16)).join(' | '));
     if (Com && I.comercial) L.push('\n' + Com.resumenParaIA(I.comercial));
     L.push('\n## FUTURO · Plan 2027');
