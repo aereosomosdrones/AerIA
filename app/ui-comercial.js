@@ -45,7 +45,7 @@
             <div class="panel-b" style="padding-bottom:10px">${filtrosHtml(Rc)}</div>
             <div class="panel-b ras" id="tabla-cot">${tablaHtml(Rc)}</div></section>
           <div class="lado">
-            <section class="panel"><div class="panel-c"><h2>Hay que mover</h2><span class="bajada">Llamadas pendientes, cierres y facturas por emitir.</span></div>
+            <section class="panel" id="panel-mover"><div class="panel-c"><h2>Hay que mover</h2><span class="bajada">Llamadas pendientes, cierres y facturas por emitir.</span></div>
               <div class="agenda">${accionesHtml(Rc)}</div></section>
           </div>
         </div>

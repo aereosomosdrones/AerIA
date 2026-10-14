@@ -136,15 +136,33 @@
   const glosar = html => html.replace(RX_GLOSA, m => '<dfn class="glosa" tabindex="0" data-glosa="' + esc(Object.keys(GLOSARIO).find(k => k.toLowerCase() === m.toLowerCase()) || m) + '">' + m + '</dfn>');
   const simple = t => glosar(fuerte(t));
   // un tema: la pregunta y la frase siempre a la vista; el porqué, qué hacer y los números se abren en orden
+  const hecho = id => !!(S.agenda[id] && S.agenda[id].hecho);
+  const fechaHecho = ids => { const f = ids.map(id => S.agenda[id] && S.agenda[id].fecha).filter(Boolean).sort().pop(); return f ? F.fCorta(String(f).slice(0, 10)) : ''; };
+  // una acción de «¿Qué hago?»: con casilla si está en la agenda (una fila agrupada marca todos sus ids)
+  function accionHtml(x, pre) {
+    const ids = x.ids || (x.id ? [x.id] : []);
+    const abrir = x.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(x.cotizacion)}">abrir</button>` : '';
+    const ficha = x.url ? ` · <a href="${esc(x.url)}" target="_blank" rel="noopener">ficha ↗</a>` : '';
+    if (x.alerta) {
+      const r = resuelta({ id: x.alerta });
+      return `<li class="${r ? 'hecho' : ''}"><span><span>${simple(x.texto)}</span>${x.por ? '<span class="c-sub">' + esc(x.por) + '</span>' : ''}</span><button class="enlace-btn" type="button" data-accion="resolver" data-id="${esc(x.alerta)}">${r ? 'Volver a mostrar' : 'Ya lo vi'}</button></li>`;
+    }
+    if (!ids.length) return `<li><span><span>${simple(x.texto)}${abrir}${ficha}</span>${x.por ? '<span class="c-sub">' + esc(x.por) + '</span>' : ''}</span></li>`;
+    const h = ids.every(hecho), id = (pre || 'tq-') + ids[0].replace(/[^a-z0-9-]/gi, '');
+    const sub = (x.grupo || []).length ? `<ul class="hacer-sub">${x.grupo.map(g => accionHtml(g, pre + 'g')).join('')}</ul>` : '';
+    return `<li class="con-casilla${h ? ' hecho' : ''}"><input type="checkbox" id="${id}" data-accion="agenda" data-id="${esc(ids.join(','))}"${h ? ' checked' : ''}>
+      <span><span><label for="${id}">${simple(x.texto)}</label>${abrir}${ficha}</span>${x.por ? '<span class="c-sub">' + esc(x.por) + '</span>' : ''}${h ? '<span class="c-sub">Hecho el ' + esc(fechaHecho(ids)) + '</span>' : ''}${sub}</span></li>`;
+  }
+  const irBoton = (d, sec) => d && d.tab ? `<button class="btn sm ${sec ? 'sec ' : ''}ir-detalle" type="button" data-accion="ir-detalle" data-tab-ir="${esc(d.tab)}" data-capa="${esc(d.capa || '')}" data-ancla="${esc(d.ancla || '')}" data-filtro="${esc(d.filtro || '')}">${esc(d.texto || 'Ver el detalle')} →</button>` : '';
   function temaHtml(h) {
     const abierto = n => S.pasos.has(h.id + '-' + n) ? ' open' : '';
     const paso = (n, titulo, cuerpo) => cuerpo ? `<details class="paso-d" data-paso="${esc(h.id + '-' + n)}"${abierto(n)}><summary><span class="n-paso">${n}</span><span>${titulo}</span></summary><div class="paso-cuerpo">${cuerpo}</div></details>` : '';
-    const porque = (h.porque || []).map(p => '<p>' + simple(p) + '</p>').join('');
-    const hacer = (h.hacer || []).length ? '<ul class="hacer-lista">' + h.hacer.map(x => '<li><span>' + simple(x.texto || x) + (x.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(x.cotizacion)}">abrir</button>` : '') + '</span></li>').join('') + '</ul>' : '';
+    const porque = (h.porque || []).concat(h.porqueUI || []).map(p => '<p>' + simple(p) + '</p>').join('');
+    const hacer = (h.hacer || []).length ? '<ul class="hacer-lista">' + h.hacer.map(x => accionHtml(x, 'tq-' + h.id + '-')).join('') + '</ul>' : '<p class="c-sub">Por ahora no hay nada que hacer aquí.</p>';
     const nums = (h.numeros || []).length ? '<dl class="numeros">' + h.numeros.map(x => `<dt>${glosar(esc(x.l))}${x.s ? '<small>' + esc(x.s) + '</small>' : ''}</dt><dd class="${x.cls || ''}">${esc(x.v)}</dd>`).join('') + '</dl>' : '';
-    const ir = h.detalle && h.detalle.tab ? `<button class="btn sm sec ir-detalle" type="button" data-tab="${esc(h.detalle.tab)}">${esc(h.detalle.texto || 'Ver el detalle')} →</button>` : '';
     const fuente = h.fuente ? `<p class="c-sub">De dónde sale: ${esc(h.fuente)}</p>` : '';
-    return `<article class="panel tema" id="tema-${esc(h.id)}">
+    const ir = `<div class="chips">${irBoton(h.detalle)}${irBoton(h.detalle2, true)}</div>`;
+    return `<article class="panel tema" id="tema-${esc(h.id)}" data-semaforo="${esc(h.semaforo)}">
       <div class="tema-cab"><div class="tema-pregunta"><span class="semaforo ${esc(h.semaforo)}">${SEMAFORO_TXT[h.semaforo] || ''}</span><h3>${esc(h.pregunta)}</h3></div>
         <p class="tema-frase">${simple(h.frase)}</p></div>
       <div class="pasos-tema">
@@ -224,6 +242,17 @@
     const v = $('#v-mando');
     const Sm = I.simple;
     const d = new Date(); const dd = d.getDate() + '·' + (d.getMonth() + 1);
+    // lo que el equipo marcó como hecho en la última semana (sale del estado compartido de la agenda)
+    const hace7 = F.sumarDias(I.hoy, -7);
+    const hechas7 = Object.values(S.agenda).filter(x => x && x.hecho && String(x.fecha || '').slice(0, 10) >= hace7).length;
+    const temas = Sm.temas.map(t => t.id === 'equipo' ? Object.assign({}, t, { porqueUI: [hechas7 ? 'En AerIA se marcaron ' + hechas7 + (hechas7 === 1 ? ' tarea' : ' tareas') + ' como hechas en los últimos 7 días.' : 'En los últimos 7 días no se marcó ninguna tarea como hecha en AerIA.'] }) : t);
+    const voz = Sm.resumen.map(p => {
+      let h = simple(p);
+      if (Sm.preocupa) h = h.replace(esc(Sm.preocupa.nombre), `<button class="enlace-btn enlace-voz" type="button" data-accion="ver-tema" data-id="${esc(Sm.preocupa.id)}">${esc(Sm.preocupa.nombre)}</button>`);
+      return '<p>' + h + '</p>';
+    }).join('');
+    const conteo = [['urgente', 'urgente', 'urgentes'], ['ojo', 'para mirar', 'para mirar'], ['bien', 'bien', 'bien']]
+      .map(([k, uno, varios]) => `<button class="chip" type="button" data-accion="ver-semaforo" data-id="${k}"${Sm.conteo[k] ? '' : ' disabled'}><span class="semaforo ${k}">${Sm.conteo[k]}</span> ${Sm.conteo[k] === 1 ? uno : varios}</button>`).join('');
     const n = I.alertas.filter(a => !resuelta(a)).length;
     v.innerHTML = `
       <div class="grilla g-7-5 arriba">
@@ -231,7 +260,8 @@
           <span class="fondo-num" aria-hidden="true">${dd}</span>
           <div class="ceja"><span class="iso chico tinta" aria-hidden="true"></span>AerIA · ${esc(F.fLarga(I.hoy))}</div>
           <h2 class="titular">${titular(Sm.titular)}</h2>
-          <div class="voz">${Sm.resumen.map(p => '<p>' + simple(p) + '</p>').join('')}</div>
+          <div class="voz">${voz}</div>
+          <div class="chips conteo" role="group" aria-label="Preguntas por color">${conteo}</div>
           <form class="pregunta" id="f-pregunta">
             <label class="sr" for="in-pregunta">Pregúntale a AerIA</label>
             <input id="in-pregunta" autocomplete="off" placeholder="Pregúntale lo que quieras sobre Aéreo…">
@@ -244,8 +274,8 @@
           <div class="agenda" id="tareas-hoy">${tareasHtml()}</div>
         </section>
       </div>
-      <div class="panel-c" style="padding:4px 0 0"><h2>Lo importante, en ${Sm.temas.length} preguntas</h2><span class="bajada">Cada respuesta se abre paso a paso: primero el porqué, después qué hacer y al final los números.</span></div>
-      <div class="temas">${Sm.temas.map(temaHtml).join('')}</div>
+      <div class="panel-c" style="padding:4px 0 0"><h2>Lo importante, en ${temas.length} preguntas</h2><span class="bajada">Cada respuesta se abre paso a paso: primero el porqué, después qué hacer y al final los números.</span></div>
+      <div class="temas">${temas.map(temaHtml).join('')}</div>
       ${capa('alertas', 'Todo lo que AerIA revisó', n + ' avisos, del más importante al menos. Cada uno dice de dónde sale y qué hacer.', `
         <section class="panel" aria-label="Avisos">
           <div class="panel-b" style="padding-top:14px;padding-bottom:10px">${chipsAlertas()}</div>
@@ -254,40 +284,26 @@
       ${capa('agenda', 'La lista completa de tareas', I.agenda.length + ' tareas, ordenadas por urgencia.', `<section class="panel"><div class="agenda" id="agenda">${agendaHtml()}</div></section>`)}
       ${capa('viene', 'Lo que viene', 'Los próximos 90 días: cursos, cobros, concursos del Estado, impuestos e hitos del plan.', `<section class="panel"><div class="panel-b ras"><div class="viene" id="viene">${vieneHtml()}</div></div></section>`)}`;
   }
-  // las primeras tareas pendientes, dichas en simple (la lista completa está más abajo).
-  // Las llamadas y las facturas por emitir se agrupan en una sola tarea que se abre.
-  const GRUPOS_TAREA = [
-    { k: 'llamar', re: /^com-seg-/, titulo: n => 'Llamar a ' + n + (n === 1 ? ' cliente que espera respuesta' : ' clientes que esperan respuesta') },
-    { k: 'facturar', re: /^com-fac-/, titulo: n => 'Facturar ' + n + (n === 1 ? ' venta ganada o anotar su factura' : ' ventas ganadas o anotar sus facturas') },
-  ];
-  function tareaItem(t, pre) {
-    const h = S.agenda[t.id] && S.agenda[t.id].hecho, id = (pre || 'th-') + t.id.replace(/[^a-z0-9-]/gi, '');
-    return `<div class="ag-item${h ? ' hecho' : ''}${t.cuando === 'hoy' && !pre ? ' hoy' : ''}">
-      <input type="checkbox" id="${id}" data-accion="agenda" data-id="${esc(t.id)}"${h ? ' checked' : ''}>
-      <label for="${id}">${esc(t.texto)}</label>
-      <span class="por">${[t.cuando === 'hoy' || pre ? '' : esc(mayus1(t.cuando)), t.por ? fuerte(t.por) : ''].filter(Boolean).join(' · ')}${t.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(t.cotizacion)}">ver cotización</button>` : ''}${t.url ? ` · <a href="${esc(t.url)}" target="_blank" rel="noopener">ficha ↗</a>` : ''}</span></div>`;
-  }
+  // «Lo que tienes que hacer»: las filas que el motor eligió (una por pregunta que preocupa, después el resto)
+  const TEMA_TXT = { plata: 'Plata', cobros: 'Cobros', ventas: 'Ventas', equipo: 'Equipo', cursos: 'Cursos' };
   function tareasHtml() {
-    const hecho = id => S.agenda[id] && S.agenda[id].hecho;
-    const filas = [], vistos = new Set();
-    for (const t of I.simple.tareas) {
-      const g = GRUPOS_TAREA.find(x => x.re.test(t.id));
-      if (!g) { if (!hecho(t.id) || String(S.agenda[t.id].fecha || '').slice(0, 10) === I.hoy) filas.push({ t }); continue; }
-      if (vistos.has(g.k)) continue;
-      vistos.add(g.k);
-      const miembros = I.simple.tareas.filter(x => g.re.test(x.id));
-      const pend = miembros.filter(x => !hecho(x.id));
-      if (pend.length) filas.push({ g, miembros, pend, cuando: miembros.some(x => x.cuando === 'hoy') ? 'hoy' : miembros[0].cuando });
-    }
-    const pendientes = filas.filter(f => f.g || !hecho(f.t.id));
-    const ver = filas.slice(0, 7);
-    if (!pendientes.length) return '<p class="panel-b mudo">No hay tareas pendientes. Buen trabajo.</p>';
+    const filas = I.simple.tareas.filter(f => f.principal && (!f.ids.every(hecho) || f.ids.some(id => String((S.agenda[id] || {}).fecha || '').slice(0, 10) === I.hoy)));
+    const ver = filas.slice(0, 6);
+    const resto = I.simple.tareas.filter(f => !f.ids.every(hecho)).length - ver.filter(f => !f.ids.every(hecho)).length;
+    if (!ver.length) return '<p class="panel-b mudo">No hay tareas pendientes. Buen trabajo.</p>';
     return ver.map(f => {
-      if (!f.g) return tareaItem(f.t);
-      return `<div class="ag-item grupo${f.cuando === 'hoy' ? ' hoy' : ''}"><span class="ag-n" aria-hidden="true">${f.pend.length}</span>
-        <details data-paso="tareas-${f.g.k}"${S.pasos.has('tareas-' + f.g.k) ? ' open' : ''}><summary>${esc(f.g.titulo(f.pend.length))}<span class="por">${f.cuando === 'hoy' ? '' : esc(mayus1(f.cuando)) + ' · '}Toca para ver a quién y marcar lo que hagas.</span></summary>
-          <div class="ag-sub">${f.miembros.map(t => tareaItem(t, 'tg-')).join('')}</div></details></div>`;
-    }).join('') + (filas.length > ver.length ? `<div class="pie-lista"><span class="mudo">Y ${filas.length - ver.length} más en «La lista completa de tareas», abajo.</span></div>` : '');
+      const h = f.ids.every(hecho), id = 'th-' + f.ids[0].replace(/[^a-z0-9-]/gi, '');
+      const meta = `<span class="por"><span class="pill foco">${esc(TEMA_TXT[f.tema] || '')}</span> ${f.cuando === 'hoy' ? '' : esc(mayus1(f.cuando)) + ' · '}${esc(f.por || '')}${f.cotizacion ? ` · <button class="enlace-btn" type="button" data-com="abrir" data-id="${esc(f.cotizacion)}">ver cotización</button>` : ''}${f.url ? ` · <a href="${esc(f.url)}" target="_blank" rel="noopener">ficha ↗</a>` : ''} · <button class="enlace-btn" type="button" data-accion="ver-tema" data-id="${esc(f.tema)}" data-paso-n="1">¿Por qué?</button></span>`;
+      if (f.sub && f.sub.length > 1) {
+        const pend = f.ids.filter(x => !hecho(x)).length;
+        return `<div class="ag-item grupo${f.cuando === 'hoy' ? ' hoy' : ''}${h ? ' hecho' : ''}"><span class="ag-n" aria-hidden="true">${pend || '✓'}</span>
+          <details data-paso="tareas-${esc(f.ids[0])}"${S.pasos.has('tareas-' + f.ids[0]) ? ' open' : ''}><summary>${esc(f.texto)}${meta}</summary>
+            <ul class="hacer-lista hacer-sub">${f.sub.map(x => accionHtml(x, 'tg-')).join('')}</ul></details></div>`;
+      }
+      return `<div class="ag-item${h ? ' hecho' : ''}${f.cuando === 'hoy' ? ' hoy' : ''}">
+        <input type="checkbox" id="${id}" data-accion="agenda" data-id="${esc(f.ids.join(','))}"${h ? ' checked' : ''}>
+        <label for="${id}">${esc(f.texto)}</label>${meta}</div>`;
+    }).join('') + (resto > 0 ? `<div class="pie-lista"><span class="mudo">Y ${resto} más en «La lista completa de tareas», abajo.</span></div>` : '');
   }
   const mayus1 = t => String(t || '').replace(/^./, c => c.toUpperCase());
 
@@ -1028,6 +1044,23 @@ Abajo está tu lectura actual de la empresa.`;
       S.alertas = Object.assign({}, S.alertas); if (r) delete S.alertas[id]; else S.alertas[id] = { estado: 'resuelta', fecha: new Date().toISOString() };
       S.abiertas.delete(id); pintar(); guardar('alertas');
     } else if (a === 'preguntar') preguntar(t.dataset.q);
+    else if (a === 'ir-detalle') {
+      // «Ver los números»: abre la sección exacta de la pestaña y baja hasta ella
+      const capa = t.dataset.capa, ancla = t.dataset.ancla, filtro = t.dataset.filtro;
+      if (capa) { S.pasos.add('capa-' + capa); LS.set('pasos', [...S.pasos].slice(-80)); }
+      if (filtro && S.comUI) S.comUI.filtro = filtro;
+      if (t.dataset.tabIr === S.tab) pintar(); else irA(t.dataset.tabIr, false);
+      const el = ancla ? document.getElementById(ancla) : capa ? $('[data-paso="capa-' + capa + '"]') : null;
+      if (el) el.scrollIntoView({ block: 'start' }); else window.scrollTo(0, 0);
+    } else if (a === 'ver-tema' || a === 'ver-semaforo') {
+      // baja a una pregunta (o a la primera de un color) y abre el paso pedido
+      const el = a === 'ver-tema' ? $('#tema-' + id) : $('.tema[data-semaforo="' + id + '"]');
+      if (el) {
+        const n = t.dataset.pasoN || (a === 'ver-tema' ? '2' : '');
+        if (n) { const d = el.querySelector('details[data-paso$="-' + n + '"]'); if (d && !d.open) d.open = true; }
+        el.scrollIntoView({ block: 'start' });
+      }
+    }
     else if (a === 'preguntar-alerta') {
       const al = I.alertas.find(x => x.id === id);
       if (al) preguntar('Explícame la alerta «' + al.titulo + '»: qué significa para Aéreo, qué tan grave es y qué hago exactamente, paso a paso.');
@@ -1044,10 +1077,18 @@ Abajo está tu lectura actual de la empresa.`;
   document.addEventListener('change', async ev => {
     const t = ev.target;
     if (t.dataset.accion === 'agenda') {
+      // una casilla puede marcar varias tareas (las llamadas a un cliente, un grupo de facturas)
       S.agenda = Object.assign({}, S.agenda);
-      if (t.checked) S.agenda[t.dataset.id] = { hecho: true, fecha: new Date().toISOString() }; else delete S.agenda[t.dataset.id];
-      if ($('#agenda')) $('#agenda').innerHTML = agendaHtml();
-      if ($('#tareas-hoy')) $('#tareas-hoy').innerHTML = tareasHtml();
+      const ids = t.dataset.id.split(',').filter(Boolean), ahora = new Date().toISOString();
+      for (const id of ids) { if (t.checked) S.agenda[id] = { hecho: true, fecha: ahora }; else delete S.agenda[id]; }
+      // las otras casillas de las mismas tareas (en la portada, en cada pregunta y en la lista) se ponen al día sin repintar todo
+      for (const c of $$('input[data-accion="agenda"]')) {
+        if (c === t) continue;
+        const cid = c.dataset.id.split(',');
+        if (cid.some(x => ids.includes(x))) { c.checked = cid.every(hecho); const li = c.closest('.ag-item, li'); if (li) li.classList.toggle('hecho', c.checked); }
+      }
+      const li = t.closest('.ag-item, li'); if (li) li.classList.toggle('hecho', t.checked);
+      if ($('#agenda') && !$('#agenda').contains(t)) $('#agenda').innerHTML = agendaHtml();
       guardar('agenda');
     } else if (t.dataset.accion === 'sim-palanca') {
       const sim = simEstado(); sim.palancas = t.checked ? sim.palancas.concat([t.dataset.id]) : sim.palancas.filter(p => p !== t.dataset.id); pintarSim();

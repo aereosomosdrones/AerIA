@@ -35,8 +35,11 @@ URL como `url`; nunca crear otra página.
   «ventas a empresas», «lo probable», «lo que dejó la operación», «lo mínimo para no perder
   plata»). El detalle nunca se borra: se esconde detrás de pasos que se abren. Los textos en
   simple salen de `explicar()` en `motor.js` (`I.simple`: titular, resumen, temas, tareas y el
-  «En simple» de cada pestaña); cada tema es una pregunta con semáforo (bien, ojo, urgente)
-  que se abre en «¿Por qué?» → «¿Qué hago?» → «Ver los números». Las pestañas se llaman Hoy,
+  «En simple» de cada pestaña). Hoy tiene cinco preguntas fijas (`plata`, `cobros`, `ventas`,
+  `equipo`, `cursos`), cada una con semáforo (bien, ojo, urgente) que se abre en «¿Por qué?» →
+  «¿Qué hago?» (con casillas que marcan la agenda; una fila agrupada marca todos sus ids) →
+  «Ver los números» (lleva a la capa exacta de su pestaña). «Lo que tienes que hacer» muestra
+  primero una tarea por pregunta que preocupa y agrupa llamadas y facturas. Las pestañas se llaman Hoy,
   La plata, Cursos y cobros, Ventas, 2027 y Pregúntale a AerIA (sus ids siguen siendo
   `mando`, `pasado`, `presente`, `comercial`, `futuro`, `hablar`).
 - Las pruebas usan datos ficticios: el repo es público.

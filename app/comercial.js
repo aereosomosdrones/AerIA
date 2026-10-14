@@ -425,6 +425,7 @@
     }
     R.ganadas.porCobrar = ganadas.filter(q => q.porCobrar);
     R.siiSinVenta = siiSinVenta(qs, ctx.sii || [], hoy);
+    R.ganadas.porFacturar = porFacturar(R, hoy);   // la misma lista que usa la alerta «ventas ganadas sin factura»
     R.alertas = alertas(R, hoy, ctx);
     R.acciones = acciones(R, hoy);
     R.eventos = eventos(R, hoy);
@@ -654,7 +655,8 @@
         por: q.estadoLabel + (q.diasSinContacto != null ? ' · último contacto hace ' + q.diasSinContacto + ' días' : '') + (q.proximo_seguimiento ? ' · tocaba el ' + q.proximo_seguimiento : ''),
         cotizacion: q.id });
     }
-    for (const q of porFacturar(R, hoy).slice(0, 4)) {
+    // las ventas más grandes primero: así lo que más plata trae no queda fuera de las cuatro
+    for (const q of porFacturar(R, hoy).slice().sort((a, b) => (b.valor || 0) - (a.valor || 0)).slice(0, 4)) {
       const sug = R.sii.find(s => s.id === q.id && s.como === 'sugerida');
       out.push({ id: 'com-fac-' + q.id, cuando: 'esta semana', foco: 'comercial', prioridad: 1,
         titulo: sug ? 'Confirmar si la factura ' + sug.folio + ' es de la venta a ' + q.cliente : 'Facturar la venta a ' + (q.cliente || 'cliente') + ' por ' + montoTxt(q),

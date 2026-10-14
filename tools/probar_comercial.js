@@ -470,5 +470,14 @@ prueba('sin folio: la misma cotización del dashboard con otro monto no se dupli
   igual(p2.ambiguas.length, 1);
 });
 
+prueba('facturar: primero las ventas más grandes, con la misma lista de la alerta', () => {
+  const g = [70000, 860000, 410000, 2650000, 1170000].map((m, i) => ({ folio: 'P' + i, cliente: 'Empresa Factura ' + i, monto: m, estado: 'ganada', fecha_cierre: '2026-10-01' }));
+  const R9 = C.analizar(g, HOY, {});
+  igual(R9.acciones.filter(a => a.id.startsWith('com-fac-')).map(a => a.id), ['com-fac-f-p3', 'com-fac-f-p4', 'com-fac-f-p1', 'com-fac-f-p2']);
+  igual(R9.ganadas.porFacturar.length, 5);
+  const al = R9.alertas.find(a => a.id.startsWith('com-facturar-'));
+  cierto(al && /^5 ventas/.test(al.titulo), 'la alerta debía contar las mismas 5');
+});
+
 console.log('\n' + ok + ' pruebas bien, ' + mal + ' con error');
 process.exit(mal ? 1 : 0);

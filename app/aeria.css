@@ -546,3 +546,18 @@ dfn.glosa:focus-visible { outline: 2px solid var(--foco); outline-offset: 2px; }
 .ag-item.grupo.hoy details > summary::before { content: "HOY"; align-self: flex-start; font-family: var(--mn); font-size: 10px; letter-spacing: .1em; background: var(--amarillo); color: var(--en-amarillo); padding: 1px 5px; margin-bottom: 2px; }
 .ag-sub { margin-top: 6px; border-left: 2px solid var(--linea); }
 .ag-sub .ag-item { padding-left: 10px; padding-right: 0; border-top: 0; }
+.hacer-lista li.con-casilla { grid-template-columns: 18px minmax(0, 1fr); }
+.hacer-lista li.con-casilla::before { content: none; }
+.hacer-lista li.con-casilla input { width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--negro); }
+.hacer-lista li > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.hacer-lista li > span > label { cursor: pointer; }
+.hacer-lista li.hecho label, .hacer-lista li.hecho > span:first-child { text-decoration: line-through; color: var(--tinta-3); }
+.hacer-lista li:not(.con-casilla) { grid-template-columns: 18px minmax(0, 1fr) auto; }
+.hacer-sub { list-style: none; padding: 6px 0 0 10px; margin: 4px 0 0; border-left: 2px solid var(--linea); display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.hacer-sub li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; }
+.enlace-voz { font-size: inherit; font-weight: 500; }
+.conteo .chip { display: inline-flex; align-items: center; gap: 6px; }
+.conteo .chip[disabled] { opacity: .5; cursor: default; }
+.conteo .semaforo { padding: 1px 7px 1px 6px; }
+.ag-item .por .pill.foco { padding: 0 5px; font-size: 10px; }
+.ag-item.grupo.hecho details > summary { text-decoration: line-through; color: var(--tinta-3); }
