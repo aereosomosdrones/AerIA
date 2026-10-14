@@ -726,7 +726,7 @@
     [/\b(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic) \d{2}\b/g, m => MESES[MES3.indexOf(m.slice(0, 3))]],
   ];
   const sinJerga = t => PALABRAS.reduce((x, [re, por]) => x.replace(re, por), String(t || ''));
-  // «MUNICIPALIDAD DE MULCHÉN» → «Municipalidad de Mulchén»; lo que ya trae minúsculas queda igual
+  // «MUNICIPALIDAD DE VILLA FICTICIA» → «Municipalidad de Villa Ficticia»; lo que ya trae minúsculas queda igual
   const CHICAS = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y', 'e', 'en', 'para', 'por', 'a']);
   const nombrePropio = t => /[a-záéíóúñ]/.test(String(t || '')) ? String(t || '') : String(t || '').toLowerCase()
     .replace(/[^\s·\-/]+/g, (w, i) => (i > 0 && CHICAS.has(w)) ? w : w.replace(/^./, c => c.toUpperCase()));
