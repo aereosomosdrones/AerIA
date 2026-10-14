@@ -422,5 +422,53 @@ prueba('facturas del SII a empresas sin venta en Comercial', () => {
   cierto(R8.alertas.some(a => a.id.startsWith('com-sii-sin-venta-')), 'falta la alerta');
 });
 
+console.log('Sincronización con el dashboard');
+prueba('tablas dentro del texto de la página: solo la tabla con encabezado', () => {
+  const texto = 'Dashboard\nTotal abierto\t$9.000.000\tKPI\n\nN°\tCliente\tMonto\tEstado\n' +
+    'D-1\tEmpresa Ficticia A\t1.000.000\tEnviada\nN°\tCliente\tMonto\tEstado\nD-2\tEmpresa Ficticia B\t2.000.000\tGanada\n' +
+    'Pie de página sin tabulador\nCliente\tMotivo\tFecha\nEmpresa Ficticia C\tPrecio\t01/09/2026\n';
+  const t = C.tablasDeTexto(texto);
+  cierto(t.length >= 1, 'sin tablas');
+  igual(t[0].filas.map(f => f['Cliente']), ['Empresa Ficticia A', 'Empresa Ficticia B']);
+  cierto(!t.some(x => x.filas.some(f => /\$9\.000\.000/.test(JSON.stringify(f)))), 'leyó los KPI como cotización');
+});
+prueba('lectura sospechosa: clientes que no son clientes y montos que saltan', () => {
+  const ex = [C.aplicar(null, { folio: 'D-9', cliente: 'Empresa Ficticia D', monto: 1000000, estado: 'enviada' }, 'dashboard', '', '2026-10-01T10:00:00Z').cotizacion];
+  const nuevas = C.mapear([{ 'N°': 'D-9', Cliente: 'Empresa Ficticia D', Monto: '100', Estado: 'Enviada' }, { 'N°': 'D-10', Cliente: 'Cliente', Monto: '1.000.000', Estado: 'Enviada' }],
+    { folio: 'N°', cliente: 'Cliente', monto: 'Monto', estado: 'Estado' }, 'dashboard');
+  const plan = C.planImportacion(nuevas, ex, { respetarEdiciones: true, mismaFuente: true });
+  const a = C.anomalias(nuevas, plan, ['N°', 'Cliente', 'Monto', 'Estado']);
+  cierto(a.some(x => /no parece un cliente/.test(x)), 'faltó el encabezado leído como cliente');
+  cierto(a.some(x => /el monto pasaría/.test(x)), 'faltó el salto de monto');
+});
+prueba('la sincronización no pisa lo editado en AerIA ni reabre una cerrada', () => {
+  let q = C.aplicar(null, { folio: 'D-20', cliente: 'Empresa Ficticia E', monto: 1370000, estado: 'enviada', proximo_seguimiento: '2026-10-05' }, 'dashboard', '', '2026-10-01T10:00:00Z').cotizacion;
+  q = C.aplicar(q, { proximo_seguimiento: '2026-10-20' }, 'usuario', '', '2026-10-02T10:00:00Z').cotizacion;
+  let g = C.aplicar(null, { folio: 'D-21', cliente: 'Empresa Ficticia F', monto: 800000, estado: 'enviada' }, 'dashboard', '', '2026-10-01T10:00:00Z').cotizacion;
+  g = C.aplicar(g, { estado: 'ganada', fecha_cierre: '2026-10-03' }, 'chat', '', '2026-10-03T10:00:00Z').cotizacion;
+  const nuevas = C.mapear([{ 'N°': 'D-20', Cliente: 'Empresa Ficticia E', Monto: '1.370.000', Estado: 'En negociación', Seguimiento: '06/10/2026' },
+    { 'N°': 'D-21', Cliente: 'Empresa Ficticia F', Monto: '800.000', Estado: 'Enviada', Seguimiento: '' }],
+    { folio: 'N°', cliente: 'Cliente', monto: 'Monto', estado: 'Estado', proximo_seguimiento: 'Seguimiento' }, 'dashboard');
+  const p = C.planImportacion(nuevas, [q, g], { respetarEdiciones: true });
+  const u = p.actualizar.find(x => x.id === q.id);
+  igual(u && u.cambios.estado, 'negociacion');
+  cierto(!('proximo_seguimiento' in u.cambios), 'pisó el seguimiento editado');
+  igual(p.conflictos.map(c => c.campo + ':' + c.motivo).sort(), ['estado:reabre una cerrada', 'proximo_seguimiento:editado en AerIA']);
+  cierto(!p.actualizar.some(x => x.id === g.id), 'reabrió la ganada');
+  const sinRegla = C.planImportacion(nuevas, [q, g]);
+  cierto(sinRegla.actualizar.some(x => x.id === g.id), 'el importador manual sí propone el cambio');
+});
+prueba('sin folio: la misma cotización del dashboard con otro monto no se duplica', () => {
+  const e = C.aplicar(null, { cliente: 'Empresa Ficticia G', descripcion: 'Curso cerrado 4 personas', monto: 900000, estado: 'enviada', fecha_cotizacion: '2026-10-02' }, 'dashboard', '', '2026-10-02T10:00:00Z').cotizacion;
+  e.origen = 'dashboard';
+  const n = C.mapear([{ Cliente: 'Empresa Ficticia G', Detalle: 'Curso cerrado 4 personas', Monto: '1.640.000', Estado: 'Enviada', Fecha: '02/10/2026' }],
+    { cliente: 'Cliente', descripcion: 'Detalle', monto: 'Monto', estado: 'Estado', fecha_cotizacion: 'Fecha' }, 'dashboard');
+  const p = C.planImportacion(n, [e], { mismaFuente: true });
+  igual(p.crear.length, 0); igual(p.actualizar[0].cambios.monto, 1640000);
+  const e2 = Object.assign({}, e, { id: e.id + '-b' });
+  const p2 = C.planImportacion(n, [e, e2], { mismaFuente: true });
+  igual(p2.ambiguas.length, 1);
+});
+
 console.log('\n' + ok + ' pruebas bien, ' + mal + ' con error');
 process.exit(mal ? 1 : 0);

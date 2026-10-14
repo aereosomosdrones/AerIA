@@ -92,10 +92,14 @@ usuario (`localhost`), que la nube no alcanza. Cuando AerIA se abre en la app de
 escritorio de Claude, la página usa el navegador integrado de la app (capacidad `mcp`,
 servidor `host:claude_browser`) para abrir el dashboard, leer su texto y convertirlo en
 filas (directo si viene como tabla, o con Claude si no). Lo importa con el mismo plan del
-importador, marca cada cambio con la sincronización y se puede deshacer entera. Más de
-150 cambios de una vez quedan para revisar en el importador. En el navegador web, sin
-la app, sigue el marcador «AerIA · Extraer». Corre en la página (así las
-cuentas regresivas se recalculan cada día) y en node para probarlo.
+importador, marca cada cambio con la sincronización y se puede deshacer entera. Lo que
+se editó en AerIA (a mano o con el chat) no se pisa y una cotización cerrada no vuelve
+a abierta sola: quedan como conflictos a la vista. Si la lectura se ve rara (un cliente
+que parece encabezado, un monto que salta más de la mitad, filas que Claude devolvió y
+no están en la página) o hay más de 150 cambios, no escribe nada y deja todo para
+revisar en el importador. En el navegador web, sin la app, sigue el marcador
+«AerIA · Extraer». Corre en la página (así las cuentas regresivas se recalculan cada
+día) y en node para probarlo.
 
 ## Privacidad
 

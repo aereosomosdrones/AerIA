@@ -906,7 +906,17 @@
       const e = candidatoParecido(n, existentes, tomadas);
       if (e) { tomadas.add(e.id); par.set(n, { e, como: 'parecida' }); }
     }
-    const crear = [], actualizar = [], parecidas = [];
+    // 3) sincronización: una fila sin folio que no calzó puede ser la misma cotización del dashboard
+    //    con el monto cambiado (mismo cliente, misma fecha y misma descripción). Con más de una candidata, se revisa a mano.
+    const ambiguas = [];
+    if (opciones && opciones.mismaFuente) for (const n of filas) {
+      if (par.has(n) || n.folio) continue;
+      const cands = existentes.filter(e => !tomadas.has(e.id) && !e.folio && vieneDe(e, 'dashboard') && esFecha(n.fecha_cotizacion) && e.fecha_cotizacion === n.fecha_cotizacion &&
+        plano(e.descripcion).slice(0, 40) === plano(n.descripcion).slice(0, 40) && Math.max(parecido(e.cliente, n.cliente), contenido(e.cliente, n.cliente) ? 0.8 : 0) >= 0.8);
+      if (cands.length === 1) { tomadas.add(cands[0].id); par.set(n, { e: cands[0], como: 'exacta' }); }
+      else if (cands.length > 1) ambiguas.push({ nueva: n, candidatas: cands.map(c => c.id) });
+    }
+    const crear = [], actualizar = [], parecidas = [], conflictos = [];
     let iguales = 0;
     const ocupados = new Set(existentes.map(q => q.id));
     for (const n of filas) {
@@ -926,11 +936,78 @@
         if (como === 'parecida' && ['cliente', 'monto', 'monto_tipo', 'rut'].includes(c) && (c === 'monto' ? e.monto > 0 : c === 'monto_tipo' ? e.monto > 0 && !!e.monto_tipo : String(e[c] == null ? '' : e[c]) !== '')) continue;
         if (n[c] !== '' && n[c] != null && String(n[c]) !== String(e[c] == null ? '' : e[c])) cambios[c] = n[c];
       }
+      // sincronización: lo que se editó en AerIA (editor, chat o un «deshacer») después de la última carga no se pisa,
+      // y una cotización cerrada no vuelve a abierta sola: quedan como conflictos para revisar
+      if (opciones && opciones.respetarEdiciones) for (const c of Object.keys(cambios)) {
+        const retrocede = c === 'estado' && grupo(e.estado) !== 'abierta' && grupo(n.estado) === 'abierta';
+        if (editadoEnAerIA(e, c) || retrocede) { conflictos.push({ id: e.id, cliente: e.cliente, campo: c, aerIA: e[c], fuente: n[c], motivo: retrocede ? 'reabre una cerrada' : 'editado en AerIA' }); delete cambios[c]; }
+      }
       if (como === 'parecida') parecidas.push({ id: e.id, antes: e, nueva: n });
       if (Object.keys(cambios).length) actualizar.push({ id: e.id, antes: e, cambios, como }); else iguales++;
     }
     for (const q of crear) delete q._presentes;
-    return { crear, actualizar, iguales, parecidas, repetidas };
+    return { crear, actualizar, iguales, parecidas, repetidas, conflictos, ambiguas };
+  }
+  // quién cargó o editó: las cargas (dashboard, importación, siembra) frente a lo que hizo una persona o el chat
+  const CARGA = /^(dashboard|importaci|AerIA \(siembra\))/;
+  const vieneDe = (q, fuente) => new RegExp('^' + fuente, 'i').test(String(q.origen || '').trim()) || (q.historial || []).some(h => h.por === fuente);
+  function editadoEnAerIA(q, campo) {
+    const h = (q.historial || []).filter(x => !x.deshecha && x.cambios && x.cambios[campo]).pop();
+    return !!h && !CARGA.test(h.por || '');
+  }
+
+  /* Tablas dentro del texto de una página (lo que devuelve un navegador): bloques de líneas
+     seguidas con tabulador. Cada tabla empieza en un encabezado (al menos dos celdas que son
+     nombres de columna conocidos) y termina en la primera línea sin tabulador, con otra
+     cantidad de celdas u otro encabezado. Así un resumen, una segunda tabla, los KPI o el pie
+     no se leen como cotizaciones. */
+  function aliasExactos(f) {
+    const todos = new Set([].concat(...Object.values(ALIAS)).map(a => plano(a)));
+    return f.filter(c => todos.has(plano(c).replace(/[_\-.:]+/g, ' ').replace(/\s+/g, ' ').trim())).length;
+  }
+  const esEncabezado = f => aliasExactos(f) >= 2 && puntaje(f) >= 3;
+  function tablasDeTexto(texto) {
+    const lineas = String(texto || '').replace(/\r/g, '').split('\n');
+    const bloques = []; let act = [];
+    for (const l of lineas) { if (l.includes('\t')) act.push(l.split('\t').map(c => c.trim())); else { if (act.length) bloques.push(act); act = []; } }
+    if (act.length) bloques.push(act);
+    const cand = [];
+    for (const b of bloques) {
+      let i = 0;
+      while (i < b.length) {
+        if (!esEncabezado(b[i])) { i++; continue; }
+        const cab = b[i].map((c, k) => c || 'col' + (k + 1)), n = cab.length, firmaCab = cab.join('|');
+        const filas = [];
+        let j = i + 1;
+        for (; j < b.length; j++) {
+          const f = b[j];
+          if (f.join('|') === firmaCab) continue;                 // encabezado repetido (tablas paginadas)
+          if (f.length < n - 1 || f.length > n + 1 || esEncabezado(f)) break;
+          if (f.every(c => !c)) continue;
+          filas.push(Object.fromEntries(cab.map((h, k) => [h, f[k] == null ? '' : f[k]])));
+        }
+        if (filas.length) cand.push({ origen: 'Tabla del dashboard', filas, columnas: cab, puntaje: puntaje(cab), mapeo: sugerirMapeo(cab) });
+        i = j;
+      }
+    }
+    return cand.sort((a, b) => b.puntaje - a.puntaje || b.filas.length - a.filas.length);
+  }
+  /* Señales de una lectura mala antes de escribir sin preguntar: clientes que parecen un
+     encabezado, un folio o un número; filas sin monto ni estado; montos que cambian demasiado. */
+  function anomalias(nuevas, plan, columnas) {
+    const out = [], cols = new Set((columnas || []).map(plano));
+    for (const q of nuevas) {
+      const c = plano(q.cliente), pres = q._presentes || CAMPOS;
+      if (c && (cols.has(c) || /^[a-z]{0,4}-?\d+$/.test(c) || /^[\d.,$\s%-]+$/.test(c))) out.push('«' + q.cliente + '» no parece un cliente');
+      else if (!pres.includes('monto') && !pres.includes('estado')) out.push((q.cliente || 'una fila') + ' no trae monto ni estado');
+    }
+    for (const u of plan.actualizar) {
+      if (u.cambios.monto == null || !(u.antes.monto > 0)) continue;
+      const m = Number(u.cambios.monto) || 0;
+      if (m < 10000 || Math.abs(m - u.antes.monto) / u.antes.monto > 0.5) out.push((u.antes.cliente || u.id) + ': el monto pasaría de ' + clp(u.antes.monto) + ' a ' + clp(m));
+    }
+    if (plan.ambiguas && plan.ambiguas.length) out.push(plan.ambiguas.length + (plan.ambiguas.length === 1 ? ' fila calza' : ' filas calzan') + ' con más de una cotización');
+    return out;
   }
 
   /* Código del extractor para correr en el dashboard local (marcador o consola) */
@@ -961,7 +1038,7 @@
     ESTADOS, LINEAS, ESTADO, LINEA, CAMPOS, EXTRACTOR,
     limpiar, aplicar, deshacer, deshacerPor, puedeDeshacer, diferencias, normalizar, analizar, pronostico, conciliarSII,
     conjuntos, sugerirMapeo, mapear, planImportacion, leerMonto, leerTipoMonto, leerFecha, leerEstado, leerLinea, leerCobro, leerProb,
-    idPara, claveDuplicado, parecido, huellaTexto: t => hash(String(t || '')),
+    idPara, claveDuplicado, parecido, huellaTexto: t => hash(String(t || '')), tablasDeTexto, anomalias, editadoEnAerIA,
     resumenParaIA,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

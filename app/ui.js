@@ -1052,7 +1052,7 @@ Abajo está tu lectura actual de la empresa.`;
   if (window.claude && typeof window.claude.use === 'function') {
     window.claude.use('sample').then(async s => {
       S.sample = s;
-      if (!s) { S.ia = 'no'; pintarAvisoIA(); return; }
+      if (!s) { S.ia = 'no'; pintarAvisoIA(); intentarSync(); return; }
       const lim = await s.limits().catch(() => null);
       S.tools = lim && lim.tools ? Math.min(lim.tools.maxCount || 0, 14) : 0;
       S.ia = 'lista'; pintarAvisoIA();

@@ -476,76 +476,122 @@
       catch (e) { return false; }
     };
     const PROMPT_SYNC = 'Este es el texto de la página de un dashboard de cotizaciones de una empresa chilena (escuela de pilotos de drones). Extrae SOLO las cotizaciones (no totales, KPIs ni menús) como un JSON array de objetos con estas claves: folio, cliente, descripcion, monto (número en pesos, sin puntos), estado (borrador, enviada, negociacion, ganada, perdida o vencida, según lo que diga la página), probabilidad (número 0-100 o ""), fecha_cotizacion (AAAA-MM-DD o ""), fecha_cierre (AAAA-MM-DD o ""), fecha_cierre_estimada (AAAA-MM-DD o ""), proximo_seguimiento (AAAA-MM-DD o ""), linea (sence, curso_cerrado, aoc, servicios, escuela, flota, venta_equipos u otro), contacto, notas. Copia los valores tal como aparecen; no inventes datos: deja "" lo que no esté. Responde solo el JSON.\n\n';
+    // la pestaña del dashboard se reutiliza entre sincronizaciones (se recuerda en este navegador)
+    const tabGuardada = () => { try { const v = localStorage.getItem('aeria:tab-dashboard'); return v ? Number(v) : undefined; } catch (e) { return undefined; } };
+    const guardarTab = id => { L.tabDash = id; try { if (id !== undefined) localStorage.setItem('aeria:tab-dashboard', String(id)); else localStorage.removeItem('aeria:tab-dashboard'); } catch (e) { /* sin almacenamiento */ } };
+    async function abrirDashboard(mcp, url) {
+      const previa = L.tabDash !== undefined ? L.tabDash : tabGuardada();
+      if (previa !== undefined) {
+        try { await mcp.callTool(NAV, 'navigate', { url, tabId: previa }); return previa; }
+        catch (e) { if (e && ['cancelled', 'not_in_manifest', 'approval_required', 'server_not_connected'].includes(e.code)) throw e; guardarTab(undefined); }  // pestaña cerrada: se abre otra
+      }
+      const abierta = await mcp.callTool(NAV, 'preview_start', { url });
+      const id = idDePestana(abierta && (abierta.payload !== undefined ? abierta.payload : abierta));
+      guardarTab(id);
+      return id;
+    }
     async function sincronizar(manual) {
-      if (L.sync && L.sync.corriendo) return;
+      if (L.syncLock) return;                 // una sola sincronización a la vez (doble clic, o clic durante la automática)
+      L.syncLock = true;
+      try { await sincronizarUnaVez(manual); } finally { L.syncLock = false; if (L.sync) L.sync.corriendo = false; pintarSync(); }
+    }
+    async function sincronizarUnaVez(manual) {
+      if (!ctx.listoParaSync()) {             // sin las cotizaciones de la base cargadas no se escribe nada
+        L.sync = { estado: 'esperando' }; pintarSync();
+        if (manual) ctx.avisar('Todavía estoy leyendo la base de datos de AerIA. Intenta en unos segundos.');
+        return;
+      }
       const mcp = ctx.mcp();
       if (!mcp || !(await navegadorDisponible())) {
         L.sync = { estado: 'sin-app' }; pintarSync();
         if (manual) ctx.avisar('La conexión automática necesita la app de escritorio de Claude (abre AerIA desde una conversación de Cowork). Aquí usa el marcador.');
         return;
       }
+      const previo = ctx.syncEstado() || {};
+      const ahora = ahoraISO();
+      // cada intento queda anotado (sin tocar la última sincronización que cambió algo)
+      const anotar = async (estado, extra) => {
+        L.sync = Object.assign({ estado, fecha: ahora }, extra || {}); pintarSync();
+        await ctx.guardarSync(Object.assign({}, ctx.syncEstado() || previo, { intento: { fecha: ahora, estado, manual: !!manual } }, extra && extra.reg ? extra.reg : {}));
+      };
       L.sync = { corriendo: true, paso: 'Abriendo tu dashboard en el navegador de Claude…' }; pintarSync();
-      const fin = (estado, extra) => { L.sync = Object.assign({ estado, fecha: new Date().toISOString() }, extra || {}); pintarSync(); };
       try {
         const url = await ctx.urlDashboard();
-        const abierta = await mcp.callTool(NAV, 'preview_start', { url });
-        const tabId = idDePestana(abierta && (abierta.payload !== undefined ? abierta.payload : abierta));
+        const tabId = await abrirDashboard(mcp, url);
         const leer = async () => textoDe(await mcp.callTool(NAV, 'get_page_text', tabId !== undefined ? { tabId } : {}, { cache: false }).then(r => r.payload !== undefined ? r.payload : r));
         L.sync.paso = 'Leyendo tu dashboard…'; pintarSync();
         let texto = await leer();
         if (texto.replace(/\s+/g, '').length < 200) { await espera(2500); texto = await leer(); }   // el dashboard puede cargar sus datos después
-        if (!texto.trim()) return fin('vacio');
+        if (!texto.trim()) return anotar('vacio');
         const firma = C.huellaTexto(texto);
-        const previo = ctx.syncEstado() || {};
-        if (!manual && previo.firma === firma) return fin('sin-cambios', { anterior: previo });
-        // 1) tabla directa (texto con columnas); 2) si no, Claude la ordena
-        let filas = null, mapeo = null, via = 'tabla';
-        try { const cj = C.conjuntos(texto)[0]; if (cj && cj.mapeo.cliente && cj.puntaje >= 6 && cj.filas.length) { filas = cj.filas; mapeo = cj.mapeo; } } catch (e) { /* no es una tabla */ }
+        if (!manual && previo.firma === firma) return anotar('sin-cambios');
+        // 1) una tabla del texto (por bloques: no mezcla resúmenes ni segundas tablas); 2) si no, Claude la ordena
+        let filas = null, mapeo = null, columnas = null, via = 'tabla', inventadas = 0;
+        const cj = C.tablasDeTexto(texto)[0];
+        if (cj && cj.mapeo.cliente && cj.puntaje >= 6) { filas = cj.filas; mapeo = cj.mapeo; columnas = cj.columnas; }
         if (!filas) {
-          if (!ctx.puedeIA()) return fin('sin-ia');
+          if (!ctx.puedeIA()) return anotar('sin-ia');
           via = 'ia'; L.sync.paso = 'Ordenando las cotizaciones con Claude…'; pintarSync();
           const arr = await ctx.iaJSON(PROMPT_SYNC + texto.slice(0, 60000));
           filas = (Array.isArray(arr) ? arr : []).filter(x => x && typeof x === 'object' && !Array.isArray(x));
-          mapeo = C.sugerirMapeo(Object.keys(filas[0] || {}));
+          // solo filas cuyo cliente (o folio) aparece en la página: lo que Claude no leyó ahí no se escribe
+          const pagina = F.plano(texto).replace(/\s+/g, ' ');
+          const enPagina = f => { const c = F.plano(f.cliente || '').replace(/\s+/g, ' ').trim(), fo = F.plano(f.folio || '').trim(); return (c && pagina.includes(c.slice(0, 24))) || (fo && pagina.includes(fo)); };
+          inventadas = filas.filter(f => !enPagina(f)).length;
+          filas = filas.filter(enPagina);
+          // las columnas son todas las claves que trajo alguna fila, no solo las de la primera
+          columnas = Array.from(new Set([].concat(...filas.map(f => Object.keys(f)))));
+          mapeo = C.sugerirMapeo(columnas);
         }
         const nuevas = C.mapear(filas, mapeo, 'dashboard');
-        if (!nuevas.length) return fin('sin-filas');
-        const plan = C.planImportacion(nuevas, ctx.cotizaciones().map(C.limpiar));
+        if (!nuevas.length) return anotar('sin-filas');
+        const plan = C.planImportacion(nuevas, ctx.cotizaciones().map(C.limpiar), { respetarEdiciones: true, mismaFuente: true });
         const n = plan.crear.length + plan.actualizar.length;
-        if (n > SYNC_MAX) {
-          // demasiados cambios de una vez: se revisan en el importador antes de escribir
-          L.imp = { paso: 3, texto: '', conjuntos: [{ origen: 'Tu dashboard (sincronización)', filas, columnas: Object.keys(filas[0] || {}), puntaje: 9, mapeo }], elegido: 0, mapeo, origen: 'tu dashboard', plan, msg: 'Encontré ' + n + ' cambios: revísalos antes de importar.', unir: true, esDashboard: true };
-          ctx.pintar(); return fin('revisar', { n });
+        const raras = C.anomalias(nuevas, plan, columnas);
+        if (inventadas) raras.push(inventadas + (inventadas === 1 ? ' fila que Claude devolvió no aparece' : ' filas que Claude devolvió no aparecen') + ' en la página (las dejé fuera)');
+        if (n > SYNC_MAX || raras.length) {
+          // muchos cambios o algo raro en la lectura: se revisa en el importador antes de escribir
+          L.imp = { paso: 3, texto: '', conjuntos: [{ origen: 'Tu dashboard (sincronización)', filas, columnas: columnas || Object.keys(filas[0] || {}), puntaje: 9, mapeo }], elegido: 0, mapeo, origen: 'tu dashboard', plan,
+            msg: (n > SYNC_MAX ? 'Encontré ' + n + ' cambios. ' : '') + (raras.length ? 'Antes de guardar, revisa: ' + raras.slice(0, 5).join('; ') + (raras.length > 5 ? '…' : '') + '.' : 'Revísalos antes de importar.'), unir: true, esDashboard: true };
+          ctx.pintar(); return anotar('revisar', { n, raras: raras.length });
         }
-        const id = new Date().toISOString(), marca = { resp: id };
+        if (!n) {
+          // nada que cambiar: se conserva la última sincronización que sí cambió algo (y su «deshacer»)
+          return anotar(manual ? 'al-dia' : 'sin-cambios', { reg: { firma, revisado: ahora }, conflictos: plan.conflictos.length });
+        }
+        const id = ahora, marca = { resp: id };
         const origen = 'dashboard ' + hoy();
         const vigente = u => ctx.cotizaciones().find(q => q.id === u.id) || u.antes;
-        const tareas = plan.crear.map(q => () => C.aplicar(null, Object.assign({}, q, { origen }), 'dashboard', 'Sincronizada desde tu dashboard', ahoraISO(), marca).cotizacion)
-          .concat(plan.actualizar.map(u => () => C.aplicar(vigente(u), u.cambios, 'dashboard', 'Actualizada desde tu dashboard', ahoraISO(), marca).cotizacion));
-        let hechas = 0, fallas = 0; const ids = [];
+        const tareas = plan.crear.map(q => ({ tipo: 'c', hacer: () => C.aplicar(null, Object.assign({}, q, { origen }), 'dashboard', 'Sincronizada desde tu dashboard', ahoraISO(), marca).cotizacion }))
+          .concat(plan.actualizar.map(u => ({ tipo: 'a', hacer: () => C.aplicar(vigente(u), u.cambios, 'dashboard', 'Actualizada desde tu dashboard', ahoraISO(), marca).cotizacion })));
+        let creadas = 0, actualizadas = 0, fallas = 0; const ids = [];
         L.sync.paso = 'Guardando ' + n + (n === 1 ? ' cambio…' : ' cambios…'); pintarSync();
-        for (const t of tareas) { const q = t(); if (await ctx.guardarCot(q)) { hechas++; ids.push(q.id); } else fallas++; }
-        const reg = { id, fecha: id, firma, via, url, filas: nuevas.length, creadas: plan.crear.length, actualizadas: plan.actualizar.length, iguales: plan.iguales, parecidas: plan.parecidas.length, ids, fallas };
-        await ctx.guardarSync(reg);
+        for (const t of tareas) { const q = t.hacer(); if (await ctx.guardarCot(q)) { if (t.tipo === 'c') creadas++; else actualizadas++; ids.push(q.id); } else fallas++; }
+        // con fallas no se guarda la firma: la próxima vez se vuelve a intentar lo que faltó
+        const reg = { id, fecha: id, firma: fallas ? '' : firma, revisado: ahora, via, url, filas: nuevas.length, creadas, actualizadas, iguales: plan.iguales, parecidas: plan.parecidas.length, ids, fallas,
+          conflictos: plan.conflictos.slice(0, 30), deshecha: false };
         ctx.pintar();
-        fin(fallas ? 'parcial' : 'ok', { reg });
-        if (n || manual) ctx.avisar(n ? 'Sincronicé tu dashboard: ' + plan.crear.length + ' nuevas y ' + plan.actualizar.length + ' actualizadas' + (fallas ? '; ' + fallas + ' no se guardaron' : '') + '.' : 'Tu dashboard ya estaba al día en AerIA.');
+        await anotar(fallas ? 'parcial' : 'ok', { reg });
+        ctx.avisar('Sincronicé tu dashboard: ' + creadas + ' nuevas y ' + actualizadas + ' actualizadas' + (fallas ? '; ' + fallas + ' no se guardaron' : '') +
+          (plan.conflictos.length ? '. ' + plan.conflictos.length + (plan.conflictos.length === 1 ? ' cambio choca' : ' cambios chocan') + ' con lo que editaste en AerIA: no los apliqué' : '') + '.');
       } catch (e) {
-        const c = e && e.code;
-        if (c === 'server_not_connected' || c === 'not_granted' || c === 'capability_disabled' || c === 'capability_removed') return fin('sin-app');
-        if (c === 'not_in_manifest') return fin('no-permitido');
-        if (c === 'cancelled' || c === 'approval_required') return fin('cancelada');
-        if (c === 'tool_error') return fin('error', { msg: e.message || 'El navegador de Claude no pudo abrir el dashboard. ¿Está corriendo en tu Mac (localhost:8765)?' });
-        return fin('error', { msg: (e && e.message) || 'No se pudo sincronizar ahora.' });
-      } finally { if (L.sync) L.sync.corriendo = false; }
+        const c = e && e.code, det = e && e.message ? ' (' + String(e.message).slice(0, 140) + ')' : '';
+        if (c === 'server_not_connected' || c === 'not_granted' || c === 'capability_disabled' || c === 'capability_removed') return anotar('sin-app');
+        if (c === 'not_in_manifest') return anotar('no-permitido');
+        if (c === 'cancelled' || c === 'approval_required') return anotar('cancelada');
+        if (c === 'tool_error') return anotar('error', { msg: 'El navegador de Claude no pudo abrir o leer el dashboard. ¿Está corriendo en tu Mac (localhost:8765)?' + det });
+        return anotar('error', { msg: 'No se pudo sincronizar ahora.' + det });
+      }
     }
     /* Revierte entera la última sincronización: lo que creó se borra (si nadie lo tocó
        después) y lo que actualizó vuelve a como estaba. */
     async function deshacerSync() {
       const reg = ctx.syncEstado(); if (!reg || !reg.id || reg.deshecha) return;
+      if (!ctx.listoParaSync()) { ctx.avisar('Todavía estoy leyendo la base de datos de AerIA. Intenta en unos segundos.'); return; }
       let conflictos = 0, fallas = 0;
       for (const id of reg.ids || []) {
-        const q = ctx.cotizaciones().find(x => x.id === id); if (!q) continue;
+        const q = ctx.cotizaciones().find(x => x.id === id);
+        if (!q) { fallas++; continue; }      // no está en lo cargado: no se puede asegurar que se deshizo
         const r = C.deshacerPor(q, reg.id, ahoraISO());
         if (r.creada) {
           const ajenas = (q.historial || []).some(h => h.resp !== reg.id && !h.deshecha && Object.keys(h.cambios || {}).length);
@@ -564,16 +610,20 @@
       const ult = reg && reg.fecha ? `Última: ${hace(reg.fecha)} · ${reg.creadas || 0} nuevas, ${reg.actualizadas || 0} actualizadas${reg.deshecha ? ' (deshecha)' : ''}` : 'Aún no se ha sincronizado';
       const msgs = {
         'sin-app': 'Para que se conecte sola, abre AerIA en la app de escritorio de Claude, desde una conversación de Cowork. En este navegador usa el marcador.',
+        esperando: 'Esperando la base de datos de AerIA…',
         'sin-cambios': 'Tu dashboard no cambió desde la última vez.',
+        'al-dia': 'Tu dashboard ya estaba al día en AerIA.',
         vacio: 'El navegador abrió el dashboard pero no trajo texto. ¿Está corriendo en tu Mac (localhost:8765)?',
         'sin-filas': 'Leí el dashboard pero no encontré cotizaciones en él.',
         'sin-ia': 'El dashboard no viene como tabla y Claude no está disponible ahora para ordenarlo.',
-        revisar: 'Hay ' + (s.n || 'muchos') + ' cambios: revísalos en el importador antes de guardarlos.',
+        revisar: s.raras ? 'Algo de la lectura se ve raro: lo dejé en el importador para que lo revises antes de guardar.' : 'Hay ' + (s.n || 'muchos') + ' cambios: revísalos en el importador antes de guardarlos.',
         'no-permitido': 'No permitiste que AerIA use el navegador de Claude. Puedes activarlo en los permisos de la página.',
         cancelada: 'Sincronización cancelada.',
         error: s.msg || 'No se pudo sincronizar.',
       };
-      const aviso = s.estado && msgs[s.estado] ? `<span class="c-sub">${esc(msgs[s.estado])}</span>` : '';
+      const conf = reg && !reg.deshecha && (reg.conflictos || []).length ? reg.conflictos : [];
+      const aviso = (s.estado && msgs[s.estado] ? `<span class="c-sub">${esc(msgs[s.estado])}</span>` : '') +
+        (conf.length ? `<details class="c-sub"><summary>${conf.length} ${conf.length === 1 ? 'cambio del dashboard choca' : 'cambios del dashboard chocan'} con lo editado en AerIA (no los apliqué)</summary><ul>${conf.slice(0, 12).map(x => '<li>' + esc(x.cliente || x.id) + ' · ' + esc(x.campo) + ': AerIA «' + esc(String(x.aerIA)) + '», dashboard «' + esc(String(x.fuente)) + '»' + (x.motivo === 'reabre una cerrada' ? ' (reabriría una cerrada)' : '') + '</li>').join('')}</ul></details>` : '');
       return `<span class="sync-linea"><b>Conexión automática</b> · ${esc(ult)}
         <button class="enlace-btn" type="button" data-com="sync">Sincronizar ahora</button>${reg && reg.id && !reg.deshecha && (reg.ids || []).length ? '<button class="enlace-btn" type="button" data-com="sync-deshacer">Deshacer la última</button>' : ''}</span>${aviso}`;
     }
@@ -582,8 +632,12 @@
     async function autoSync() {
       if (autoHecho || !ctx.listoParaSync()) return;
       autoHecho = true;
-      const reg = ctx.syncEstado();
-      if (reg && reg.fecha && Date.now() - new Date(reg.fecha).getTime() < SYNC_CADA) return;
+      const reg = ctx.syncEstado() || {};
+      // el intervalo se mide desde el último intento (con o sin cambios), no solo desde el último éxito
+      const ultimo = [reg.fecha, reg.revisado, reg.intento && reg.intento.fecha].filter(Boolean).sort().pop();
+      if (ultimo && Date.now() - new Date(ultimo).getTime() < SYNC_CADA) return;
+      // si la persona rechazó el navegador, no se vuelve a preguntar solo: queda «Sincronizar ahora»
+      if (reg.intento && ['cancelada', 'no-permitido'].includes(reg.intento.estado)) { L.sync = { estado: reg.intento.estado }; pintarSync(); return; }
       if (await navegadorDisponible()) sincronizar(false); else { L.sync = { estado: 'sin-app' }; pintarSync(); }
     }
 
