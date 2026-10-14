@@ -461,8 +461,8 @@
     const SYNC_CADA = 20 * 60 * 1000;      // como mucho una sincronización automática cada 20 minutos
     const SYNC_MAX = 150;                  // un cambio más grande se revisa a mano en el importador
     const espera = ms => new Promise(r => setTimeout(r, ms));
-    const OTRA_VIA = 'Si no aparece ninguna pregunta, abre tú el dashboard en el navegador de Claude (Cmd+Shift+B) y aprieta «Sincronizar ahora»: AerIA leerá esa pestaña.';
-    const PASOS = { abrir: 'abrir el dashboard', navegar: 'volver a la pestaña del dashboard', leer: 'leer el dashboard' };
+    const OTRA_VIA = 'Otra forma: abre tú el dashboard en el navegador de Claude (Cmd+Shift+B) y aprieta «Leer la pestaña abierta». Te muestro lo que encontré antes de guardar.';
+    const PASOS = { abrir: 'abrir el dashboard', navegar: 'volver a la pestaña del dashboard', leer: 'leer el dashboard', ordenar: 'ordenar las cotizaciones con Claude', guardar: 'guardar los cambios', 'pestaña': 'leer la pestaña abierta' };
     // la respuesta del navegador no tiene un formato fijo: se busca el id de la pestaña y el texto más largo
     function idDePestana(v) {
       if (v == null) return undefined;
@@ -504,8 +504,40 @@
       if (pedir && st === 'prompt') st = await p.request([nombre]).then(r => (r && r[nombre]) || st).catch(() => st);
       return st;
     }
-    // una tabla de cotizaciones (no cualquier página): lo único que se acepta de la pestaña que la persona abrió
-    const tablaDashboard = t => { const cj = C.tablasDeTexto(t)[0]; return !!(cj && cj.mapeo.cliente && cj.puntaje >= 6); };
+    const leerPestana = async (mcp, id) => textoDe(await mcp.callTool(NAV, 'get_page_text', id !== undefined ? { tabId: id } : {}, { cache: false }).then(r => r.payload !== undefined ? r.payload : r));
+    /* Cuando la app no deja abrir el dashboard, la persona puede abrirlo ella en el navegador de
+       Claude y pedir con un botón que AerIA lea esa pestaña. Nunca se hace solo, y lo leído no se
+       guarda directo: se abre en el importador para que revise que sea su dashboard antes de guardar. */
+    async function leerPestanaAbierta() {
+      if (L.syncLock) return;
+      if (!ctx.listoParaSync()) { ctx.avisar('Todavía estoy leyendo la base de datos de AerIA. Intenta en unos segundos.'); return; }
+      const mcp = ctx.mcp();
+      if (!mcp || !(await navegadorDisponible())) { L.sync = { estado: 'sin-app' }; pintarSync(); return; }
+      L.syncLock = true;
+      const previo = ctx.syncEstado() || {}, ahora = ahoraISO();
+      const rechazo = previo.intento && (previo.intento.rechazo || (['cancelled', 'approval_required'].includes(previo.intento.codigo) ? previo.intento.codigo : '')) || '';
+      const anotar = async (estado, extra) => {
+        L.sync = Object.assign({ estado, fecha: ahora }, extra || {}); pintarSync();
+        await ctx.guardarSync(Object.assign({}, ctx.syncEstado() || previo, { intento: Object.assign({ fecha: ahora, estado, manual: true, via: 'pestaña' }, rechazo ? { rechazo } : {}, extra && extra.diag ? extra.diag : {}) }));
+      };
+      try {
+        L.sync = { corriendo: true, paso: 'Leyendo la pestaña abierta en el navegador de Claude…' }; pintarSync();
+        const texto = await leerPestana(mcp, undefined);
+        const cj = C.tablasDeTexto(texto)[0];
+        if (!(cj && cj.mapeo.cliente && cj.puntaje >= 6)) return anotar('pestana-sin-tabla', { diag: { activa: texto.trim() ? 'sin tabla' : 'vacía' } });
+        const nuevas = C.mapear(cj.filas, cj.mapeo, 'dashboard');
+        const plan = C.planImportacion(nuevas, ctx.cotizaciones().map(C.limpiar), { respetarEdiciones: true, mismaFuente: true });
+        const raras = C.anomalias(nuevas, plan, cj.columnas);
+        L.imp = { paso: 3, texto: '', conjuntos: [{ origen: 'La pestaña abierta en el navegador de Claude', filas: cj.filas, columnas: cj.columnas, puntaje: cj.puntaje, mapeo: cj.mapeo }], elegido: 0, mapeo: cj.mapeo, origen: 'la pestaña abierta en el navegador de Claude', plan,
+          msg: 'Leí la pestaña que tienes abierta en el navegador de Claude. Revisa que sea tu dashboard antes de guardar.' + (raras.length ? ' Ojo: ' + raras.slice(0, 5).join('; ') + '.' : ''), unir: true, esDashboard: true };
+        ctx.pintar();
+        const p = $('#panel-importar'); if (p) p.scrollIntoView({ block: 'start' });
+        return anotar('revisar-pestana', { n: plan.crear.length + plan.actualizar.length, diag: { activa: 'leída' } });
+      } catch (e) {
+        const c = e && e.code;
+        return anotar(c === 'cancelled' ? 'cancelada' : c === 'approval_required' ? 'sin-aprobar' : 'error', { msg: 'No pude leer la pestaña abierta.' + (e && e.message ? ' (' + String(e.message).slice(0, 140) + ')' : ''), diag: { codigo: String(c || 'sin código'), paso: 'pestaña', mensaje: String((e && e.message) || '').slice(0, 200) } });
+      } finally { L.syncLock = false; if (L.sync) L.sync.corriendo = false; pintarSync(); }
+    }
     const PROMPT_SYNC = 'Este es el texto de la página de un dashboard de cotizaciones de una empresa chilena (escuela de pilotos de drones). Extrae SOLO las cotizaciones (no totales, KPIs ni menús) como un JSON array de objetos con estas claves: folio, cliente, descripcion, monto (número en pesos, sin puntos), estado (borrador, enviada, negociacion, ganada, perdida o vencida, según lo que diga la página), probabilidad (número 0-100 o ""), fecha_cotizacion (AAAA-MM-DD o ""), fecha_cierre (AAAA-MM-DD o ""), fecha_cierre_estimada (AAAA-MM-DD o ""), proximo_seguimiento (AAAA-MM-DD o ""), linea (sence, curso_cerrado, aoc, servicios, escuela, flota, venta_equipos u otro), contacto, notas. Copia los valores tal como aparecen; no inventes datos: deja "" lo que no esté. Responde solo el JSON.\n\n';
     // la pestaña del dashboard se reutiliza entre sincronizaciones (se recuerda en este navegador)
     const tabGuardada = () => { try { const v = localStorage.getItem('aeria:tab-dashboard'); return v ? Number(v) : undefined; } catch (e) { return undefined; } };
@@ -554,36 +586,26 @@
       const permiso = await permisoNav(!!manual);
       if (permiso === 'denied') return anotar('bloqueado', { diag: { permiso } });
       L.sync = { corriendo: true, paso: 'Abriendo tu dashboard en el navegador de Claude…' }; pintarSync();
-      L.pasoNav = 'abrir'; L.diagActiva = '';
+      L.pasoNav = 'abrir';
       try {
         const url = await ctx.urlDashboard();
-        const leerPestana = async id => textoDe(await mcp.callTool(NAV, 'get_page_text', id !== undefined ? { tabId: id } : {}, { cache: false }).then(r => r.payload !== undefined ? r.payload : r));
-        let texto = '', via0 = '', tabId;
-        try { tabId = await abrirDashboard(mcp, url); }
-        catch (e) {
-          if (!e || !['cancelled', 'approval_required'].includes(e.code)) throw e;
-          // la app no dejó abrir ni mover pestañas: si la persona abrió el dashboard en el navegador de Claude,
-          // se lee la pestaña activa (solo lectura), y solo si trae una tabla de cotizaciones
-          const activa = await leerPestana(undefined).catch(x => { L.diagActiva = 'error ' + ((x && x.code) || ''); return ''; });
-          if (!tablaDashboard(activa)) { if (!L.diagActiva) L.diagActiva = activa.trim() ? 'sin tabla' : 'vacía'; throw e; }
-          texto = activa; via0 = 'pestaña';
-        }
-        if (!via0) {
-          L.pasoNav = 'leer';
-          L.sync.paso = 'Leyendo tu dashboard…'; pintarSync();
-          texto = await leerPestana(tabId);
-          if (texto.replace(/\s+/g, '').length < 200) { await espera(2500); texto = await leerPestana(tabId); }   // el dashboard puede cargar sus datos después
-        }
+        // si la app no deja abrir el dashboard (cancelled, approval_required), no se lee nada más:
+        // la pestaña que la persona tenga abierta solo se lee cuando ella lo pide con su botón
+        const tabId = await abrirDashboard(mcp, url);
+        L.pasoNav = 'leer';
+        L.sync.paso = 'Leyendo tu dashboard…'; pintarSync();
+        let texto = await leerPestana(mcp, tabId);
+        if (texto.replace(/\s+/g, '').length < 200) { await espera(2500); texto = await leerPestana(mcp, tabId); }   // el dashboard puede cargar sus datos después
         if (!texto.trim()) return anotar('vacio');
         const firma = C.huellaTexto(texto);
         if (!manual && previo.firma === firma) return anotar('sin-cambios');
         // 1) una tabla del texto (por bloques: no mezcla resúmenes ni segundas tablas); 2) si no, Claude la ordena
-        let filas = null, mapeo = null, columnas = null, via = via0 || 'tabla', inventadas = 0;
+        let filas = null, mapeo = null, columnas = null, via = 'tabla', inventadas = 0;
         const cj = C.tablasDeTexto(texto)[0];
         if (cj && cj.mapeo.cliente && cj.puntaje >= 6) { filas = cj.filas; mapeo = cj.mapeo; columnas = cj.columnas; }
         if (!filas) {
           if (!ctx.puedeIA()) return anotar('sin-ia');
-          via = 'ia'; L.sync.paso = 'Ordenando las cotizaciones con Claude…'; pintarSync();
+          via = 'ia'; L.pasoNav = 'ordenar'; L.sync.paso = 'Ordenando las cotizaciones con Claude…'; pintarSync();
           const arr = await ctx.iaJSON(PROMPT_SYNC + texto.slice(0, 60000));
           filas = (Array.isArray(arr) ? arr : []).filter(x => x && typeof x === 'object' && !Array.isArray(x));
           // solo filas cuyo cliente (o folio) aparece en la página: lo que Claude no leyó ahí no se escribe
@@ -611,6 +633,7 @@
           // nada que cambiar: se conserva la última sincronización que sí cambió algo (y su «deshacer»)
           return anotar(manual ? 'al-dia' : 'sin-cambios', { reg: { firma, revisado: ahora }, conflictos: plan.conflictos.length });
         }
+        L.pasoNav = 'guardar';
         const id = ahora, marca = { resp: id };
         const origen = 'dashboard ' + hoy();
         const vigente = u => ctx.cotizaciones().find(q => q.id === u.id) || u.antes;
@@ -629,7 +652,8 @@
       } catch (e) {
         const c = e && e.code, det = e && e.message ? ' (' + String(e.message).slice(0, 140) + ')' : '';
         const nav = L.navInfo || {};
-        const diag = { codigo: String(c || 'sin código'), paso: L.pasoNav || '', mensaje: String((e && e.message) || '').slice(0, 200), permiso, auth: nav.auth || '', soloLectura: nav.ro || '', activa: L.diagActiva || '' };
+        // un error de Claude al ordenar trae su código aparte (iaCodigo): no se confunde con uno del navegador
+        const diag = { codigo: String(c || (e && e.iaCodigo) || 'sin código'), paso: L.pasoNav || '', mensaje: String((e && e.message) || '').slice(0, 200), permiso, auth: nav.auth || '', soloLectura: nav.ro || '' };
         if (c === 'server_not_connected' || c === 'not_granted' || c === 'capability_disabled' || c === 'capability_removed') return anotar('sin-app', { diag });
         if (c === 'not_in_manifest') return anotar('no-permitido', { diag });
         if (c === 'cancelled') return anotar('cancelada', { diag });
@@ -674,14 +698,17 @@
         revisar: s.raras ? 'Algo de la lectura se ve raro: lo dejé en el importador para que lo revises antes de guardar.' : 'Hay ' + (s.n || 'muchos') + ' cambios: revísalos en el importador antes de guardarlos.',
         'no-permitido': 'No permitiste que AerIA use el navegador de Claude. Actívalo en los permisos de la página y vuelve a apretar «Sincronizar ahora».',
         bloqueado: 'Tienes bloqueado el navegador de Claude para AerIA. Actívalo en los permisos de la página y vuelve a apretar «Sincronizar ahora».',
-        cancelada: 'La app de Claude canceló la apertura de tu dashboard. Al apretar «Sincronizar ahora», la app pregunta si AerIA puede usar su navegador y abrir localhost: elige Permitir. ' + OTRA_VIA,
+        cancelada: 'La app de Claude no dejó abrir tu dashboard: la pregunta para usar su navegador se rechazó. Al apretar «Sincronizar ahora» vuelve a preguntar: elige Permitir. ' + OTRA_VIA,
         'sin-aprobar': 'La app de Claude esperaba tu aprobación para usar su navegador y no la recibió (o la pregunta no se vio). Vuelve a apretar «Sincronizar ahora» y elige Permitir. ' + OTRA_VIA,
+        'pestana-sin-tabla': 'Leí la pestaña abierta en el navegador de Claude, pero no trae una tabla de cotizaciones que pueda importar sola. Usa el marcador «AerIA · Extraer» o el importador.',
+        'revisar-pestana': 'Leí la pestaña abierta: revisa en el importador que sea tu dashboard y guarda.',
         error: s.msg || 'No se pudo sincronizar.',
       };
       const conf = reg && !reg.deshecha && (reg.conflictos || []).length ? reg.conflictos : [];
       const d = s.diag && s.diag.codigo ? s.diag : null;
       const aviso = (s.estado && msgs[s.estado] ? `<span class="c-sub">${esc(msgs[s.estado])}</span>` : '') +
         (['bloqueado', 'no-permitido'].includes(s.estado) ? '<button class="enlace-btn" type="button" data-com="sync-permisos">Revisar permisos</button>' : '') +
+        (['cancelada', 'sin-aprobar'].includes(s.estado) ? '<button class="enlace-btn" type="button" data-com="sync-pestana">Leer la pestaña abierta</button>' : '') +
         (d ? `<span class="c-sub mono">Detalle: ${esc(d.codigo)}${d.paso ? ' al ' + esc(PASOS[d.paso] || d.paso) : ''}${d.permiso ? ' · permiso ' + esc(d.permiso) : ''}${d.activa ? ' · pestaña activa: ' + esc(d.activa) : ''}</span>` : '') +
         (conf.length ? `<details class="c-sub"><summary>${conf.length} ${conf.length === 1 ? 'cambio del dashboard choca' : 'cambios del dashboard chocan'} con lo editado en AerIA (no los apliqué)</summary><ul>${conf.slice(0, 12).map(x => '<li>' + esc(x.cliente || x.id) + ' · ' + esc(x.campo) + ': AerIA «' + esc(String(x.aerIA)) + '», dashboard «' + esc(String(x.fuente)) + '»' + (x.motivo === 'reabre una cerrada' ? ' (reabriría una cerrada)' : '') + '</li>').join('')}</ul></details>` : '');
       return `<span class="sync-linea"><b>Conexión automática</b> · ${esc(ult)}
@@ -697,7 +724,8 @@
       const ultimo = [reg.fecha, reg.revisado, reg.intento && reg.intento.fecha].filter(Boolean).sort().pop();
       if (ultimo && Date.now() - new Date(ultimo).getTime() < SYNC_CADA) return;
       // si la persona rechazó el navegador, no se vuelve a preguntar solo: queda «Sincronizar ahora»
-      if (reg.intento && ['cancelada', 'sin-aprobar', 'no-permitido', 'bloqueado'].includes(reg.intento.estado)) { L.sync = { estado: reg.intento.estado, diag: reg.intento }; pintarSync(); return; }
+      // tras un rechazo, o una lectura de la pestaña abierta, solo un clic vuelve a llamar al navegador
+      if (reg.intento && (['cancelada', 'sin-aprobar', 'no-permitido', 'bloqueado', 'pestana-sin-tabla'].includes(reg.intento.estado) || reg.intento.rechazo)) { L.sync = { estado: reg.intento.estado, diag: reg.intento }; pintarSync(); return; }
       if (await navegadorDisponible()) sincronizar(false); else { L.sync = { estado: 'sin-app' }; pintarSync(); }
     }
 
@@ -717,6 +745,7 @@
       if (a === 'importar') { abrirImportador(); return; }
       if (a === 'sync') { sincronizar(true); return; }
       if (a === 'sync-deshacer') { deshacerSync(); return; }
+      if (a === 'sync-pestana') { leerPestanaAbierta(); return; }
       if (a === 'sync-permisos') {
         const p = await ctx.permisos().catch(() => null);
         try { if (!p) throw new Error('sin panel'); await p.manage(); }

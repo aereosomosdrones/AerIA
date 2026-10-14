@@ -1095,8 +1095,10 @@ Abajo está tu lectura actual de la empresa.`;
       try { return await S.sample.json(prompt, { modelTier: 'quick' }); }
       catch (e) {
         const c = e && e.code;
-        if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(c)) { S.ia = 'denegada'; pintarAvisoIA(); throw new Error('AerIA no tiene permiso para usar Claude en esta vista. Usa «Leer»: no lo necesita.'); }
-        throw new Error(c === 'invalid_json' ? 'AerIA no pudo leerlo como tabla. Prueba con el CSV del dashboard.' : (ERRORES[c] || 'No se pudo ordenar ahora.'));
+        if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(c)) { S.ia = 'denegada'; pintarAvisoIA(); const err = new Error('AerIA no tiene permiso para usar Claude en esta vista. Usa «Leer»: no lo necesita.'); err.iaCodigo = c; throw err; }
+        const err = new Error(c === 'invalid_json' ? 'AerIA no pudo leerlo como tabla. Prueba con el CSV del dashboard.' : (ERRORES[c] || 'No se pudo ordenar ahora.'));
+        err.iaCodigo = c || '';   // el código de Claude va aparte: «code» se reserva para los errores del navegador
+        throw err;
       }
     },
     descargas: async () => (window.claude && typeof window.claude.use === 'function') ? window.claude.use('downloads') : null,
