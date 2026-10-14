@@ -40,8 +40,15 @@ URL como `url`; nunca crear otra página.
   «¿Qué hago?» (con casillas que marcan la agenda; una fila agrupada marca todos sus ids) →
   «Ver los números» (lleva a la capa exacta de su pestaña). «Lo que tienes que hacer» muestra
   primero una tarea por pregunta que preocupa y agrupa llamadas y facturas. Las pestañas se llaman Hoy,
-  La plata, Cursos y cobros, Ventas, 2027 y Pregúntale a AerIA (sus ids siguen siendo
-  `mando`, `pasado`, `presente`, `comercial`, `futuro`, `hablar`).
+  EBITDA, La plata, Cursos y cobros, Ventas, 2027 y Pregúntale a AerIA (sus ids son
+  `mando`, `ebitda`, `pasado`, `presente`, `comercial`, `futuro`, `hablar`).
+- **EBITDA** (`leerEbitda` en `motor.js`, `I.ebitda`): base caja, mes a mes, con las cartolas:
+  ingresos operacionales − egresos operacionales (sin `imp` ni `equip`) − el sueldo base del
+  socio del plan (`sueldo_socio_mes` en `modelo2027.json`, menos lo que ya figure en `soc_rem`).
+  Los pagos al cofundador, las transferencias y aportes del socio, OTEC y los traspasos no
+  entran. Semáforo con las metas del plan: rojo bajo $0, amarillo entre $0 y la meta del mes,
+  verde sobre la meta; la meta del mes es `resultado2027(meta) / 12`. El mes siguiente al
+  corte queda «sin dato» hasta que llegue su cartola.
 - Las pruebas usan datos ficticios: el repo es público.
 
 ## Recuperar los datos privados (sesión nueva)

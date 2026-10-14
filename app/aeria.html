@@ -22,6 +22,7 @@
 <nav class="pestanas" aria-label="Secciones">
   <div class="envoltura pestanas-in" role="tablist" id="pestanas">
     <button class="pestana" role="tab" id="tab-mando" aria-controls="v-mando" aria-selected="true" data-tab="mando">Hoy <span class="cuenta" id="cuenta-criticas" hidden></span></button>
+    <button class="pestana" role="tab" id="tab-ebitda" aria-controls="v-ebitda" aria-selected="false" data-tab="ebitda">EBITDA <span class="luz-tab" id="luz-ebitda" hidden></span></button>
     <button class="pestana" role="tab" id="tab-pasado" aria-controls="v-pasado" aria-selected="false" data-tab="pasado">La plata</button>
     <button class="pestana" role="tab" id="tab-presente" aria-controls="v-presente" aria-selected="false" data-tab="presente">Cursos y cobros</button>
     <button class="pestana" role="tab" id="tab-comercial" aria-controls="v-comercial" aria-selected="false" data-tab="comercial">Ventas <span class="cuenta" id="cuenta-comercial" hidden></span></button>
@@ -32,6 +33,7 @@
 
 <main class="envoltura">
   <section class="vista" id="v-mando" role="tabpanel" aria-labelledby="tab-mando"></section>
+  <section class="vista" id="v-ebitda" role="tabpanel" aria-labelledby="tab-ebitda" hidden></section>
   <section class="vista" id="v-pasado" role="tabpanel" aria-labelledby="tab-pasado" hidden></section>
   <section class="vista" id="v-presente" role="tabpanel" aria-labelledby="tab-presente" hidden></section>
   <section class="vista" id="v-comercial" role="tabpanel" aria-labelledby="tab-comercial" hidden></section>

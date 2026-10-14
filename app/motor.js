@@ -379,6 +379,45 @@
     };
   }
 
+  /* ---------- EBITDA: lo que deja el negocio antes de impuestos, intereses y compras de equipos ----------
+     Base caja, mes a mes, con las cartolas: lo que entró por ventas menos los gastos de operar, sin
+     impuestos ni compras de equipos (no son parte del EBITDA). El plan 2027 cuenta el sueldo base del
+     socio como gasto fijo (modelo.sueldo_socio_mes); en el banco sale como transferencias sin clasificar,
+     así que se descuenta (menos lo que ya figure como «Remuneración de socios»). Los retiros del
+     cofundador no son gasto según el plan. Semáforo con las metas del plan: bajo $0 rojo, entre $0 y la
+     meta del mes amarillo, sobre la meta verde; la meta del mes es el resultado anual del plan con la
+     venta meta a empresas, dividido en 12. El año 2027 usa el mismo modelo del plan (resultado2027). */
+  const FUERA_EBITDA = ['imp', 'equip'];
+  function leerEbitda(D, X) {
+    const P = X.pasado, M = D.modelo, Fi = D.finanzas;
+    const sueldo = M.sueldo_socio_mes || 0;
+    const metaAnio = resultado2027(M, M.b2b_meta_mes).resultado, metaMes = metaAnio / 12;
+    const color = v => v == null ? 'sindato' : v < 0 ? 'urgente' : v < metaMes ? 'ojo' : 'bien';
+    const etiqueta = c => (Fi.cats[c] || {}).label || c;
+    const meses = P.meses.map(m => {
+      const fuera = FUERA_EBITDA.reduce((a, c) => a + (m.porCat[c] || 0), 0);
+      const gastos = -(m.egresos - fuera);
+      const sueldoSocio = Math.max(0, sueldo + (m.porCat.soc_rem || 0));   // soc_rem viene en negativo
+      const ebitda = m.ingresos - gastos - sueldoSocio;
+      const gastosTop = Object.entries(m.porCat)
+        .filter(([c, v]) => (Fi.cats[c] || {}).grupo === 'Egresos operacionales' && !FUERA_EBITDA.includes(c) && v < 0)
+        .map(([c, v]) => ({ cat: c, label: etiqueta(c), monto: -v })).sort((a, b) => b.monto - a.monto);
+      const empresas = (m.porCat.ing_b2b || 0) + (m.porCat.ing_fact || 0);
+      return { mes: m.mes, ingresos: m.ingresos, empresas, particulares: m.ingresos - empresas, gastos, sueldoSocio, fuera: -fuera, ebitda,
+        margen: m.ingresos > 0 ? ebitda / m.ingresos : null, estado: color(ebitda), gastosTop };
+    });
+    const suma = k => meses.reduce((a, x) => a + x[k], 0);
+    const acumulado = { ingresos: suma('ingresos'), gastos: suma('gastos'), sueldoSocio: suma('sueldoSocio'), ebitda: suma('ebitda') };
+    acumulado.margen = acumulado.ingresos > 0 ? acumulado.ebitda / acumulado.ingresos : null;
+    acumulado.estado = color(meses.length ? acumulado.ebitda / meses.length : null);
+    const ritmo = X.futuro.escenarios.find(e => e.id === 'ultimo');
+    const anio = { resultado: ritmo.resultado, b2b: ritmo.b2b, meta: metaAnio, equilibrio: X.futuro.equilibrio,
+      estado: ritmo.resultado < 0 ? 'urgente' : ritmo.resultado < metaAnio ? 'ojo' : 'bien' };
+    const ultimo = meses[meses.length - 1];
+    return { meses, ultimo, anterior: meses.length > 1 ? meses[meses.length - 2] : null, acumulado, anio, metaMes, metaAnio, sueldo,
+      siguiente: ultimo ? sumarMesesISO(ultimo.mes, 1) : null, cofundador: etiqueta('cof'), fuera: FUERA_EBITDA.map(etiqueta) };
+  }
+
   function leerTablero(M, pasado, cursos, D, com) {
     const u = pasado.meses[pasado.meses.length - 1];
     const estado = (bien, mal) => bien ? 'bien' : (mal ? 'critico' : 'atencion');
@@ -1134,7 +1173,45 @@
         { l: 'Días para el ' + fCorta(U.hito.fecha), v: String(U.diasHito) },
       ] },
     };
+    pestanas.ebitda = explicarEbitda(D, I);
     return { titular, resumen, preocupa: preocupa ? { id: preocupa.id, nombre: preocupa.nombre } : null, conteo, temas, tareas, pestanas };
+  }
+  // la pestaña EBITDA en simple: qué es, por qué está así, qué hacer y los números
+  function explicarEbitda(D, I) {
+    const E = I.ebitda, M = D.modelo;
+    if (!E || !E.ultimo) return null;
+    const u = E.ultimo, a = E.anterior, mesU = mesNombre(u.mes);
+    const meta = E.metaMes;
+    const frase = 'En ' + mesU + ', el EBITDA fue ' + mm(u.ebitda) + ': ' + (u.ebitda < 0
+      ? 'lo que entró por ventas no alcanzó para pagar los gastos de operar y tu sueldo. Faltaron ' + mm(-u.ebitda) + '.'
+      : u.ebitda < meta ? 'alcanzó para pagar todo, pero quedó bajo la meta del mes (' + mm(meta) + ').'
+      : 'quedó sobre la meta del mes (' + mm(meta) + ').');
+    const top = u.gastosTop.slice(0, 3);
+    const falta = Math.max(0, meta - u.ebitda);
+    const porque = [
+      'Entraron ' + mm(u.ingresos) + ' por ventas: ' + mm(u.empresas) + ' de empresas e instituciones y ' + mm(u.particulares) + ' de alumnos particulares y Mercado Pago.',
+      'Operar costó ' + mm(u.gastos) + (top.length ? '. Lo que más pesó: ' + yLista(top.map(g => minus(g.label) + ' (' + mm(g.monto) + ')')) : '') + '.',
+      u.sueldoSocio ? 'Además cuento tu sueldo del plan, ' + mm(u.sueldoSocio) + '. En el banco no sale como sueldo, porque lo que te llevas son transferencias sin clasificar.' : null,
+      a ? 'En ' + mesNombre(a.mes) + ' el EBITDA fue ' + mm(a.ebitda) + ', con ' + mm(a.ingresos) + ' de ventas cobradas. El banco muestra lo cobrado, no lo vendido: un mes con cobros grandes sube y el siguiente puede bajar.' : null,
+      'Los ' + minus(E.cofundador) + ' no se cuentan: el plan los trata como retiros de socio, no como gasto.',
+    ].filter(Boolean);
+    const hacer = [
+      falta > 0 ? { texto: 'Vender ' + mm(falta / M.margen_b2b) + ' más al mes a empresas: de cada venta queda el ' + pct(M.margen_b2b, 1) + ', y eso cubre los ' + mm(falta) + ' que faltan para la meta del mes.' } : null,
+      top.length ? { texto: 'Revisar ' + minus(top[0].label) + ': fue el gasto más grande de ' + mesU + ' (' + mm(top[0].monto) + ').' } : null,
+      { texto: 'Actualizar el informe de finanzas con la cartola de ' + mesNombre(E.siguiente) + ' para ver su EBITDA.' },
+    ].filter(Boolean);
+    const anio = E.anio;
+    return {
+      texto: [frase, 'El EBITDA es lo que deja el negocio antes de impuestos, intereses y compras de equipos: lo que entra por ventas menos lo que cuesta operar, incluido tu sueldo.'],
+      que: [
+        'Es la plata que genera la operación del mes, antes de impuestos, intereses y compras de equipos.',
+        'Aquí se calcula con el banco: lo que entró por ventas, menos los gastos de operar, menos tu sueldo del plan (' + mm(E.sueldo) + ').',
+        'Verde: ' + mm(meta) + ' o más al mes, que es la meta del plan 2027 (' + mm(E.metaAnio) + ' en el año). Amarillo: entre $0 y la meta. Rojo: bajo $0, el mes perdió plata.',
+      ],
+      porque, hacer,
+      anioFrase: 'Si 2027 se vende como ' + mesU + ' (' + mm(anio.b2b) + ' al mes a empresas), el EBITDA del año sería ' + mm(anio.resultado) + '. Con la meta del plan sería ' + mm(anio.meta) + '.',
+      siguienteFrase: 'Aún no tengo la cartola de ' + mesNombre(E.siguiente) + '.' + (I.despues && I.despues.ventasRegistro ? ' Lo que ya se ve: tu registro anota ' + mm(I.despues.ventasRegistro) + ' en ventas al ' + fDia(I.despues.hasta) + '.' : ''),
+    };
   }
 
   /* ---------- análisis completo ---------- */
@@ -1159,6 +1236,7 @@
     const futuro = leerFuturo(D.modelo, pasado, hoy, comercial);
     const tablero = leerTablero(D.modelo, pasado, cursos, D, comercial);
     const X = { pasado, cursos, lic, cot, porCobrar, cruce, futuro, tablero, comercial, despues };
+    X.ebitda = leerEbitda(D, X);
     const alertas = construirAlertas(D, X, hoy, ahora);
     const agenda = construirAgenda(D, X, alertas, hoy);
     const viene = construirViene(D, X, hoy);
@@ -1226,6 +1304,12 @@
     L.push('- Tablero mensual: ' + tablero.map(t => t.indicador + ': ' + t.valor + ' (meta ' + t.meta + ', ' + t.estado + ')').join('; ') + '.');
     const sit = D.plan && D.plan.secciones.find(s => /situaci/i.test(s.titulo));
     if (sit) L.push('- Lectura del plan: ' + [...sit.parrafos, ...sit.listas.flat()].join(' '));
+    if (I.ebitda && I.ebitda.ultimo) {
+      const E = I.ebitda;
+      L.push('\n## EBITDA (base caja: ventas cobradas − gastos de operar, sin impuestos ni compras de equipos, menos el sueldo base del socio del plan ' + clp(E.sueldo) + '/mes; retiros del cofundador no son gasto)');
+      for (const m of E.meses) L.push('- ' + m.mes + ': ingresos ' + clp(m.ingresos) + ', gastos ' + clp(m.gastos) + ', sueldo socio ' + clp(m.sueldoSocio) + ' → EBITDA ' + clp(m.ebitda) + (m.margen != null ? ' (' + pct(m.margen) + ')' : '') + ' [' + m.estado + '].');
+      L.push('- Semáforo: rojo < $0; amarillo $0 a ' + clp(E.metaMes) + '; verde ≥ ' + clp(E.metaMes) + ' (meta anual del plan ' + clp(E.metaAnio) + ' / 12). 2027 al ritmo del último mes: ' + clp(E.anio.resultado) + '.');
+    }
     L.push('\n## ALERTAS ACTIVAS (de AerIA)');
     for (const a of I.alertas) L.push('- [' + a.nivel + '|' + a.foco + '] ' + a.titulo + ' → ' + a.accion);
     if (D.notas && D.notas.length) {

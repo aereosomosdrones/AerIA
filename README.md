@@ -30,6 +30,11 @@ abren «¿Por qué?», «¿Qué hago?» y «Ver los números». Cada pestaña pa
   facturas pendientes agrupadas), seis preguntas sobre la plata, las ventas, los clientes
   por decidir, los cobros, los cursos y 2027, y más abajo todos los avisos, la lista
   completa de tareas y lo que viene en 90 días.
+- **EBITDA**: un semáforo de lo que deja el negocio cada mes, antes de impuestos,
+  intereses y compras de equipos (ventas cobradas − gastos de operar − el sueldo del socio
+  del plan). Rojo bajo $0, amarillo hasta la meta del plan 2027 y verde sobre la meta; un
+  semáforo por mes, el mes en curso sin dato hasta su cartola y 2027 al ritmo de hoy, con el
+  porqué, qué hacer y los números paso a paso.
 - **La plata**: la plata día a día, adónde se fue, ventas y gastos por categoría, mes a
   mes y lo que encontró la revisión contable.
 - **Cursos y cobros**: cupos vendidos por fecha, quién debe (banco + SII), resumen de

@@ -15,7 +15,7 @@
   const NIVEL_TXT = { critica: 'Urgente', alta: 'Ojo', oportunidad: 'Oportunidad', media: 'Sin apuro', baja: 'Para saber' };
   const FOCO_TXT = { pasado: 'La plata', presente: 'Cursos y cobros', futuro: '2027', cruce: 'Varios datos', comercial: 'Ventas' };
   const C = window.AeriaComercial;
-  const VISTAS = ['mando', 'pasado', 'presente', 'comercial', 'futuro', 'hablar'];
+  const VISTAS = ['mando', 'ebitda', 'pasado', 'presente', 'comercial', 'futuro', 'hablar'];
   const MES3 = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
   const DIA3 = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
 
@@ -96,7 +96,7 @@
   const datos = () => Object.assign({}, D0, { notas: S.notas, comercial: Object.assign({}, D0.comercial, { cotizaciones: cotizacionesActuales() }) });
   function recalcular() { I = M.analizar(datos(), hoy(), new Date()); }
   const resuelta = a => S.alertas[a.id] && S.alertas[a.id].estado === 'resuelta';
-  const fuerte = t => esc(t).replace(/(−?\$[\d.,]+M?)/g, '<b>$1</b>');
+  const fuerte = t => esc(t).replace(/(−?\$\d(?:[\d.,]*\d)?M?)/g, '<b>$1</b>');   // sin la coma o el punto que sigue al monto
   // fecha y hora de Chile para una marca ISO (las fuentes la guardan en UTC)
   const enChile = s => {
     const d = new Date(s || '');
@@ -204,9 +204,12 @@
     const crit = I.alertas.filter(a => a.nivel === 'critica' && !resuelta(a)).length;
     $('#banda-estado').innerHTML =
       '<span><span class="led' + (crit ? ' rojo' : '') + '"></span>' + (crit ? '<b>' + crit + '</b> ' + (crit === 1 ? 'aviso urgente' : 'avisos urgentes') : 'Sin avisos urgentes') + '</span>' +
+      (I.ebitda && I.ebitda.ultimo ? '<button class="banda-ebitda" type="button" data-tab="ebitda" title="Ver el semáforo del EBITDA"><span class="led ' + ({ urgente: 'rojo', ojo: '', bien: 'verde' }[I.ebitda.ultimo.estado] || '') + '"></span>EBITDA de ' + esc(F.mesNombre(I.ebitda.ultimo.mes)) + '&nbsp;<b>' + F.mm(I.ebitda.ultimo.ebitda) + '</b></button>' : '') +
       '<span>Banco al <b>' + F.fCorta(I.pasado.fechaCorte) + '</b></span>' +
       '<span>Cursos al <b>' + F.fCorta((D0.cursos.extraido || '').slice(0, 10)) + '</b></span>' +
       '<span>Hoy <b>' + F.fLarga(I.hoy) + '</b></span>';
+    const lt = $('#luz-ebitda');
+    if (lt && I.ebitda && I.ebitda.ultimo) { lt.hidden = false; lt.className = 'luz-tab ' + I.ebitda.ultimo.estado; lt.title = 'EBITDA de ' + F.mesNombre(I.ebitda.ultimo.mes) + ': ' + F.mm(I.ebitda.ultimo.ebitda); }
     const c = $('#cuenta-criticas');
     c.hidden = !crit; c.textContent = crit;
     const hoyCom = I.comercial ? I.comercial.acciones.filter(a => a.cuando === 'hoy').length : 0;
@@ -403,6 +406,54 @@
     const t = e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.titulo)}</a>`
       : e.cotizacion ? `<button class="enlace-btn ev-btn" type="button" data-com="abrir" data-id="${esc(e.cotizacion)}">${esc(e.titulo)}</button>` : esc(e.titulo);
     return `<div class="ev t-${e.tipo}"><div class="ev-f">${fechaCaja(e.fecha)}</div><div><div class="ev-t">${t}</div><div class="ev-d">${dSem(e.fecha)} · ${F.cuando(e.dias)} · ${extra}</div></div></div>`;
+  }
+
+  /* ========================================================================
+     EBITDA: un semáforo de lo que deja el negocio cada mes
+     ======================================================================== */
+  const SEM_TXT = { bien: 'verde', ojo: 'amarillo', urgente: 'rojo', sindato: 'sin dato' };
+  const semaforoGrande = estado => `<div class="semaforo-grande" role="img" aria-label="Semáforo en ${SEM_TXT[estado] || estado}">${['urgente', 'ojo', 'bien'].map(k => `<span class="luz ${k}${k === estado ? ' encendida' : ''}"></span>`).join('')}</div>`;
+  function renderEbitda() {
+    const v = $('#v-ebitda'); const E = I.ebitda, T = I.simple.pestanas.ebitda;
+    if (!E || !E.ultimo || !T) { v.innerHTML = '<p class="panel-b mudo">Todavía no hay datos del banco para calcular el EBITDA.</p>'; return; }
+    const u = E.ultimo, mesU = F.mesNombre(u.mes);
+    const mini = (titulo, valor, estado, sub) => `<div class="panel mini-sem"><span class="luz-chica ${estado}" aria-hidden="true"></span><div><span class="ms-t">${esc(titulo)}</span><b class="num">${esc(valor)}</b><small>${esc(SEM_TXT[estado] ? mayus1(SEM_TXT[estado]) : '')}${sub ? ' · ' + esc(sub) : ''}</small></div></div>`;
+    const fila = E.meses.map(m => mini(mayus1(F.mesNombre(m.mes)), F.mm(m.ebitda), m.estado, m.margen != null ? 'margen ' + F.pct(m.margen) : ''))
+      .concat([mini(mayus1(F.mesNombre(E.siguiente)), 'Sin dato', 'sindato', 'falta la cartola'), mini('2027, al ritmo de ' + mesU, F.mm(E.anio.resultado), E.anio.estado, 'meta ' + F.mm(E.metaAnio))]);
+    const paso = (id, n, titulo, cuerpo) => `<details class="paso-d" data-paso="ebitda-${id}"${S.pasos.has('ebitda-' + id) ? ' open' : ''}><summary><span class="n-paso">${n}</span><span>${titulo}</span></summary><div class="paso-cuerpo${id === 'numeros' ? ' ancho' : ''}">${cuerpo}</div></details>`;
+    const p = l => l.map(x => '<p>' + simple(x) + '</p>').join('');
+    const tabla = `<div class="tabla-env"><table><thead><tr><th>Mes</th><th class="d">Entró por ventas</th><th class="d">Costó operar</th><th class="d">Tu sueldo (plan)</th><th class="d">EBITDA</th><th class="d">Margen</th></tr></thead><tbody>
+      ${E.meses.map(m => `<tr><td>${esc(mayus1(F.mesNombre(m.mes)))}</td><td class="d">${F.clp(m.ingresos)}</td><td class="d">${F.clp(-m.gastos)}</td><td class="d">${F.clp(-m.sueldoSocio)}</td><td class="d"><span class="semaforo ${m.estado}">${F.clp(m.ebitda)}</span></td><td class="d">${m.margen != null ? F.pct(m.margen) : '—'}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td style="font-weight:700">Total ${esc(I.pasado.etiqueta)}</td><td class="d">${F.clp(E.acumulado.ingresos)}</td><td class="d">${F.clp(-E.acumulado.gastos)}</td><td class="d">${F.clp(-E.acumulado.sueldoSocio)}</td><td class="d" style="font-weight:700">${F.clp(E.acumulado.ebitda)}</td><td class="d">${E.acumulado.margen != null ? F.pct(E.acumulado.margen) : '—'}</td></tr></tfoot></table></div>`;
+    const gastos = `<p><b>En qué se gastó en ${esc(mesU)}</b></p><dl class="numeros">${u.gastosTop.map(g => `<dt>${esc(g.label)}</dt><dd>${F.clp(g.monto)}</dd>`).join('')}</dl>`;
+    const leyenda = `<div class="leyenda-sem"><span><span class="luz-chica bien"></span>Verde: ${F.mm(E.metaMes)} o más al mes</span><span><span class="luz-chica ojo"></span>Amarillo: entre $0 y ${F.mm(E.metaMes)}</span><span><span class="luz-chica urgente"></span>Rojo: bajo $0</span></div>`;
+    v.innerHTML = `
+      <section class="panel ebitda-cab">
+        ${semaforoGrande(u.estado)}
+        <div class="ebitda-txt">
+          <div class="ceja">EBITDA de ${esc(mesU)} · el último mes con datos del banco</div>
+          <div class="gran-num ${u.ebitda < 0 ? 'mal' : u.estado === 'bien' ? 'bien' : ''}">${F.mm(u.ebitda)}</div>
+          <p class="tema-frase">${simple(T.texto[0])}</p>
+          <p class="c-sub">${simple(T.texto[1])}</p>
+          ${leyenda}
+        </div>
+      </section>
+      <div class="fila-sem">${fila.join('')}</div>
+      <section class="panel"><div class="pasos-tema">
+        ${paso('que', 1, '¿Qué es el EBITDA?', p(T.que))}
+        ${paso('porque', 2, '¿Por qué está así?', p(T.porque.concat([T.anioFrase, T.siguienteFrase])))}
+        ${paso('hacer', 3, '¿Qué hago?', '<ul class="hacer-lista">' + T.hacer.map(x => '<li><span><span>' + simple(x.texto) + '</span></span></li>').join('') + '</ul>')}
+        ${paso('numeros', 4, 'Ver los números', tabla + gastos + `<p class="c-sub">De dónde sale: cartolas del banco (${esc(I.pasado.etiqueta)}); el sueldo y las metas, del plan 2027.</p><div class="chips"><button class="btn sm sec" type="button" data-accion="ir-detalle" data-tab-ir="pasado" data-capa="pasado-meses" data-ancla="" data-filtro="">Ver la plata mes a mes →</button><button class="btn sm sec" type="button" data-accion="ir-detalle" data-tab-ir="futuro" data-capa="futuro-sim" data-ancla="" data-filtro="">Probar qué pasa en 2027 →</button></div>`)}
+      </div></section>
+      ${capa('ebitda-calculo', 'Cómo lo calculo', 'Qué entra y qué no entra en el EBITDA de AerIA.', `<section class="panel"><div class="panel-b" style="display:flex;flex-direction:column;gap:10px;max-width:80ch">
+        <p><b>EBITDA del mes = lo que entró por ventas − lo que costó operar − tu sueldo del plan.</b></p>
+        <p>Lo que entró por ventas: ${esc(Object.values(D0.finanzas.cats).filter(c => c.grupo === 'Ingresos operacionales').map(c => c.label.toLowerCase()).join(', '))}.</p>
+        <p>Lo que costó operar: todos los gastos de la operación del banco, menos ${esc(E.fuera.map(x => x.toLowerCase()).join(' y '))}, que no son parte del EBITDA.</p>
+        <p>Tu sueldo: ${F.clp(E.sueldo)} al mes, como dice el plan 2027. En el banco lo que te llevas sale como transferencias sin clasificar; si algún mes aparece como «remuneración de socios», no se cuenta dos veces.</p>
+        <p>No entran: las transferencias y aportes del socio (más allá del sueldo), los ${esc(E.cofundador.toLowerCase())} (el plan los trata como retiros), los movimientos con Aéreo OTEC y los traspasos entre cuentas propias.</p>
+        <p>Es base caja: cuenta lo cobrado y lo pagado en el mes, no lo vendido. Por eso un mes con cobros grandes sube y el siguiente puede bajar.</p>
+        <p>Las metas salen del plan 2027: con la venta meta a empresas, el año deja ${F.mm(E.metaAnio)}, o sea ${F.mm(E.metaMes)} al mes. 2027 se proyecta con el mismo modelo del plan, al ritmo de venta a empresas de ${esc(mesU)}.</p>
+      </div></section>`)}`;
   }
 
   /* ========================================================================
@@ -1048,7 +1099,7 @@ Abajo está tu lectura actual de la empresa.`;
      ======================================================================== */
   function pintar() {
     recalcular(); renderBanda();
-    ({ mando: renderMando, pasado: renderPasado, presente: renderPresente, comercial: () => COM && COM.render(), futuro: renderFuturo, hablar: renderHablar })[S.tab]();
+    ({ mando: renderMando, ebitda: renderEbitda, pasado: renderPasado, presente: renderPresente, comercial: () => COM && COM.render(), futuro: renderFuturo, hablar: renderHablar })[S.tab]();
     renderPie();
   }
 
