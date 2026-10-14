@@ -689,6 +689,8 @@
         const diag = { codigo: String(c || (e && e.iaCodigo) || 'sin código'), paso: L.pasoNav || '', mensaje: String((e && e.message) || '').slice(0, 200), permiso, auth: nav.auth || '', soloLectura: nav.ro || '' };
         if (c === 'server_not_connected' || c === 'not_granted' || c === 'capability_disabled' || c === 'capability_removed') return anotar('sin-app', { diag });
         if (c === 'not_in_manifest') return anotar('no-permitido', { diag });
+        // la app no deja que una página abra programas del propio computador (localhost): no es un permiso que falte
+        if (c === 'cancelled' && /only web sites|aren.t available to artifacts/i.test(String((e && e.message) || ''))) return anotar('solo-web', { diag });
         if (c === 'cancelled') return anotar('cancelada', { diag });
         if (c === 'approval_required') return anotar('sin-aprobar', { diag });
         if (c === 'tool_error') return anotar('error', { msg: 'El navegador de Claude no pudo abrir o leer el dashboard. ¿Está encendido en tu Mac (localhost:8765)?' + det, diag });
@@ -733,6 +735,7 @@
         bloqueado: 'Tienes bloqueado el navegador de Claude para AerIA. Actívalo en los permisos de la página y vuelve a apretar «Sincronizar ahora».',
         cancelada: 'La app de Claude no dejó abrir tu dashboard: la pregunta para usar su navegador se rechazó. Al apretar «Sincronizar ahora» vuelve a preguntar: elige Permitir. ' + OTRA_VIA,
         'sin-aprobar': 'La app de Claude esperaba tu aprobación para usar su navegador y no la recibió (o la pregunta no se vio). Vuelve a apretar «Sincronizar ahora» y elige Permitir. ' + OTRA_VIA,
+        'solo-web': 'La app de Claude no deja que una página abra programas de tu computador, como tu dashboard en localhost: solo sitios web. Para traerlo, pídele a Claude en Chrome que lea tu dashboard y lo cargue en AerIA, o usa el marcador «AerIA · Extraer» y el importador.',
         'pestana-sin-tabla': 'Leí la pestaña abierta en el navegador de Claude, pero no trae una tabla de cotizaciones que pueda importar sola. Usa el marcador «AerIA · Extraer» o el importador.',
         'revisar-pestana': 'Leí la pestaña abierta: revisa en el importador que sea tu dashboard y guarda.',
         error: s.msg || 'No se pudo sincronizar.',
@@ -758,7 +761,7 @@
       if (ultimo && Date.now() - new Date(ultimo).getTime() < SYNC_CADA) return;
       // si la persona rechazó el navegador, no se vuelve a preguntar solo: queda «Sincronizar ahora»
       // tras un rechazo, o una lectura de la pestaña abierta, solo un clic vuelve a llamar al navegador
-      if (reg.intento && (['cancelada', 'sin-aprobar', 'no-permitido', 'bloqueado', 'pestana-sin-tabla'].includes(reg.intento.estado) || reg.intento.rechazo)) { L.sync = { estado: reg.intento.estado, diag: reg.intento }; pintarSync(); return; }
+      if (reg.intento && (['cancelada', 'sin-aprobar', 'no-permitido', 'bloqueado', 'pestana-sin-tabla', 'solo-web'].includes(reg.intento.estado) || reg.intento.rechazo)) { L.sync = { estado: reg.intento.estado, diag: reg.intento }; pintarSync(); return; }
       if (await navegadorDisponible()) sincronizar(false); else { L.sync = { estado: 'sin-app' }; pintarSync(); }
     }
 
