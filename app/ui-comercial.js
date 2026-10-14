@@ -449,6 +449,8 @@
     const SYNC_CADA = 20 * 60 * 1000;      // como mucho una sincronización automática cada 20 minutos
     const SYNC_MAX = 150;                  // un cambio más grande se revisa a mano en el importador
     const espera = ms => new Promise(r => setTimeout(r, ms));
+    const OTRA_VIA = 'Si no aparece ninguna pregunta, abre tú el dashboard en el navegador de Claude (Cmd+Shift+B) y aprieta «Sincronizar ahora»: AerIA leerá esa pestaña.';
+    const PASOS = { abrir: 'abrir el dashboard', navegar: 'volver a la pestaña del dashboard', leer: 'leer el dashboard' };
     // la respuesta del navegador no tiene un formato fijo: se busca el id de la pestaña y el texto más largo
     function idDePestana(v) {
       if (v == null) return undefined;
@@ -472,9 +474,26 @@
     }
     const navegadorDisponible = async () => {
       const mcp = ctx.mcp(); if (!mcp) return false;
-      try { const r = await mcp.listTools(NAV); return !!(r && r.servers || []).some(s => s.server === NAV && (s.tools || []).length); }
+      try {
+        const r = await mcp.listTools(NAV);
+        const s = ((r && r.servers) || []).find(x => x.server === NAV && (x.tools || []).length);
+        // para el diagnóstico: cómo ve la app el navegador y qué herramientas declara de solo lectura
+        if (s) L.navInfo = { auth: s.authStatus || '', ro: (s.tools || []).filter(t => t.annotations && t.annotations.readOnlyHint).map(t => t.name).join(',') };
+        return !!s;
+      }
       catch (e) { return false; }
     };
+    // permiso de la página para el navegador de Claude: se lee sin preguntar; en un clic se pide si falta
+    async function permisoNav(pedir) {
+      let p = null; try { p = await ctx.permisos(); } catch (e) { p = null; }
+      if (!p) return 'sin-dato';
+      const nombre = 'mcp:' + NAV;
+      let st = await p.state(nombre).catch(() => 'sin-dato');
+      if (pedir && st === 'prompt') st = await p.request([nombre]).then(r => (r && r[nombre]) || st).catch(() => st);
+      return st;
+    }
+    // una tabla de cotizaciones (no cualquier página): lo único que se acepta de la pestaña que la persona abrió
+    const tablaDashboard = t => { const cj = C.tablasDeTexto(t)[0]; return !!(cj && cj.mapeo.cliente && cj.puntaje >= 6); };
     const PROMPT_SYNC = 'Este es el texto de la página de un dashboard de cotizaciones de una empresa chilena (escuela de pilotos de drones). Extrae SOLO las cotizaciones (no totales, KPIs ni menús) como un JSON array de objetos con estas claves: folio, cliente, descripcion, monto (número en pesos, sin puntos), estado (borrador, enviada, negociacion, ganada, perdida o vencida, según lo que diga la página), probabilidad (número 0-100 o ""), fecha_cotizacion (AAAA-MM-DD o ""), fecha_cierre (AAAA-MM-DD o ""), fecha_cierre_estimada (AAAA-MM-DD o ""), proximo_seguimiento (AAAA-MM-DD o ""), linea (sence, curso_cerrado, aoc, servicios, escuela, flota, venta_equipos u otro), contacto, notas. Copia los valores tal como aparecen; no inventes datos: deja "" lo que no esté. Responde solo el JSON.\n\n';
     // la pestaña del dashboard se reutiliza entre sincronizaciones (se recuerda en este navegador)
     const tabGuardada = () => { try { const v = localStorage.getItem('aeria:tab-dashboard'); return v ? Number(v) : undefined; } catch (e) { return undefined; } };
@@ -482,9 +501,11 @@
     async function abrirDashboard(mcp, url) {
       const previa = L.tabDash !== undefined ? L.tabDash : tabGuardada();
       if (previa !== undefined) {
+        L.pasoNav = 'navegar';
         try { await mcp.callTool(NAV, 'navigate', { url, tabId: previa }); return previa; }
         catch (e) { if (e && ['cancelled', 'not_in_manifest', 'approval_required', 'server_not_connected'].includes(e.code)) throw e; guardarTab(undefined); }  // pestaña cerrada: se abre otra
       }
+      L.pasoNav = 'abrir';
       const abierta = await mcp.callTool(NAV, 'preview_start', { url });
       const id = idDePestana(abierta && (abierta.payload !== undefined ? abierta.payload : abierta));
       guardarTab(id);
@@ -512,21 +533,40 @@
       // cada intento queda anotado (sin tocar la última sincronización que cambió algo)
       const anotar = async (estado, extra) => {
         L.sync = Object.assign({ estado, fecha: ahora }, extra || {}); pintarSync();
-        await ctx.guardarSync(Object.assign({}, ctx.syncEstado() || previo, { intento: { fecha: ahora, estado, manual: !!manual } }, extra && extra.reg ? extra.reg : {}));
+        // el intento guarda qué respondió la app y en qué paso, para entender una falla sin ver la pantalla
+        const intento = Object.assign({ fecha: ahora, estado, manual: !!manual }, extra && extra.diag ? extra.diag : {});
+        await ctx.guardarSync(Object.assign({}, ctx.syncEstado() || previo, { intento }, extra && extra.reg ? extra.reg : {}));
       };
+      // en un clic se pide antes el permiso de la página para el navegador; si está bloqueado no se llama
+      L.sync = { corriendo: true, paso: manual ? 'Pidiendo permiso para usar el navegador de Claude…' : 'Abriendo tu dashboard en el navegador de Claude…' }; pintarSync();
+      const permiso = await permisoNav(!!manual);
+      if (permiso === 'denied') return anotar('bloqueado', { diag: { permiso } });
       L.sync = { corriendo: true, paso: 'Abriendo tu dashboard en el navegador de Claude…' }; pintarSync();
+      L.pasoNav = 'abrir'; L.diagActiva = '';
       try {
         const url = await ctx.urlDashboard();
-        const tabId = await abrirDashboard(mcp, url);
-        const leer = async () => textoDe(await mcp.callTool(NAV, 'get_page_text', tabId !== undefined ? { tabId } : {}, { cache: false }).then(r => r.payload !== undefined ? r.payload : r));
-        L.sync.paso = 'Leyendo tu dashboard…'; pintarSync();
-        let texto = await leer();
-        if (texto.replace(/\s+/g, '').length < 200) { await espera(2500); texto = await leer(); }   // el dashboard puede cargar sus datos después
+        const leerPestana = async id => textoDe(await mcp.callTool(NAV, 'get_page_text', id !== undefined ? { tabId: id } : {}, { cache: false }).then(r => r.payload !== undefined ? r.payload : r));
+        let texto = '', via0 = '', tabId;
+        try { tabId = await abrirDashboard(mcp, url); }
+        catch (e) {
+          if (!e || !['cancelled', 'approval_required'].includes(e.code)) throw e;
+          // la app no dejó abrir ni mover pestañas: si la persona abrió el dashboard en el navegador de Claude,
+          // se lee la pestaña activa (solo lectura), y solo si trae una tabla de cotizaciones
+          const activa = await leerPestana(undefined).catch(x => { L.diagActiva = 'error ' + ((x && x.code) || ''); return ''; });
+          if (!tablaDashboard(activa)) { if (!L.diagActiva) L.diagActiva = activa.trim() ? 'sin tabla' : 'vacía'; throw e; }
+          texto = activa; via0 = 'pestaña';
+        }
+        if (!via0) {
+          L.pasoNav = 'leer';
+          L.sync.paso = 'Leyendo tu dashboard…'; pintarSync();
+          texto = await leerPestana(tabId);
+          if (texto.replace(/\s+/g, '').length < 200) { await espera(2500); texto = await leerPestana(tabId); }   // el dashboard puede cargar sus datos después
+        }
         if (!texto.trim()) return anotar('vacio');
         const firma = C.huellaTexto(texto);
         if (!manual && previo.firma === firma) return anotar('sin-cambios');
         // 1) una tabla del texto (por bloques: no mezcla resúmenes ni segundas tablas); 2) si no, Claude la ordena
-        let filas = null, mapeo = null, columnas = null, via = 'tabla', inventadas = 0;
+        let filas = null, mapeo = null, columnas = null, via = via0 || 'tabla', inventadas = 0;
         const cj = C.tablasDeTexto(texto)[0];
         if (cj && cj.mapeo.cliente && cj.puntaje >= 6) { filas = cj.filas; mapeo = cj.mapeo; columnas = cj.columnas; }
         if (!filas) {
@@ -576,11 +616,14 @@
           (plan.conflictos.length ? '. ' + plan.conflictos.length + (plan.conflictos.length === 1 ? ' cambio choca' : ' cambios chocan') + ' con lo que editaste en AerIA: no los apliqué' : '') + '.');
       } catch (e) {
         const c = e && e.code, det = e && e.message ? ' (' + String(e.message).slice(0, 140) + ')' : '';
-        if (c === 'server_not_connected' || c === 'not_granted' || c === 'capability_disabled' || c === 'capability_removed') return anotar('sin-app');
-        if (c === 'not_in_manifest') return anotar('no-permitido');
-        if (c === 'cancelled' || c === 'approval_required') return anotar('cancelada');
-        if (c === 'tool_error') return anotar('error', { msg: 'El navegador de Claude no pudo abrir o leer el dashboard. ¿Está corriendo en tu Mac (localhost:8765)?' + det });
-        return anotar('error', { msg: 'No se pudo sincronizar ahora.' + det });
+        const nav = L.navInfo || {};
+        const diag = { codigo: String(c || 'sin código'), paso: L.pasoNav || '', mensaje: String((e && e.message) || '').slice(0, 200), permiso, auth: nav.auth || '', soloLectura: nav.ro || '', activa: L.diagActiva || '' };
+        if (c === 'server_not_connected' || c === 'not_granted' || c === 'capability_disabled' || c === 'capability_removed') return anotar('sin-app', { diag });
+        if (c === 'not_in_manifest') return anotar('no-permitido', { diag });
+        if (c === 'cancelled') return anotar('cancelada', { diag });
+        if (c === 'approval_required') return anotar('sin-aprobar', { diag });
+        if (c === 'tool_error') return anotar('error', { msg: 'El navegador de Claude no pudo abrir o leer el dashboard. ¿Está corriendo en tu Mac (localhost:8765)?' + det, diag });
+        return anotar('error', { msg: 'No se pudo sincronizar ahora.' + det, diag });
       }
     }
     /* Revierte entera la última sincronización: lo que creó se borra (si nadie lo tocó
@@ -617,12 +660,17 @@
         'sin-filas': 'Leí el dashboard pero no encontré cotizaciones en él.',
         'sin-ia': 'El dashboard no viene como tabla y Claude no está disponible ahora para ordenarlo.',
         revisar: s.raras ? 'Algo de la lectura se ve raro: lo dejé en el importador para que lo revises antes de guardar.' : 'Hay ' + (s.n || 'muchos') + ' cambios: revísalos en el importador antes de guardarlos.',
-        'no-permitido': 'No permitiste que AerIA use el navegador de Claude. Puedes activarlo en los permisos de la página.',
-        cancelada: 'Sincronización cancelada.',
+        'no-permitido': 'No permitiste que AerIA use el navegador de Claude. Actívalo en los permisos de la página y vuelve a apretar «Sincronizar ahora».',
+        bloqueado: 'Tienes bloqueado el navegador de Claude para AerIA. Actívalo en los permisos de la página y vuelve a apretar «Sincronizar ahora».',
+        cancelada: 'La app de Claude canceló la apertura de tu dashboard. Al apretar «Sincronizar ahora», la app pregunta si AerIA puede usar su navegador y abrir localhost: elige Permitir. ' + OTRA_VIA,
+        'sin-aprobar': 'La app de Claude esperaba tu aprobación para usar su navegador y no la recibió (o la pregunta no se vio). Vuelve a apretar «Sincronizar ahora» y elige Permitir. ' + OTRA_VIA,
         error: s.msg || 'No se pudo sincronizar.',
       };
       const conf = reg && !reg.deshecha && (reg.conflictos || []).length ? reg.conflictos : [];
+      const d = s.diag && s.diag.codigo ? s.diag : null;
       const aviso = (s.estado && msgs[s.estado] ? `<span class="c-sub">${esc(msgs[s.estado])}</span>` : '') +
+        (['bloqueado', 'no-permitido'].includes(s.estado) ? '<button class="enlace-btn" type="button" data-com="sync-permisos">Revisar permisos</button>' : '') +
+        (d ? `<span class="c-sub mono">Detalle: ${esc(d.codigo)}${d.paso ? ' al ' + esc(PASOS[d.paso] || d.paso) : ''}${d.permiso ? ' · permiso ' + esc(d.permiso) : ''}${d.activa ? ' · pestaña activa: ' + esc(d.activa) : ''}</span>` : '') +
         (conf.length ? `<details class="c-sub"><summary>${conf.length} ${conf.length === 1 ? 'cambio del dashboard choca' : 'cambios del dashboard chocan'} con lo editado en AerIA (no los apliqué)</summary><ul>${conf.slice(0, 12).map(x => '<li>' + esc(x.cliente || x.id) + ' · ' + esc(x.campo) + ': AerIA «' + esc(String(x.aerIA)) + '», dashboard «' + esc(String(x.fuente)) + '»' + (x.motivo === 'reabre una cerrada' ? ' (reabriría una cerrada)' : '') + '</li>').join('')}</ul></details>` : '');
       return `<span class="sync-linea"><b>Conexión automática</b> · ${esc(ult)}
         <button class="enlace-btn" type="button" data-com="sync">Sincronizar ahora</button>${reg && reg.id && !reg.deshecha && (reg.ids || []).length ? '<button class="enlace-btn" type="button" data-com="sync-deshacer">Deshacer la última</button>' : ''}</span>${aviso}`;
@@ -637,7 +685,7 @@
       const ultimo = [reg.fecha, reg.revisado, reg.intento && reg.intento.fecha].filter(Boolean).sort().pop();
       if (ultimo && Date.now() - new Date(ultimo).getTime() < SYNC_CADA) return;
       // si la persona rechazó el navegador, no se vuelve a preguntar solo: queda «Sincronizar ahora»
-      if (reg.intento && ['cancelada', 'no-permitido'].includes(reg.intento.estado)) { L.sync = { estado: reg.intento.estado }; pintarSync(); return; }
+      if (reg.intento && ['cancelada', 'sin-aprobar', 'no-permitido', 'bloqueado'].includes(reg.intento.estado)) { L.sync = { estado: reg.intento.estado, diag: reg.intento }; pintarSync(); return; }
       if (await navegadorDisponible()) sincronizar(false); else { L.sync = { estado: 'sin-app' }; pintarSync(); }
     }
 
@@ -657,6 +705,12 @@
       if (a === 'importar') { abrirImportador(); return; }
       if (a === 'sync') { sincronizar(true); return; }
       if (a === 'sync-deshacer') { deshacerSync(); return; }
+      if (a === 'sync-permisos') {
+        const p = await ctx.permisos().catch(() => null);
+        try { if (!p) throw new Error('sin panel'); await p.manage(); }
+        catch (e) { ctx.avisar('Abre el menú de permisos de esta página (arriba) y activa el navegador de Claude para AerIA.'); }
+        return;
+      }
       if (a === 'exportar') { exportarCSV(); return; }
       if (a === 'filtro') { L.filtro = t.dataset.valor; L.ver = 40; render(); return; }
       if (a === 'ver-mas') { L.ver += 40; $('#tabla-cot').innerHTML = tablaHtml(R()); return; }

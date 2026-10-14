@@ -1028,6 +1028,7 @@ Abajo está tu lectura actual de la empresa.`;
       }
     },
     descargas: async () => (window.claude && typeof window.claude.use === 'function') ? window.claude.use('downloads') : null,
+    permisos: async () => (window.claude && typeof window.claude.use === 'function') ? window.claude.use('permissions') : null,
     // conexión automática con el dashboard local (navegador integrado de la app de escritorio)
     mcp: () => S.mcp || null,
     syncEstado: () => S.syncDash || null,
