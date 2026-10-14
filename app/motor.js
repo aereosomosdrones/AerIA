@@ -240,11 +240,24 @@
   }
   const nombresCuentas = F => [...new Set(Object.values(cuentas(F)))].join(' + ');
 
+  /* Facturas que el registro interno da por pagadas después del corte de las cartolas */
+  function cobradasDespues(F) {
+    const post = (F.registro_post && F.registro_post.cobradas_del_periodo) || [];
+    const m = new Map(post.map(x => [String(x.folio), x.fecha_cobro || '']));
+    for (const s of F.sii) {
+      const r = /se pag[oó] el (\d{1,2})-(\d{1,2})/i.exec(s.det || '');
+      if (r && !m.has(String(s.folio))) m.set(String(s.folio), F.periodo.hasta.slice(0, 4) + '-' + r[2].padStart(2, '0') + '-' + r[1].padStart(2, '0'));
+    }
+    return m;
+  }
   function leerPorCobrar(F) {
     const corte = fCorta(F.periodo.hasta);
+    const pagadas = cobradasDespues(F);
     const out = [];
     for (const s of F.sii) {
-      if (/por cobrar/i.test(s.estado)) out.push({ ...s, saldo: s.monto, tipoDeuda: 'Emitida en el período, sin pago al ' + corte });
+      if (/por cobrar/i.test(s.estado) && pagadas.has(String(s.folio))) continue; // ya pagada según el registro interno
+      if (/por cobrar/i.test(s.estado) && s.fecha > F.periodo.hasta) out.push({ ...s, saldo: s.monto, tipoDeuda: 'Emitida el ' + fCorta(s.fecha) + ' (después del corte de las cartolas), sin cobro en el registro interno al ' + fCorta(F.sii_hasta || s.fecha) });
+      else if (/por cobrar/i.test(s.estado)) out.push({ ...s, saldo: s.monto, tipoDeuda: 'Emitida en el período, sin pago al ' + corte });
       else if (/pendiente desde antes/i.test(s.estado)) out.push({ ...s, saldo: s.monto, tipoDeuda: 'Pendiente desde antes de agosto (por confirmar)' });
       else if (/factoring/i.test(s.estado)) {
         const m = /\$([\d.]+)/.exec(s.det || '');
@@ -649,7 +662,7 @@
     const conectado = !!(D.comercial && deDashboard(D.comercial.cotizaciones));
     const comercial = Com && D.comercial ? Com.analizar(D.comercial.cotizaciones || [], hoy, {
       meta: D.modelo.b2b_meta_mes, minimo: D.modelo.b2b_minimo_mes, equilibrio,
-      sii: D.finanzas.sii, siiCorte: D.finanzas.periodo.hasta, clientes: D.comercial.clientes || [],
+      sii: D.finanzas.sii, siiCorte: D.finanzas.sii_hasta || D.finanzas.periodo.hasta, clientes: D.comercial.clientes || [],
       tasaReferencia: !conectado && D.cotizaciones.tasa_cierre_monto ? { valor: D.cotizaciones.tasa_cierre_monto, corte: D.cotizaciones.corte } : null,
       conectado,
     }) : null;

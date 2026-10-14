@@ -485,7 +485,12 @@
     if (!a || !b) return 1;
     return Math.min(Math.abs(a - b), Math.abs(a - b * 1.19), Math.abs(a * 1.19 - b)) / Math.max(a, b);
   }
-  const cobroSII = estado => /^cobrada|factoring/i.test(estado || '') ? 'si' : /por cobrar|pendiente/i.test(estado || '') ? 'no' : '';
+  // cobro según el SII cruzado con el banco y el registro interno («Cobrada…», «Cobro del período, facturado tarde», o «se pagó el…» en el detalle)
+  const cobroSII = s => {
+    const e = (s && s.estado) || '', d = (s && s.det) || '';
+    if (/^cobrada|^cobro del per|factoring/i.test(e) || /se pag[oó] el \d/i.test(d)) return 'si';
+    return /por cobrar|pendiente/i.test(e) ? 'no' : '';
+  };
 
   /* Cruce de lo ganado con las facturas del SII: por RUT si ambos lo tienen, si no por
      nombre (parecido ≥ 0,6) y monto (±3 %, con o sin IVA), con la factura posterior a la
@@ -498,7 +503,7 @@
     for (const q of ganadas) {
       if (q.factura_folio) {
         const s = porFolio.get(folioN(q.factura_folio));
-        res.push({ id: q.id, folio: q.factura_folio, como: 'registrada', estadoSII: s ? s.estado : '', cobro: s ? cobroSII(s.estado) : '' });
+        res.push({ id: q.id, folio: q.factura_folio, como: 'registrada', estadoSII: s ? s.estado : '', cobro: s ? cobroSII(s) : '' });
         continue;
       }
       if (corte && esFecha(q.fecha_cierre) && q.fecha_cierre > corte) continue; // el SII cargado no llega a esa fecha
@@ -509,7 +514,7 @@
         .sort((a, b) => a.dif - b.dif);
       if (cand.length && cand[0].dif <= 0.03) {
         const s = cand[0].s; usadas.add(folioN(s.folio));
-        res.push({ id: q.id, folio: s.folio, como: 'sugerida', cobro: cobroSII(s.estado), estadoSII: s.estado, fechaFactura: s.fecha });
+        res.push({ id: q.id, folio: s.folio, como: 'sugerida', cobro: cobroSII(s), estadoSII: s.estado, fechaFactura: s.fecha });
       } else res.push({ id: q.id, folio: '', como: 'sin-factura' });
     }
     return res;

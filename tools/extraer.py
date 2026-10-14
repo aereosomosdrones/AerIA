@@ -79,18 +79,24 @@ def extraer_finanzas(origen: Path):
     sii = [
         {
             "folio": s["folio"], "fecha": s["fecha"], "mes": s["mes"], "tipo": s["tipo"],
-            "cliente": s.get("cliente") or s.get("razon") or "", "monto": s["monto"],
-            "estado": s["estado"], "det": s.get("det") or "",
+            "cliente": s.get("cliente") or s.get("razon") or "", "rut": s.get("rut") or "",
+            "monto": s["monto"], "estado": s["estado"], "det": s.get("det") or "",
+            "periodo": s.get("periodo") or "",
         }
         for s in d["sii"]
     ]
     st = d["stats"]
+    # El SII y el registro interno pueden llegar más allá del corte de las cartolas
+    sii_hasta = (st.get("fact_post") or {}).get("sii_hasta") or max((s["fecha"] for s in sii), default="")
+    post = (d.get("reg_q") or {}).get("post")
     salida = {
         "fuente": "Informe «Finanzas Aéreo ago–sep 2026» (artifact en claude.ai)",
         "url": URL,
         "generado_fuente": d["generado"],
         "extraido": ahora(),
         "periodo": {"desde": "2026-08-01", "hasta": "2026-09-30"},
+        "sii_hasta": sii_hasta,
+        "registro_post": post,
         "cats": cats,
         "serie": d["serie"],
         "cuadratura": [

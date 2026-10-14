@@ -326,6 +326,15 @@ prueba('ganadas con confianza baja o sin monto no piden factura', () => {
   cierto(!R6.acciones.some(a => a.id.startsWith('com-fac-')), 'no debía haber acción de factura');
 });
 
+prueba('cobro según el SII: facturado tarde, cobrada después del corte y por cobrar', () => {
+  const g = [{ folio: 'K1', cliente: 'Empresa Once', monto: 300000, estado: 'ganada', factura_folio: '201', fecha_cierre: '2026-08-01' },
+    { folio: 'K2', cliente: 'Empresa Doce', monto: 400000, estado: 'ganada', factura_folio: '202', fecha_cierre: '2026-08-01' },
+    { folio: 'K3', cliente: 'Empresa Trece', monto: 500000, estado: 'ganada', factura_folio: '203', fecha_cierre: '2026-08-01' }];
+  const s = [{ folio: 201, fecha: '2026-10-08', cliente: 'Empresa Once', monto: 300000, estado: 'Cobro del período, facturado tarde', tipo: 'Factura exenta' },
+    { folio: 202, fecha: '2026-09-22', cliente: 'Empresa Doce', monto: 400000, estado: 'Por cobrar al 30-09', det: 'Según el registro interno, se pagó el 07-10.', tipo: 'Factura exenta' },
+    { folio: 203, fecha: '2026-10-13', cliente: 'Empresa Trece', monto: 500000, estado: 'Por cobrar, según el registro', tipo: 'Factura exenta' }];
+  igual(C.analizar(g, HOY, { sii: s }).ganadas.porCobrar.map(q => q.folio), ['K3']);
+});
 console.log('Casos de la segunda revisión');
 prueba('instituciones distintas de la misma ciudad no se unen', () => {
   const ex = [C.aplicar(null, { id: 'sii-40', cliente: 'Ilustre Municipalidad de Ciudad Alfa', monto: 1200000, estado: 'ganada', factura_folio: '40', fecha_cierre: '2026-09-02' }, 'AerIA (siembra)', '', '2026-10-01T10:00:00Z').cotizacion,
