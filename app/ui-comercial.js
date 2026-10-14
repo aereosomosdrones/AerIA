@@ -58,6 +58,7 @@
         <div class="grilla g-7-5 arriba">
           <section class="panel" id="panel-cotizaciones"><div class="panel-c"><h2>Cotizaciones</h2><span class="bajada">${Rc.total} en AerIA${ctx.persistencia() === 'db' ? ' · se guardan para todos los que abren AerIA' : ' · ' + esc(ctx.persistencia())}</span>
               <span class="acc"><button class="btn sm" type="button" data-com="nueva">Nueva cotización</button><button class="btn sm sec" type="button" data-com="importar">Importar</button><button class="btn sm sec" type="button" data-com="exportar">Exportar CSV</button></span></div>
+            ${conectado ? `<div class="panel-b sync" data-sync>${syncHtml()}</div>` : ''}
             <div class="panel-b" style="padding-bottom:10px">${filtrosHtml(Rc)}</div>
             <div class="panel-b ras" id="tabla-cot">${tablaHtml(Rc)}</div></section>
           <div class="lado">
@@ -81,8 +82,9 @@
     function avisoConexion(cot, Rc) {
       return `<section class="panel conectar"><div class="panel-c"><h2>Conecta tu dashboard comercial</h2>
           <span class="bajada">Lo último que veo de tu dashboard es el agregado del ${esc(F.fCorta(cot.corte))}: ${F.mm(cot.abiertasMonto)} abiertas con ${cot.tasaCierre ? F.pct(cot.tasaCierre) : '?'} de cierre.${Rc.total ? ' Abajo están las ' + Rc.total + ' que ya reuní desde el SII, el banco, Notion y el plan.' : ''}</span></div>
+        <div class="panel-b sync" data-sync>${syncHtml()}</div>
         <div class="panel-b pasos">
-          <div class="paso"><b>1</b><div><p>Arrastra este botón a tu barra de marcadores:</p><a class="btn sm marcador" href="javascript:${esc(C.EXTRACTOR)}" data-com="marcador" title="Arrástrame a la barra de marcadores">AerIA · Extraer</a>
+          <div class="paso"><b>1</b><div><p>Si no usas la app de escritorio: arrastra este botón a tu barra de marcadores.</p><a class="btn sm marcador" href="javascript:${esc(C.EXTRACTOR)}" data-com="marcador" title="Arrástrame a la barra de marcadores">AerIA · Extraer</a>
             <p class="c-sub">¿No ves la barra? Cmd+Shift+B en Chrome. También puedes <button class="enlace-btn" type="button" data-com="copiar-extractor">copiar el código</button> y pegarlo en la consola del dashboard.</p></div></div>
           <div class="paso"><b>2</b><div><p>Abre tu dashboard (<span class="mono">localhost:8765/_Dashboard/dashboard.html</span>) y haz clic en el marcador. Copia todas las tablas y los datos guardados de la página.</p></div></div>
           <div class="paso"><b>3</b><div><p>Vuelve aquí y pega con Cmd+V en el importador. Si tu dashboard exporta CSV, Excel guardado como CSV o JSON, también sirve.</p>
@@ -435,6 +437,156 @@
       catch (e) { ctx.avisar('No pude ofrecer la descarga ni copiar el CSV en esta vista.'); }
     }
 
+
+    /* ---------------- conexión automática con el dashboard ----------------
+       En la app de escritorio de Claude, AerIA abre el dashboard local con el
+       navegador integrado (servidor «host:claude_browser» de la capacidad mcp),
+       lee su texto, lo convierte en filas (tabla directa o, si no, con Claude)
+       e importa con el mismo plan del importador: no duplica, solo cambia lo
+       que la fila trae y marca cada cambio con la sincronización, para poder
+       deshacerla entera. Fuera de la app no hay navegador: queda el marcador. */
+    const NAV = 'host:claude_browser';
+    const SYNC_CADA = 20 * 60 * 1000;      // como mucho una sincronización automática cada 20 minutos
+    const SYNC_MAX = 150;                  // un cambio más grande se revisa a mano en el importador
+    const espera = ms => new Promise(r => setTimeout(r, ms));
+    // la respuesta del navegador no tiene un formato fijo: se busca el id de la pestaña y el texto más largo
+    function idDePestana(v) {
+      if (v == null) return undefined;
+      if (typeof v === 'number') return v;
+      if (typeof v === 'string') { const m = /tab\s*(?:id)?\s*[:=#]?\s*(\d+)/i.exec(v); return m ? Number(m[1]) : undefined; }
+      if (typeof v === 'object') {
+        for (const k of ['tabId', 'tab_id', 'tab', 'id']) if (typeof v[k] === 'number' || /^\d+$/.test(String(v[k] || ''))) return Number(v[k]);
+        for (const x of Object.values(v)) { const r = idDePestana(x); if (r !== undefined) return r; }
+      }
+      return undefined;
+    }
+    function textoDe(v) {
+      if (v == null) return '';
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) return v.map(textoDe).sort((a, b) => b.length - a.length)[0] || '';
+      if (typeof v === 'object') {
+        if (Array.isArray(v.content)) return v.content.filter(b => b && b.type === 'text').map(b => b.text).join('\n');
+        return Object.values(v).map(textoDe).sort((a, b) => b.length - a.length)[0] || '';
+      }
+      return '';
+    }
+    const navegadorDisponible = async () => {
+      const mcp = ctx.mcp(); if (!mcp) return false;
+      try { const r = await mcp.listTools(NAV); return !!(r && r.servers || []).some(s => s.server === NAV && (s.tools || []).length); }
+      catch (e) { return false; }
+    };
+    const PROMPT_SYNC = 'Este es el texto de la página de un dashboard de cotizaciones de una empresa chilena (escuela de pilotos de drones). Extrae SOLO las cotizaciones (no totales, KPIs ni menús) como un JSON array de objetos con estas claves: folio, cliente, descripcion, monto (número en pesos, sin puntos), estado (borrador, enviada, negociacion, ganada, perdida o vencida, según lo que diga la página), probabilidad (número 0-100 o ""), fecha_cotizacion (AAAA-MM-DD o ""), fecha_cierre (AAAA-MM-DD o ""), fecha_cierre_estimada (AAAA-MM-DD o ""), proximo_seguimiento (AAAA-MM-DD o ""), linea (sence, curso_cerrado, aoc, servicios, escuela, flota, venta_equipos u otro), contacto, notas. Copia los valores tal como aparecen; no inventes datos: deja "" lo que no esté. Responde solo el JSON.\n\n';
+    async function sincronizar(manual) {
+      if (L.sync && L.sync.corriendo) return;
+      const mcp = ctx.mcp();
+      if (!mcp || !(await navegadorDisponible())) {
+        L.sync = { estado: 'sin-app' }; pintarSync();
+        if (manual) ctx.avisar('La conexión automática necesita la app de escritorio de Claude (abre AerIA desde una conversación de Cowork). Aquí usa el marcador.');
+        return;
+      }
+      L.sync = { corriendo: true, paso: 'Abriendo tu dashboard en el navegador de Claude…' }; pintarSync();
+      const fin = (estado, extra) => { L.sync = Object.assign({ estado, fecha: new Date().toISOString() }, extra || {}); pintarSync(); };
+      try {
+        const url = await ctx.urlDashboard();
+        const abierta = await mcp.callTool(NAV, 'preview_start', { url });
+        const tabId = idDePestana(abierta && (abierta.payload !== undefined ? abierta.payload : abierta));
+        const leer = async () => textoDe(await mcp.callTool(NAV, 'get_page_text', tabId !== undefined ? { tabId } : {}, { cache: false }).then(r => r.payload !== undefined ? r.payload : r));
+        L.sync.paso = 'Leyendo tu dashboard…'; pintarSync();
+        let texto = await leer();
+        if (texto.replace(/\s+/g, '').length < 200) { await espera(2500); texto = await leer(); }   // el dashboard puede cargar sus datos después
+        if (!texto.trim()) return fin('vacio');
+        const firma = C.huellaTexto(texto);
+        const previo = ctx.syncEstado() || {};
+        if (!manual && previo.firma === firma) return fin('sin-cambios', { anterior: previo });
+        // 1) tabla directa (texto con columnas); 2) si no, Claude la ordena
+        let filas = null, mapeo = null, via = 'tabla';
+        try { const cj = C.conjuntos(texto)[0]; if (cj && cj.mapeo.cliente && cj.puntaje >= 6 && cj.filas.length) { filas = cj.filas; mapeo = cj.mapeo; } } catch (e) { /* no es una tabla */ }
+        if (!filas) {
+          if (!ctx.puedeIA()) return fin('sin-ia');
+          via = 'ia'; L.sync.paso = 'Ordenando las cotizaciones con Claude…'; pintarSync();
+          const arr = await ctx.iaJSON(PROMPT_SYNC + texto.slice(0, 60000));
+          filas = (Array.isArray(arr) ? arr : []).filter(x => x && typeof x === 'object' && !Array.isArray(x));
+          mapeo = C.sugerirMapeo(Object.keys(filas[0] || {}));
+        }
+        const nuevas = C.mapear(filas, mapeo, 'dashboard');
+        if (!nuevas.length) return fin('sin-filas');
+        const plan = C.planImportacion(nuevas, ctx.cotizaciones().map(C.limpiar));
+        const n = plan.crear.length + plan.actualizar.length;
+        if (n > SYNC_MAX) {
+          // demasiados cambios de una vez: se revisan en el importador antes de escribir
+          L.imp = { paso: 3, texto: '', conjuntos: [{ origen: 'Tu dashboard (sincronización)', filas, columnas: Object.keys(filas[0] || {}), puntaje: 9, mapeo }], elegido: 0, mapeo, origen: 'tu dashboard', plan, msg: 'Encontré ' + n + ' cambios: revísalos antes de importar.', unir: true, esDashboard: true };
+          ctx.pintar(); return fin('revisar', { n });
+        }
+        const id = new Date().toISOString(), marca = { resp: id };
+        const origen = 'dashboard ' + hoy();
+        const vigente = u => ctx.cotizaciones().find(q => q.id === u.id) || u.antes;
+        const tareas = plan.crear.map(q => () => C.aplicar(null, Object.assign({}, q, { origen }), 'dashboard', 'Sincronizada desde tu dashboard', ahoraISO(), marca).cotizacion)
+          .concat(plan.actualizar.map(u => () => C.aplicar(vigente(u), u.cambios, 'dashboard', 'Actualizada desde tu dashboard', ahoraISO(), marca).cotizacion));
+        let hechas = 0, fallas = 0; const ids = [];
+        L.sync.paso = 'Guardando ' + n + (n === 1 ? ' cambio…' : ' cambios…'); pintarSync();
+        for (const t of tareas) { const q = t(); if (await ctx.guardarCot(q)) { hechas++; ids.push(q.id); } else fallas++; }
+        const reg = { id, fecha: id, firma, via, url, filas: nuevas.length, creadas: plan.crear.length, actualizadas: plan.actualizar.length, iguales: plan.iguales, parecidas: plan.parecidas.length, ids, fallas };
+        await ctx.guardarSync(reg);
+        ctx.pintar();
+        fin(fallas ? 'parcial' : 'ok', { reg });
+        if (n || manual) ctx.avisar(n ? 'Sincronicé tu dashboard: ' + plan.crear.length + ' nuevas y ' + plan.actualizar.length + ' actualizadas' + (fallas ? '; ' + fallas + ' no se guardaron' : '') + '.' : 'Tu dashboard ya estaba al día en AerIA.');
+      } catch (e) {
+        const c = e && e.code;
+        if (c === 'server_not_connected' || c === 'not_granted' || c === 'capability_disabled' || c === 'capability_removed') return fin('sin-app');
+        if (c === 'not_in_manifest') return fin('no-permitido');
+        if (c === 'cancelled' || c === 'approval_required') return fin('cancelada');
+        if (c === 'tool_error') return fin('error', { msg: e.message || 'El navegador de Claude no pudo abrir el dashboard. ¿Está corriendo en tu Mac (localhost:8765)?' });
+        return fin('error', { msg: (e && e.message) || 'No se pudo sincronizar ahora.' });
+      } finally { if (L.sync) L.sync.corriendo = false; }
+    }
+    /* Revierte entera la última sincronización: lo que creó se borra (si nadie lo tocó
+       después) y lo que actualizó vuelve a como estaba. */
+    async function deshacerSync() {
+      const reg = ctx.syncEstado(); if (!reg || !reg.id || reg.deshecha) return;
+      let conflictos = 0, fallas = 0;
+      for (const id of reg.ids || []) {
+        const q = ctx.cotizaciones().find(x => x.id === id); if (!q) continue;
+        const r = C.deshacerPor(q, reg.id, ahoraISO());
+        if (r.creada) {
+          const ajenas = (q.historial || []).some(h => h.resp !== reg.id && !h.deshecha && Object.keys(h.cambios || {}).length);
+          if (ajenas) conflictos++; else if (!await ctx.borrarCot(id)) fallas++;
+        } else if (r.conflicto) conflictos++;
+        else if (r.cotizacion && !await ctx.guardarCot(r.cotizacion)) fallas++;
+      }
+      await ctx.guardarSync(Object.assign({}, reg, { deshecha: !conflictos && !fallas, deshechaEl: ahoraISO() }));
+      ctx.pintar();
+      ctx.avisar(conflictos ? 'Deshice la sincronización salvo ' + conflictos + (conflictos === 1 ? ' cotización que cambió' : ' cotizaciones que cambiaron') + ' después.' : fallas ? 'No pude deshacer ' + fallas + ' cambios. Intenta de nuevo.' : 'Listo: deshice la última sincronización.');
+    }
+    function syncHtml() {
+      const s = L.sync || {}, reg = ctx.syncEstado();
+      const hace = f => { const m = Math.round((Date.now() - new Date(f).getTime()) / 60000); return m < 1 ? 'recién' : m < 60 ? 'hace ' + m + ' min' : m < 1440 ? 'hace ' + Math.round(m / 60) + ' h' : 'el ' + F.fCorta(f.slice(0, 10)); };
+      if (s.corriendo) return `<span class="sync-linea"><span class="punto-vivo"></span>${esc(s.paso || 'Sincronizando…')}</span>`;
+      const ult = reg && reg.fecha ? `Última: ${hace(reg.fecha)} · ${reg.creadas || 0} nuevas, ${reg.actualizadas || 0} actualizadas${reg.deshecha ? ' (deshecha)' : ''}` : 'Aún no se ha sincronizado';
+      const msgs = {
+        'sin-app': 'Para que se conecte sola, abre AerIA en la app de escritorio de Claude, desde una conversación de Cowork. En este navegador usa el marcador.',
+        'sin-cambios': 'Tu dashboard no cambió desde la última vez.',
+        vacio: 'El navegador abrió el dashboard pero no trajo texto. ¿Está corriendo en tu Mac (localhost:8765)?',
+        'sin-filas': 'Leí el dashboard pero no encontré cotizaciones en él.',
+        'sin-ia': 'El dashboard no viene como tabla y Claude no está disponible ahora para ordenarlo.',
+        revisar: 'Hay ' + (s.n || 'muchos') + ' cambios: revísalos en el importador antes de guardarlos.',
+        'no-permitido': 'No permitiste que AerIA use el navegador de Claude. Puedes activarlo en los permisos de la página.',
+        cancelada: 'Sincronización cancelada.',
+        error: s.msg || 'No se pudo sincronizar.',
+      };
+      const aviso = s.estado && msgs[s.estado] ? `<span class="c-sub">${esc(msgs[s.estado])}</span>` : '';
+      return `<span class="sync-linea"><b>Conexión automática</b> · ${esc(ult)}
+        <button class="enlace-btn" type="button" data-com="sync">Sincronizar ahora</button>${reg && reg.id && !reg.deshecha && (reg.ids || []).length ? '<button class="enlace-btn" type="button" data-com="sync-deshacer">Deshacer la última</button>' : ''}</span>${aviso}`;
+    }
+    function pintarSync() { for (const el of $$('[data-sync]')) el.innerHTML = syncHtml(); }
+    let autoHecho = false;
+    async function autoSync() {
+      if (autoHecho || !ctx.listoParaSync()) return;
+      autoHecho = true;
+      const reg = ctx.syncEstado();
+      if (reg && reg.fecha && Date.now() - new Date(reg.fecha).getTime() < SYNC_CADA) return;
+      if (await navegadorDisponible()) sincronizar(false); else { L.sync = { estado: 'sin-app' }; pintarSync(); }
+    }
+
     /* ---------------- eventos ---------------- */
     document.addEventListener('click', async ev => {
       const t = ev.target.closest('[data-com]');
@@ -449,6 +601,8 @@
       if (a === 'nueva') { abrirEditor('nueva'); return; }
       if (a === 'cerrar') { cerrarEditor(); return; }
       if (a === 'importar') { abrirImportador(); return; }
+      if (a === 'sync') { sincronizar(true); return; }
+      if (a === 'sync-deshacer') { deshacerSync(); return; }
       if (a === 'exportar') { exportarCSV(); return; }
       if (a === 'filtro') { L.filtro = t.dataset.valor; L.ver = 40; render(); return; }
       if (a === 'ver-mas') { L.ver += 40; $('#tabla-cot').innerHTML = tablaHtml(R()); return; }
@@ -551,6 +705,6 @@
       ev.preventDefault(); abrirImportador(); leerImportacion(txt, /aeria-extractor/.test(txt.slice(0, 200)) ? 'extractor de AerIA' : 'texto pegado');
     });
 
-    return { render, abrirEditor, abrirImportador, cerrarEditor };
+    return { render, abrirEditor, abrirImportador, cerrarEditor, autoSync, pintarSync, sincronizar };
   };
 })();

@@ -85,7 +85,16 @@ pronóstico, para no alarmar con un pipeline incompleto. Las cotizaciones abiert
 más de 90 días sin contacto, o viejas y sin cierre estimado, quedan «estancadas» y no
 cuentan en el pronóstico. Importar no duplica: una fila se une a la cotización que ya
 existe por id, folio, folio de factura o cliente parecido con el mismo monto, y solo
-cambia los campos que la fila trae. Corre en la página (así las
+cambia los campos que la fila trae.
+
+**Conexión automática con el dashboard.** El dashboard comercial corre en el Mac del
+usuario (`localhost`), que la nube no alcanza. Cuando AerIA se abre en la app de
+escritorio de Claude, la página usa el navegador integrado de la app (capacidad `mcp`,
+servidor `host:claude_browser`) para abrir el dashboard, leer su texto y convertirlo en
+filas (directo si viene como tabla, o con Claude si no). Lo importa con el mismo plan del
+importador, marca cada cambio con la sincronización y se puede deshacer entera. Más de
+150 cambios de una vez quedan para revisar en el importador. En el navegador web, sin
+la app, sigue el marcador «AerIA · Extraer». Corre en la página (así las
 cuentas regresivas se recalculan cada día) y en node para probarlo.
 
 ## Privacidad

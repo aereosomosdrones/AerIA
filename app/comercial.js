@@ -926,7 +926,7 @@
     ESTADOS, LINEAS, ESTADO, LINEA, CAMPOS, EXTRACTOR,
     limpiar, aplicar, deshacer, deshacerPor, puedeDeshacer, diferencias, normalizar, analizar, pronostico, conciliarSII,
     conjuntos, sugerirMapeo, mapear, planImportacion, leerMonto, leerTipoMonto, leerFecha, leerEstado, leerLinea, leerCobro, leerProb,
-    idPara, claveDuplicado, parecido,
+    idPara, claveDuplicado, parecido, huellaTexto: t => hash(String(t || '')),
     resumenParaIA,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

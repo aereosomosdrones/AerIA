@@ -1026,7 +1026,19 @@ Abajo está tu lectura actual de la empresa.`;
       }
     },
     descargas: async () => (window.claude && typeof window.claude.use === 'function') ? window.claude.use('downloads') : null,
+    // conexión automática con el dashboard local (navegador integrado de la app de escritorio)
+    mcp: () => S.mcp || null,
+    syncEstado: () => S.syncDash || null,
+    guardarSync: async d => { S.syncDash = d; if (S.db) { try { await S.db.doc('estado/sync_dashboard').set(d); } catch (e) { console.warn('AerIA: no se pudo guardar la sincronización', e); } } else LS.set('sync_dashboard', d); },
+    urlDashboard: async () => {
+      if (S.urlDash) return S.urlDash;
+      let u = '';
+      try { if (S.db) { const f = await S.db.doc('config/fuentes').get(); u = (f.exists && f.data().cotizaciones_local) || ''; } } catch (e) { /* sin config */ }
+      return (S.urlDash = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(u) ? u : 'http://localhost:8765/_Dashboard/dashboard.html');
+    },
+    listoParaSync: () => !!(S.mcp && S.db && S.comCargado && S.syncCargado && S.ia !== 'cargando'),
   }) : null;
+  const intentarSync = () => { if (COM && COM.autoSync) COM.autoSync(); };
   const inicial = (location.hash || '').replace('#', '');
   if (VISTAS.includes(inicial)) S.tab = inicial;
   irA(S.tab, false);
@@ -1043,7 +1055,9 @@ Abajo está tu lectura actual de la empresa.`;
       S.tools = lim && lim.tools ? Math.min(lim.tools.maxCount || 0, 14) : 0;
       S.ia = 'lista'; pintarAvisoIA();
       if (S.tab === 'comercial') pintar();
-    }).catch(() => { S.ia = 'no'; pintarAvisoIA(); });
+      intentarSync();
+    }).catch(() => { S.ia = 'no'; pintarAvisoIA(); intentarSync(); });
+    window.claude.use('mcp').then(m => { S.mcp = m; intentarSync(); }).catch(() => { S.mcp = null; });
     window.claude.use('db').then(db => {
       if (!db) return;
       S.db = db;
@@ -1061,7 +1075,14 @@ Abajo está tu lectura actual de la empresa.`;
         S.comCargado = true;
         recalcular();
         if (S.tab !== 'hablar') pintar(); else pintarFuentes();
+        intentarSync();
       }, e => { console.warn('AerIA: suscripción a cotizaciones', e && e.code); avisar('No pude leer las cotizaciones de la base. Muestro las del paquete.'); });
+      db.doc('estado/sync_dashboard').onSnapshot(snap => {
+        if (snap.metadata && snap.metadata.hasPendingWrites) return;
+        S.syncDash = snap.exists ? snap.data() : null; S.syncCargado = true;
+        if (COM && COM.pintarSync) COM.pintarSync();
+        intentarSync();
+      }, () => { S.syncCargado = true; intentarSync(); });
       if (S.tab === 'comercial') pintar();
     });
   } else { S.ia = 'no'; pintarAvisoIA(); }

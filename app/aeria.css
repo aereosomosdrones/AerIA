@@ -465,3 +465,8 @@ label.chk { display: inline-flex; gap: 8px; align-items: center; font-size: 13.5
 .aviso-imp ul { margin: 0; padding-left: 18px; }
 details.historial li.deshecha { opacity: .6; }
 .ce-borrar { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.panel-b.sync { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; padding-bottom: 10px; border-top: 1px solid var(--linea); font-size: 13px; }
+.sync-linea { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.punto-vivo { width: 8px; height: 8px; border-radius: 50%; background: var(--s-3); display: inline-block; animation: latido 1.2s ease-in-out infinite; }
+@keyframes latido { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .punto-vivo { animation: none; } }
