@@ -906,7 +906,7 @@
         { l: 'Lo que dejó la operación', s: P.etiqueta, v: mm(P.flujoOperacional), cls: P.flujoOperacional >= 0 ? 'bien' : 'mal' },
         { l: 'Salió a los socios', s: P.etiqueta, v: mm(socios), cls: socios > 0 ? 'mal' : '' },
         P.otec ? { l: 'Entró de Aéreo OTEC', s: P.etiqueta, v: mm(P.otec) } : null,
-        f29 ? { l: 'Próximo F29 (impuestos)', v: fCorta(f29.fecha) } : null,
+        f29 ? { l: 'Próximo F29 (impuestos)', v: (f29.dias === 0 ? 'hoy, ' : f29.dias === 1 ? 'mañana, ' : '') + fCorta(f29.fecha), cls: f29.dias <= 1 ? 'mal' : '' } : null,
       ].filter(Boolean),
       detalle: { tab: 'pasado', capa: 'pasado-caja', texto: 'Ver la plata día a día' },
       detalle2: finCrit.length ? { tab: 'pasado', capa: 'pasado-revision', texto: 'Ver lo que encontró la revisión contable' } : null,
@@ -1054,7 +1054,7 @@
         porque: [
           env30.length ? 'En los últimos 30 días el equipo envió ' + env30.length + (env30.length === 1 ? ' cotización' : ' cotizaciones') + ': ' + gan30 + ' ya ' + (gan30 === 1 ? 'se ganó' : 'se ganaron') + ' y ' + perd30 + ' ' + (perd30 === 1 ? 'se perdió' : 'se perdieron') + '.'
             : 'En los últimos 30 días no salió ninguna cotización nueva.',
-          R.abiertas.n ? (alDia >= R.abiertas.n ? 'En los últimos 7 días todas tuvieron contacto.' : 'En los últimos 7 días solo ' + alDia + ' de las ' + R.abiertas.n + ' tuvieron contacto. Sin llamada, una cotización se enfría.') : null,
+          R.abiertas.n ? (alDia >= R.abiertas.n ? 'En los últimos 7 días todas tuvieron contacto.' : (alDia ? 'En los últimos 7 días solo ' + alDia + ' de las ' + R.abiertas.n + (alDia === 1 ? ' tuvo' : ' tuvieron') + ' contacto.' : 'En los últimos 7 días ninguna de las ' + R.abiertas.n + ' tuvo contacto.') + ' Sin llamada, una cotización se enfría.') : null,
           cierres.length ? cierres.length + (cierres.length === 1 ? ' cotización pasó' : ' cotizaciones pasaron') + ' su fecha de cierre: hay que definir si se ganan o se pierden.'
             : deCada10 != null ? 'De cada 10 cotizaciones que los clientes deciden, ganas ' + deCada10 + '.' : null,
           R.abiertas.n ? 'De lo que espera respuesta, lo probable es cerrar unos ' + mm(R.abiertas.ponderado) + '.' : null,
