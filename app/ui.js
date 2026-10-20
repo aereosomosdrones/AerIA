@@ -206,6 +206,7 @@
       '<span><span class="led' + (crit ? ' rojo' : '') + '"></span>' + (crit ? '<b>' + crit + '</b> ' + (crit === 1 ? 'aviso urgente' : 'avisos urgentes') : 'Sin avisos urgentes') + '</span>' +
       (I.ebitda && I.ebitda.ultimo ? (() => { const R = I.ebitda.periodo; return '<button class="banda-ebitda" type="button" data-tab="ebitda" title="Ver el semáforo del EBITDA"><span class="led ' + ({ urgente: 'rojo', ojo: 'amarillo', bien: 'verde' }[R.estado] || '') + '" aria-hidden="true"></span>EBITDA ' + esc(R.meses.map(m => F.mesNombre(m).slice(0, 3)).join('–')) + '&nbsp;<b>' + F.mm(R.ebitda) + '</b><span class="sr">, en ' + esc(SEM_TXT[R.estado]) + '</span></button>'; })() : '') +
       '<span>Banco al <b>' + F.fCorta(I.pasado.fechaCorte) + '</b></span>' +
+      (I.contable ? '<span>Contador al <b>' + F.fCorta(I.contable.hasta) + '</b></span>' : '') +
       '<span>Cursos al <b>' + F.fCorta((D0.cursos.extraido || '').slice(0, 10)) + '</b></span>' +
       '<span>Hoy <b>' + F.fLarga(I.hoy) + '</b></span>';
     const lt = $('#luz-ebitda');
@@ -231,6 +232,7 @@
   function renderPie() {
     $('#pie').innerHTML =
       '<p><b>De dónde salen los datos.</b> La plata: ' + esc(D0.finanzas.fuente) + ', del ' + esc(F.fCorta(D0.finanzas.generado_fuente.slice(0, 10))) +
+      (D0.contable ? '; el año, del ' + esc(minus1(D0.contable.fuente)) : '') +
       '. Cursos y cobros: ' + esc(D0.cursos.fuente) + ' (versión ' + esc((D0.cursos.commit || '?').split(' ')[0]) + '); ' + esc(D0.licitaciones.fuente) +
       ', revisado el ' + esc(enChile(D0.licitaciones.generado_fuente)) + '. Ventas: ' + esc(D0.cotizaciones.fuente) + '; ' + (I.comercial ? I.comercial.total : 0) + ' cotizaciones guardadas en AerIA' +
       '. 2027: ' + esc(D0.plan.fuente) + '; ' + esc(D0.modelo.fuente) + '.</p>' +
@@ -427,16 +429,21 @@
     const cuando = R.meses.map(m => F.mesNombre(m)).join(' y ');
     const mini = (titulo, valor, estado, sub) => `<div class="panel mini-sem"><span class="luz-chica ${estado}" aria-hidden="true"></span><div><span class="ms-t">${esc(titulo)}</span><b class="num">${esc(valor)}</b><small>${estado !== 'sindato' ? esc(mayus1(SEM_TXT[estado])) + (sub ? ' · ' : '') : ''}${esc(sub || '')}</small></div></div>`;
     const quedo = m => m.margen == null ? '' : m.margen >= 0 ? 'quedó el ' + F.pct(m.margen) + ' de lo cobrado' : 'se perdió el ' + F.pct(-m.margen) + ' de lo cobrado';
-    const fila = E.cerrados.map(m => mini(mayus1(F.mesNombre(m.mes)), F.mm(m.ebitda), m.estado, quedo(m)))
+    const A = E.anual, TA = T.anio, Bq = A && A.bloque;
+    const fila = (Bq ? [mini(mayus1(Bq.etiqueta), F.mm(Bq.ebitda), Bq.estado, 'según el contador')] : []).concat(E.cerrados.filter(m => !Bq || m.mes > Bq.hastaMes).map(m => mini(mayus1(F.mesNombre(m.mes)), F.mm(m.ebitda), m.estado, quedo(m))))
       .concat(E.enCurso ? [mini(mayus1(F.mesNombre(E.enCurso.mes)), 'En curso', 'sindato', 'banco al ' + F.fCorta(E.enCurso.hasta))]
         : E.siguiente ? [mini(mayus1(F.mesNombre(E.siguiente)), E.siguienteCerro ? 'Sin dato' : 'En curso', 'sindato', E.siguienteCerro ? 'falta su cartola' : 'cierra el ' + F.fCorta(E.siguienteCierra))] : [])
       .concat(E.anio.promedio ? [mini('2027, al ritmo de ' + cuando, F.mm(E.anio.promedio.resultado), E.anio.promedio.estado, 'vendiendo ' + F.mm(E.anio.promedio.b2b) + ' al mes a empresas · meta ' + F.mm(E.metaAnio))] : []);
+    const pasoN = { que: 1, porque: 2, anio: 3, hacer: TA ? 4 : 3, numeros: TA ? 5 : 4 };
     const paso = (id, n, titulo, cuerpo) => `<details class="paso-d" data-paso="ebitda-${id}"${S.pasos.has('ebitda-' + id) ? ' open' : ''}><summary><span class="n-paso">${n}</span><span>${titulo}</span></summary><div class="paso-cuerpo${id === 'numeros' ? ' ancho' : ''}">${cuerpo}</div></details>`;
     const p = l => l.map(x => '<p>' + simple(x) + '</p>').join('');
     const fila2 = (m, tot) => `<td class="d">${F.clp(m.ingresos)}</td><td class="d">${F.clp(-m.gastos)}</td><td class="d">${F.clp(-m.sueldoSocio)}</td><td class="d">${F.clp(-m.cofundador)}</td>`;
+    const cada100 = m => m.margen != null ? (m.margen >= 0 ? 'quedan $' + Math.round(m.margen * 100) : 'se pierden $' + Math.round(-m.margen * 100)) : '—';
+    const filaBloque = Bq ? `<tr class="fila-bloque"><td>${esc(mayus1(Bq.etiqueta))} <span class="c-sub">según el contador</span></td>${fila2(Bq)}<td class="d"><span class="semaforo ${Bq.estado}">${F.clp(Bq.ebitda)}</span></td><td class="d">${cada100(Bq)}</td></tr>` : '';
+    const mesesTabla = A ? E.meses.filter(m => m.mes > Bq.hastaMes) : E.meses;
     const tabla = `<div class="tabla-env"><table><thead><tr><th>Mes</th><th class="d">Entró por ventas</th><th class="d">Costó operar</th><th class="d">Tu sueldo</th><th class="d">Cofundador</th><th class="d">EBITDA</th><th class="d">De cada $100</th></tr></thead><tbody>
-      ${E.meses.map(m => `<tr><td>${esc(mayus1(F.mesNombre(m.mes)))}${m.parcial ? ' <span class="c-sub">al ' + esc(F.fCorta(m.hasta)) + '</span>' : ''}</td>${fila2(m)}<td class="d"><span class="semaforo ${m.estado}">${F.clp(m.ebitda)}</span></td><td class="d">${m.margen != null ? (m.margen >= 0 ? 'quedan $' + Math.round(m.margen * 100) : 'se pierden $' + Math.round(-m.margen * 100)) : '—'}</td></tr>`).join('')}
-      </tbody><tfoot><tr><td style="font-weight:700">${esc(mayus1(cuando))}</td>${fila2(R)}<td class="d" style="font-weight:700">${F.clp(R.ebitda)}</td><td class="d">meta ${F.clp(Math.round(R.meta))}</td></tr></tfoot></table></div>`;
+      ${filaBloque}${mesesTabla.map(m => `<tr><td>${esc(mayus1(F.mesNombre(m.mes)))}${m.parcial ? ' <span class="c-sub">al ' + esc(F.fCorta(m.hasta)) + '</span>' : ''}</td>${fila2(m)}<td class="d"><span class="semaforo ${m.estado}">${F.clp(m.ebitda)}</span></td><td class="d">${cada100(m)}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td style="font-weight:700">${esc(mayus1(cuando))}</td>${fila2(R)}<td class="d" style="font-weight:700">${F.clp(R.ebitda)}</td><td class="d">meta ${F.clp(Math.round(R.meta))}</td></tr>${A ? `<tr><td style="font-weight:700">${esc(mayus1(A.etiqueta))} ${esc(A.anio)}</td>${fila2(A)}<td class="d" style="font-weight:700">${F.clp(A.ebitda)}</td><td class="d">meta ${F.clp(Math.round(A.meta))}</td></tr>` : ''}</tfoot></table></div>`;
     const gastos = `<p><b>En qué se gastó en ${esc(F.mesNombre(u.mes))}</b></p><dl class="numeros">${u.gastosTop.map(g => `<dt>${esc(g.label)}</dt><dd>${F.clp(g.monto)}</dd>`).join('')}</dl>`;
     const leyenda = `<div class="leyenda-sem"><span><span class="luz-chica bien"></span>Verde: ${F.mm(E.metaMes)} o más al mes</span><span><span class="luz-chica ojo"></span>Amarillo: entre $0 y ${F.mm(E.metaMes)}</span><span><span class="luz-chica urgente"></span>Rojo: bajo $0</span></div>`;
     const ventas = Object.entries(D0.finanzas.cats).filter(([, c]) => c.grupo === 'Ingresos operacionales').map(([k, c]) => VENTA_TXT[k] || minus1(c.label));
@@ -444,7 +451,7 @@
       <section class="panel ebitda-cab">
         ${semaforoGrande(R.estado)}
         <div class="ebitda-txt">
-          <div class="ceja">EBITDA de ${esc(cuando)} · ${R.n === 1 ? 'el último mes' : 'los últimos ' + R.n + ' meses'} con datos del banco</div>
+          <div class="ceja">EBITDA de ${esc(cuando)} · ${R.n === 1 ? 'el último mes' : 'los últimos ' + R.n + ' meses'} con datos del banco${A ? ': cómo vamos ahora' : ''}</div>
           <div class="gran-num ${R.ebitda < 0 ? 'mal' : R.estado === 'bien' ? 'bien' : ''}">${F.mm(R.ebitda)}</div>
           <p class="tema-frase">${simple(T.texto[0])}</p>
           ${T.provisorio ? `<p class="aviso-prov">${simple(T.provisorio)}</p>` : ''}
@@ -452,12 +459,22 @@
           ${leyenda}
         </div>
       </section>
+      ${A && TA ? `<section class="panel ebitda-anio">
+        <span class="luz-anio ${A.estado}" role="img" aria-label="En el año, el semáforo está en ${esc(SEM_TXT[A.estado] || A.estado)}"></span>
+        <div class="ebitda-txt">
+          <div class="ceja">EBITDA de ${esc(A.etiqueta)} ${esc(A.anio)} · lo que va del año</div>
+          <div class="gran-num chico ${A.ebitda < 0 ? 'mal' : A.estado === 'bien' ? 'bien' : ''}">${F.mm(A.ebitda)}</div>
+          <p class="tema-frase">${simple(TA.frase)}</p>
+          ${TA.provisorio ? `<p class="aviso-prov">${simple(TA.provisorio)}</p>` : ''}
+        </div>
+      </section>` : ''}
       <div class="fila-sem">${fila.join('')}</div>
       <section class="panel"><div class="pasos-tema">
-        ${paso('que', 1, '¿Qué es el EBITDA?', p(T.que))}
-        ${paso('porque', 2, '¿Por qué está así?', p(T.porque.concat([T.anioFrase, T.siguienteFrase].filter(Boolean))))}
-        ${paso('hacer', 3, '¿Qué hago?', '<ul class="hacer-lista">' + T.hacer.map(x => '<li><span><span>' + simple(x.texto) + '</span></span></li>').join('') + '</ul>')}
-        ${paso('numeros', 4, 'Ver los números', tabla + gastos + `<p class="c-sub">De dónde sale: cartolas del banco (${esc(I.pasado.etiqueta)}); el sueldo y las metas, del plan 2027.</p><div class="chips"><button class="btn sm sec" type="button" data-accion="ir-detalle" data-tab-ir="pasado" data-capa="pasado-meses" data-ancla="" data-filtro="">Ver la plata mes a mes →</button><button class="btn sm sec" type="button" data-accion="ir-detalle" data-tab-ir="futuro" data-capa="futuro-sim" data-ancla="" data-filtro="">Probar qué pasa en 2027 →</button></div>`)}
+        ${paso('que', pasoN.que, '¿Qué es el EBITDA?', p(T.que))}
+        ${paso('porque', pasoN.porque, '¿Por qué está así?', p(T.porque.concat([T.anioFrase, T.siguienteFrase].filter(Boolean))))}
+        ${TA ? paso('anio', pasoN.anio, '¿Cómo va el año?', p(TA.porque) + `<p><b>De la utilidad del contador al EBITDA de ${esc(Bq.etiqueta)}</b></p><dl class="numeros">${TA.puente.map(x => `<dt>${x.tot ? '<b>' + esc(x.l) + '</b>' : esc(x.l)}</dt><dd class="${x.v < 0 && x.tot ? 'mal' : ''}">${F.clp(x.v)}</dd>`).join('')}</dl><div class="chips"><button class="btn sm sec" type="button" data-accion="ir-detalle" data-tab-ir="pasado" data-capa="pasado-anio" data-ancla="" data-filtro="">Ver el año según el contador →</button></div>`) : ''}
+        ${paso('hacer', pasoN.hacer, '¿Qué hago?', '<ul class="hacer-lista">' + T.hacer.map(x => '<li><span><span>' + simple(x.texto) + '</span></span></li>').join('') + '</ul>')}
+        ${paso('numeros', pasoN.numeros, 'Ver los números', tabla + gastos + `<p class="c-sub">De dónde sale: cartolas del banco (${esc(I.pasado.etiqueta)})${I.contable ? '; ' + esc(Bq.etiqueta) + ', del ' + esc(minus1(I.contable.fuente)) : ''}; el sueldo y las metas, del plan 2027.</p><div class="chips"><button class="btn sm sec" type="button" data-accion="ir-detalle" data-tab-ir="pasado" data-capa="pasado-meses" data-ancla="" data-filtro="">Ver la plata mes a mes →</button><button class="btn sm sec" type="button" data-accion="ir-detalle" data-tab-ir="futuro" data-capa="futuro-sim" data-ancla="" data-filtro="">Probar qué pasa en 2027 →</button></div>`)}
       </div></section>
       ${capa('ebitda-calculo', 'Cómo lo calculo', 'Qué entra y qué no entra en el EBITDA de AerIA.', `<section class="panel"><div class="panel-b" style="display:flex;flex-direction:column;gap:10px;max-width:80ch">
         <p><b>EBITDA del mes = lo que entró por ventas − lo que costó operar − tu sueldo del plan − lo pagado al cofundador.</b></p>
@@ -467,6 +484,7 @@
         <p>Lo pagado al cofundador: entra como costo, porque el plan lo tiene en sus costos fijos aunque para el SII sea retiro de socio.</p>
         <p>No entran: las transferencias y aportes del socio más allá de su sueldo, los movimientos con Aéreo OTEC y los traspasos entre cuentas propias.</p>
         <p>Es base caja: cuenta lo cobrado y lo pagado en el mes, no lo vendido. Por eso un mes con cobros grandes sube y el siguiente puede bajar, y el semáforo grande mira hasta 3 meses juntos. Un mes que la cartola corta a la mitad queda «en curso».</p>
+        ${I.contable ? `<p><b>${esc(mayus1(I.contable.etiqueta))}</b> sale del pre cierre del contador, en un solo bloque porque el contador entrega el total del período: ventas sin IVA, menos los gastos con documento, menos lo pagado sin documento (honorarios sin boleta, proveedores sin factura y fondos por rendir), menos tu sueldo del plan por cada mes. Lo pagado al cofundador va en su columna. Es base contable: lo facturado y lo anotado, no lo cobrado.</p>` : ''}
         <p>Las metas salen del plan 2027: con la venta meta a empresas, el año deja ${F.mm(E.metaAnio)}, o sea ${F.mm(E.metaMes)} al mes si todos los meses fueran iguales. 2027 se proyecta con el mismo modelo del plan.</p>
       </div></section>`)}`;
   }
@@ -479,6 +497,7 @@
     const Ps = I.simple.pestanas.pasado;
     v.innerHTML = `
       ${enSimpleHtml({ texto: Ps.texto, datos: Ps.datos, extra: `<div class="chips"><button class="chip" type="button" data-accion="preguntar" data-q="Explícame en simple dónde se fue la plata de ${esc(P.etiqueta)} y qué debería hacer">Pregúntale a AerIA dónde se fue la plata</button></div>` })}
+      ${anioContableHtml()}
       ${capa('pasado-caja', 'La plata día a día', 'Cuánto había en el banco cada día y por qué subió o bajó.', `
       <div class="grilla g-2">
         <section class="panel"><div class="panel-c"><h2>La plata en el banco, día a día</h2><span class="bajada">Suma de ${esc(Object.values(M.cuentas(Fi)).join(' + '))}, del ${esc(F.fCorta(Fi.serie[0].fecha))} al ${esc(F.fCorta(P.fechaCorte))}. Pasa el cursor (o el dedo) por el gráfico para ver cada día.</span></div>
@@ -504,6 +523,67 @@
         </tbody></table></div></div></section>`)}`;
     graficoCaja($('#g-caja'), Fi.serie);
     graficoLineas($('#g-lineas'), P);
+  }
+
+  // El pre cierre del contador: ventas, gastos, lo pagado sin documento, los socios y el balance
+  // nombres de cuentas del contador en mayúsculas y sin tildes → texto normal
+  const TILDES = { prestamo: 'préstamo', correccion: 'corrección', locomocion: 'locomoción', colacion: 'colación', asesoria: 'asesoría', aeronauticas: 'aeronáuticas',
+    articulos: 'artículos', publicidad: 'publicidad', telefonia: 'telefonía', energia: 'energía', mantencion: 'mantención', capacitacion: 'capacitación', epp: 'EPP', mercadopago: 'Mercado Pago' };
+  const cuentaTxt = n => mayus1(String(n || '').toLowerCase().replace(/^gtos\.?\s*/, 'gastos ').replace(/\p{L}+/gu, w => TILDES[w] || w)
+    .replace(/(\bsocio\s+)(.+)$/, (x, a, b) => a + b.replace(/(^|\s)(\p{L})/gu, (y, e, c) => e + c.toUpperCase())));
+  function anioContableHtml() {
+    const C = I.contable;
+    if (!C) return '';
+    const B = C.balance, E = I.ebitda && I.ebitda.anual && I.ebitda.anual.bloque;
+    const fila = (l, v, cls, sub) => `<dt>${l}${sub ? ' <small>' + esc(sub) + '</small>' : ''}</dt><dd class="${cls || ''}">${F.clp(v)}</dd>`;
+    const top = C.contrapartes.slice(0, 10), resto = C.contrapartes.slice(10);
+    const otrosAct = B.activos - B.bancos - B.caja - B.clientes - C.sinDoc - B.equipos;
+    const otrosPas = B.pasivos - C.socios.prestamosTotal - B.proveedores - B.anticiposClientes;
+    return capa('pasado-anio', 'El año según el contador', 'El pre cierre de ' + C.etiqueta + ': lo vendido, lo gastado, lo pagado sin documento, los socios y el balance al ' + F.fCorta(C.hasta) + '.', `
+      <div class="grilla g-2">
+        <section class="panel"><div class="panel-c"><h2>De ${esc(C.etiqueta)}</h2><span class="bajada">Lo vendido y lo gastado según el contador, y lo que él dejó fuera.</span></div>
+          <div class="panel-b"><dl class="numeros">
+            ${fila('Vendido', C.ventas, '', 'sin IVA')}
+            ${fila('Gastos con documento', -C.gastos)}
+            ${fila('<b>Utilidad que muestra el contador</b>', C.resultadoOperacional, C.resultadoOperacional < 0 ? 'mal' : '')}
+            ${C.sinDoc ? fila('Pagado sin documento', -C.sinDoc, 'mal', 'el contador lo deja como anticipo') : ''}
+            ${E ? fila('Tu sueldo del plan', -E.sueldoSocio, '', C.nMeses + ' meses') : ''}
+            ${E ? fila('<b>EBITDA según AerIA</b>', E.ebitda, E.ebitda < 0 ? 'mal' : 'bien', 'también descuenta lo del cofundador') : ''}
+          </dl></div>
+          <p class="nota-panel">El contador muestra utilidad porque deja fuera lo pagado sin documento y no cuenta un sueldo para ti. AerIA sí los cuenta: la plata ya salió.</p></section>
+        ${C.sinDoc ? `<section class="panel"><div class="panel-c"><h2>Pagado sin documento</h2><span class="bajada">${F.mm(C.sinDoc)} que esperan boleta, factura o rendición: ${esc(C.espera.map(t => minus1(t.nombre) + ' ' + F.mm(t.monto)).join(', '))}. Sin documento, el SII puede rechazar esos gastos.</span></div>
+          <div class="panel-b ras"><div class="tabla-env"><table><thead><tr><th>A quién se le pagó</th><th>Qué falta</th><th class="d">Pagos</th><th class="d">Monto</th></tr></thead><tbody>
+            ${top.map(r => `<tr><td>${esc(r.nombre)}</td><td class="c-sub">${esc(r.tipos.join(' y '))}</td><td class="d">${r.n}</td><td class="d">${F.clp(r.monto)}</td></tr>`).join('')}
+            ${resto.length ? `<tr><td colspan="2" class="c-sub">${resto.length} más</td><td class="d">${resto.reduce((t, r) => t + r.n, 0)}</td><td class="d">${F.clp(resto.reduce((t, r) => t + r.monto, 0))}</td></tr>` : ''}
+          </tbody></table></div></div></section>` : ''}
+      </div>
+      <div class="grilla g-2">
+        <section class="panel"><div class="panel-c"><h2>Lo que tiene y lo que debe Aéreo</h2><span class="bajada">El balance al ${esc(F.fDia(C.hasta))}, según el contador.</span></div>
+          <div class="panel-b"><dl class="numeros">
+            ${fila('Plata en los bancos', B.bancos)}
+            ${B.caja ? fila('Caja', B.caja) : ''}
+            ${fila('Clientes por cobrar', B.clientes)}
+            ${C.sinDoc ? fila('Pagado sin documento', C.sinDoc, '', 'lo cuenta como anticipo') : ''}
+            ${B.equipos ? fila('Equipos', B.equipos) : ''}
+            ${otrosAct ? fila('Otros', otrosAct, '', 'garantías, impuestos a favor y otros') : ''}
+            ${fila('<b>Lo que tiene</b>', B.activos)}
+            ${C.socios.prestamosTotal ? fila('Préstamos de los socios', -C.socios.prestamosTotal, 'mal') : ''}
+            ${B.proveedores ? fila('Proveedores por pagar', -B.proveedores) : ''}
+            ${B.anticiposClientes ? fila('Pagado por clientes antes de la factura', -B.anticiposClientes) : ''}
+            ${otrosPas ? fila('Otros', -otrosPas, '', 'impuestos y honorarios por pagar') : ''}
+            ${fila('<b>Lo que debe</b>', -B.pasivos)}
+            ${fila('<b>Lo que queda para los socios</b>', B.patrimonio, B.patrimonio < 0 ? 'mal' : 'bien', 'patrimonio: lo que tiene menos lo que debe')}
+          </dl></div></section>
+        <section class="panel"><div class="panel-c"><h2>Los socios</h2><span class="bajada">Lo que pusieron como préstamo y lo que el contador anotó como reparto de utilidades.</span></div>
+          <div class="panel-b"><dl class="numeros">
+            ${C.socios.prestamos.map(x => fila(esc(cuentaTxt(x.nombre)), x.monto)).join('')}
+            ${C.socios.dividendos ? fila('Dividendos', C.socios.dividendos, 'mal', 'reparto de utilidades que la empresa todavía no tiene') : ''}
+          </dl></div>
+          <p class="nota-panel">Si los préstamos de los socios no pasan a capital, un inversionista los descuenta del precio de la empresa.</p></section>
+      </div>
+      <section class="panel"><div class="panel-c"><h2>Gastos con documento, por cuenta</h2><span class="bajada">Como los anotó el contador de ${esc(C.etiqueta)}.</span></div>
+        <div class="panel-b"><dl class="numeros">${C.gastosTop.map(g => fila(esc(cuentaTxt(g.nombre)), g.monto)).join('')}${fila('<b>Total</b>', C.gastos)}</dl></div></section>
+      <p class="nota-panel">De dónde sale: ${esc(C.fuente)}.${C.avisos.length ? ' Ojo, al leerlo: ' + esc(C.avisos.join('; ')) + '.' : ''}</p>`);
   }
 
   function puenteHtml(P) {

@@ -52,6 +52,19 @@ URL como `url`; nunca crear otra página.
   ella; la meta del mes es `resultado2027(meta) / 12`. El semáforo grande mira los últimos meses
   cerrados juntos (hasta 3); un mes que la cartola corta a la mitad queda «en curso». Si los
   hallazgos listados en `ebitda_salvedades` del modelo siguen abiertos, se muestra como provisorio.
+  **El año** (`E.anual`): lo que cubre el pre cierre del contador va en un solo bloque (base
+  contable: ventas sin IVA − gastos con documento − lo pagado sin documento, o sea anticipos de
+  honorarios y de proveedores y fondos por rendir − el sueldo del plan por cada mes; lo pagado al
+  cofundador, que se reconoce por `cofundador_glosa` del modelo, va en su columna). Después se
+  suman los meses cerrados del banco. Su semáforo usa la meta del mes por los meses del año; el
+  semáforo grande sigue mirando los últimos meses del banco («cómo vamos ahora»). Si entre el
+  pre cierre y la primera cartola faltan meses, se dice cuáles.
+- **Pre cierre del contador** (`leerContable` en `motor.js`, `I.contable`): balance tributario
+  acumulado desde el 1 de enero y análisis de cuentas. Se lee por el plan de cuentas (1 activos,
+  2 pasivos y patrimonio, 3 ingresos, 4 gastos), nunca por nombres de clientes o proveedores. En
+  La plata es la capa «El año según el contador» (`pasado-anio`); en Hoy, una frase de la
+  pregunta de la plata, y dos avisos: `cont-sin-respaldo-<AAAA-MM>` y `cont-patrimonio-<AAAA-MM>`
+  (el mes es el del corte: un pre cierre nuevo vuelve a avisar).
 - Las pruebas usan datos ficticios: el repo es público.
 
 ## Recuperar los datos privados (sesión nueva)
@@ -67,6 +80,7 @@ URL como `url`; nunca crear otra página.
 | Fuente | Cómo |
 |---|---|
 | Pasado (finanzas) | Artifact `read` del enlace `finanzas` de `config/fuentes` → `python3 tools/extraer.py finanzas <html guardado> <enlace>` |
+| Pasado (contable) | El pre cierre del contador es un Excel que el dueño sube a la sesión de Cowork de contabilidad (`contable_sesion` en `config/fuentes`). Lo mejor: pedirle que lo deje también en Drive, carpeta Finanzas, y bajarlo con el conector → `python3 tools/extraer.py contable <xlsx>` (comprueba que el resultado y cada análisis de cuentas cuadren y avisa si no). Si solo está en esa sesión, sus hojas aparecen leídas en su transcripción (`list_events`): se puede rearmar el Excel con esos valores y pasarlo por el mismo extractor |
 | Futuro (plan 2027) | Claude Docs `read` del documento indicado en `config/fuentes` (`plan_doc_id` y `plan_nodo`) → guardar la salida JSON → `python3 tools/extraer.py plan <json> <enlace>`. Si cambian cifras del modelo (costos fijos, márgenes, palancas, precios 2027), actualizar a mano `datos/privado/modelo2027.json` y comprobar con `node tools/probar_motor.js` que reproduce el resultado del plan |
 | Presente (cursos) | Clonar `aereosomosdrones/aereo-web` → `python3 tools/extraer.py cursos <carpeta>` |
 | Presente (licitaciones) | Clonar `aereosomosdrones/licitaciones-aereo` (público) → `python3 tools/extraer.py licitaciones <carpeta>/docs/data/licitaciones.json` |
@@ -87,7 +101,7 @@ Luego `python3 tools/construir.py --revisar` y publicar `dist/aeria.html` en la 
 | `estado/sync_dashboard` | La última sincronización automática con el dashboard: `{id, fecha, firma, via (tabla\|ia), url, filas, creadas, actualizadas, iguales, parecidas, ids[], fallas, conflictos[], deshecha, revisado, intento: {fecha, estado, manual, codigo, paso, mensaje, permiso, auth, soloLectura, via, rechazo, activa}}` (`revisado`: la última lectura sin cambios; `intento`: el último intento, también los fallidos, con lo que respondió la app y en qué paso: leerlo con `ArtifactData get` para entender una falla sin ver la pantalla; `rechazo` guarda que la app no dejó abrir el dashboard, y mientras esté la sincronización automática no vuelve a llamar al navegador). Cada cambio que hizo lleva `resp: <id>` en su entrada del historial: «Deshacer la última» la revierte entera con `deshacerPor` |
 | `config/fuentes` | Enlaces e ids de las fuentes privadas (escrito por Claude, no por la página). `cotizaciones_local` es la URL del dashboard que abre la sincronización |
 
-Los ids de alertas y acciones son estables (`fin-<hallazgo>`, `lic-<código>`,
+Los ids de alertas y acciones son estables (`fin-<hallazgo>`, `cont-<tipo>-<AAAA-MM>`, `lic-<código>`,
 `feriado-<nivel>-<fecha>`, `vender-<nivel>-<fecha>`, `caja`, `cobrar`, `com-*`…): no
 cambiarlos sin migrar `estado/*`. Los comerciales llevan lo que los dispara, para que
 marcarlos no esconda el siguiente vencimiento: `com-seg-<cotización>-<próximo seguimiento
@@ -127,5 +141,7 @@ node tools/probar_motor.js 2026-10-10            # briefing, alertas, agenda, ta
 node tools/probar_motor.js 2026-10-10 --resumen  # el contexto que recibe el chat (debe quedar bajo ~40 KB)
 node tools/probar_motor.js 2026-10-10 --simple   # lo que AerIA dice en simple (Hoy y cada pestaña)
 node tools/probar_comercial.js                   # pruebas del módulo comercial (datos ficticios)
+python3 tools/probar_contable.py                 # pre cierre ficticio: extractor y motor
+node tools/probar_motor.js 2026-10-10 --sin-contable  # la página sin el pre cierre
 python3 tools/construir.py                       # arma dist/aeria.html
 ```

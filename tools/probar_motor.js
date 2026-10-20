@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* Corre el motor de AerIA sobre datos/ y muestra lo que vería la página.
-   Uso: node tools/probar_motor.js [AAAA-MM-DD] [--resumen | --simple] */
+   Uso: node tools/probar_motor.js [AAAA-MM-DD] [--resumen | --simple] [--sin-contable] */
 const fs = require('fs'), path = require('path');
 const raiz = path.resolve(__dirname, '..');
 const leer = p => JSON.parse(fs.readFileSync(path.join(raiz, 'datos', p), 'utf8'));
@@ -10,6 +10,8 @@ const D = {
   modelo: leer('privado/modelo2027.json'), cotizaciones: leer('privado/cotizaciones.json'),
   cursos: leer('publico/cursos.json'), licitaciones: leer('publico/licitaciones.json'), notas: [],
   comercial: fs.existsSync(path.join(raiz, 'datos', 'privado', 'comercial.json')) ? leer('privado/comercial.json') : { cotizaciones: [] },
+  // el pre cierre del contador es opcional: --sin-contable prueba la página sin él
+  contable: !process.argv.includes('--sin-contable') && fs.existsSync(path.join(raiz, 'datos', 'privado', 'contable.json')) ? leer('privado/contable.json') : null,
 };
 const hoy = process.argv.find(a => /^\d{4}-\d{2}-\d{2}$/.test(a)) || M.fmt.iso(new Date());
 const I = M.analizar(D, hoy, new Date(hoy + 'T13:00:00-03:00'));

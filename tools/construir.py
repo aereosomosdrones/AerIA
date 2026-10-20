@@ -35,6 +35,7 @@ FUENTES = {
 # Opcionales: si faltan, la página arranca con valores vacíos
 OPCIONALES = {
     "comercial": ("privado/comercial.json", {"fuente": "", "cotizaciones": []}),
+    "contable": ("privado/contable.json", None),  # pre cierre del contador
 }
 
 
@@ -83,7 +84,10 @@ def construir() -> Path:
     print(f"AerIA armada → {destino.relative_to(RAIZ)}  ({destino.stat().st_size // 1024} KB)")
     for k, r in list(FUENTES.items()) + [(k, v[0]) for k, v in OPCIONALES.items()]:
         d = paquete[k]
-        fecha = d.get("generado_fuente") or d.get("corte") or d.get("extraido") or (str(len(d.get("cotizaciones", []))) + " cotizaciones" if "cotizaciones" in d else "")
+        if d is None:
+            print(f"  {k:13s} {r:28s} (no está)")
+            continue
+        fecha = d.get("generado_fuente") or d.get("corte") or d.get("hasta") or d.get("extraido") or (str(len(d.get("cotizaciones", []))) + " cotizaciones" if "cotizaciones" in d else "")
         print(f"  {k:13s} {r:28s} {str(fecha)[:19]}")
     return destino
 

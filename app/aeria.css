@@ -597,6 +597,14 @@ dfn.glosa:focus-visible { outline: 2px solid var(--foco); outline-offset: 2px; }
 .luz-tab.ojo { background: var(--media-barra); }
 .luz-tab.bien { background: var(--s-3); }
 .paso-cuerpo.ancho { max-width: none; }
+.ebitda-anio { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 22px; align-items: center; padding: 18px 24px; }
+@media (max-width: 620px) { .ebitda-anio { grid-template-columns: minmax(0, 1fr); justify-items: start; } }
+.luz-anio { display: block; width: 52px; height: 52px; border-radius: 50%; background: var(--baja-barra); border: 6px solid var(--negro); box-shadow: 4px 4px 0 var(--dura); }
+.luz-anio.urgente { background: var(--crit-barra); }
+.luz-anio.ojo { background: var(--media-barra); }
+.luz-anio.bien { background: var(--s-3); }
+.gran-num.chico { font-size: clamp(38px, 5vw, 54px); }
+tr.fila-bloque td { background: var(--sup-2); }
 .banda :focus-visible { outline-color: var(--amarillo); }
 .led.amarillo { background: #d9a400; box-shadow: 0 0 0 3px rgba(217, 164, 0, .2); }
 .aviso-prov { font-size: 13.5px; color: var(--aten-t); background: var(--aten-f); border-radius: 4px; padding: 8px 12px; max-width: 78ch; }

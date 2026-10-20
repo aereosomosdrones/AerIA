@@ -2,7 +2,7 @@
 """
 AerIA · recuperar los datos privados desde la página publicada.
 
-Los datos privados (finanzas, plan 2027, modelo, cotizaciones) no viven en este
+Los datos privados (finanzas, pre cierre del contador, plan 2027, modelo, cotizaciones) no viven en este
 repositorio porque es público. Viajan dentro de la página AerIA publicada en
 claude.ai, en el bloque <script id="aeria-datos">. Este script los devuelve a
 datos/ para poder volver a armar la página.
@@ -23,6 +23,7 @@ DESTINOS = {
     "cursos": "publico/cursos.json",
     "licitaciones": "publico/licitaciones.json",
     "comercial": "privado/comercial.json",
+    "contable": "privado/contable.json",
 }
 
 if len(sys.argv) != 2:
@@ -35,7 +36,7 @@ if not m:
     sys.exit('No encontré <script id="aeria-datos"> en ese archivo.')
 paquete = json.loads(m.group(1).replace("<\\/", "</"))
 for clave, ruta in DESTINOS.items():
-    if clave not in paquete:
+    if paquete.get(clave) is None:
         print(f"  (sin {clave})")
         continue
     destino = RAIZ / "datos" / ruta

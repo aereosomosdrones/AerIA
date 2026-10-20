@@ -34,9 +34,11 @@ abren «¿Por qué?», «¿Qué hago?» y «Ver los números». Cada pestaña pa
   intereses y compras de equipos (ventas cobradas − gastos de operar − el sueldo del socio
   del plan). Rojo bajo $0, amarillo hasta la meta del plan 2027 y verde sobre la meta; un
   semáforo por mes, el mes en curso sin dato hasta su cartola y 2027 al ritmo de hoy, con el
-  porqué, qué hacer y los números paso a paso.
-- **La plata**: la plata día a día, adónde se fue, ventas y gastos por categoría, mes a
-  mes y lo que encontró la revisión contable.
+  porqué, qué hacer y los números paso a paso. Con el pre cierre del contador suma el año:
+  los meses que él cubre en un bloque y después los del banco.
+- **La plata**: el año según el contador (ventas, gastos, lo pagado sin documento, los
+  socios y el balance), la plata día a día, adónde se fue, ventas y gastos por categoría,
+  mes a mes y lo que encontró la revisión contable.
 - **Cursos y cobros**: cupos vendidos por fecha, quién debe (banco + SII), resumen de
   ventas y los concursos del Estado (licitaciones) que calzan.
 - **Ventas**: el dashboard comercial dentro de AerIA. Cotizaciones editables con
@@ -77,10 +79,11 @@ app/            la página: aeria.html (armazón), aeria.css, ui.js (interfaz), 
                 comercial.js (lógica comercial) y ui-comercial.js (pestaña Comercial)
 app/marca/      logos de Aéreo como máscaras (se tiñen según el tema)
 tools/          extraer.py (fuentes → datos/), construir.py (datos + app → dist/),
-                probar_motor.js y probar_comercial.js (pruebas en node),
+                probar_motor.js y probar_comercial.js (pruebas en node), probar_contable.py,
                 recuperar.py (datos desde la página publicada)
 datos/publico/  cursos y licitaciones (información pública)
-datos/privado/  finanzas, plan 2027, modelo, agregado del dashboard y respaldo comercial — NO se suben
+datos/privado/  finanzas, pre cierre del contador, plan 2027, modelo, agregado del dashboard y
+                respaldo comercial — NO se suben
 dist/           la página armada — NO se sube
 ```
 
@@ -129,6 +132,7 @@ versionar también.
 python3 tools/extraer.py cursos ../aereo-web
 python3 tools/extraer.py licitaciones ../licitaciones-aereo/docs/data/licitaciones.json
 python3 tools/extraer.py finanzas fuentes/finanzas.html     # informe leído del artifact
+python3 tools/extraer.py contable fuentes/precierre.xlsx     # pre cierre del contador (Excel)
 python3 tools/extraer.py plan fuentes/plan2027.json          # lectura del doc en Claude Docs
 python3 tools/construir.py --revisar                         # arma dist/aeria.html y muestra el análisis
 ```

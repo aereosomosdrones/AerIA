@@ -10,9 +10,11 @@ normalizado en datos/. El motor (tools/construir.py) solo lee datos/.
     python3 tools/extraer.py cursos    <carpeta del repo aereo-web>
     python3 tools/extraer.py licitaciones <licitaciones.json del radar>
     python3 tools/extraer.py comercial  <carpeta del respaldo de la colección «cotizaciones»>
+    python3 tools/extraer.py contable   <pre cierre del contador .xlsx>
 
 Los cuatro focos:
     PASADO   finanzas      informe de cartolas, SII y Mercado Pago (artifact)
+             contable      pre cierre del contador (Excel): balance y resultado del año
     PRESENTE cursos        fechas y cupos publicados en aereo.cl (repo aereo-web)
     COMERCIAL comercial    cotizaciones de la pestaña Comercial (se editan en la página;
                            el dashboard local se importa ahí con el extractor)
@@ -43,7 +45,11 @@ def ahora():
 def guardar(destino: Path, datos: dict):
     destino.parent.mkdir(parents=True, exist_ok=True)
     destino.write_text(json.dumps(datos, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"  → {destino.relative_to(RAIZ)}  ({destino.stat().st_size // 1024} KB)")
+    try:
+        nombre = destino.relative_to(RAIZ)
+    except ValueError:
+        nombre = destino
+    print(f"  → {nombre}  ({destino.stat().st_size // 1024} KB)")
 
 
 # --------------------------------------------------------------------------
@@ -288,12 +294,153 @@ def extraer_comercial(origen: Path):
     guardar(destino, previo)
 
 
+# --------------------------------------------------------------------------
+# PASADO · contable (pre cierre del contador)
+# --------------------------------------------------------------------------
+# Del análisis de cuentas se guarda el detalle solo de las cuentas que AerIA
+# muestra (pagos que esperan documento y préstamos de socios); del resto, el saldo.
+CUENTAS_CON_DETALLE = re.compile(r"anticipo\s+(a\s+)?(honorarios|proveedores)|fondos?\s+por\s+rendir|pr[eé]stamo.*socio", re.I)
+
+
+def _texto_celda(v):
+    return str(v).strip() if v is not None else ""
+
+
+def _fecha_iso(v):
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if hasattr(v, "isoformat"):
+        return v.isoformat()[:10]
+    return None
+
+
+def _numero(v):
+    return round(float(v)) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+
+def extraer_contable(origen: Path):
+    """Arma datos/privado/contable.json desde el pre cierre del contador (Excel).
+
+    El pre cierre trae el balance tributario acumulado del año hasta la fecha de
+    la portada, el estado de resultados y un «análisis de cuentas» por hoja (cada
+    movimiento con fecha, detalle y monto). Se leen los valores guardados en el
+    Excel (no las fórmulas) y se comprueba que todo cuadre.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        sys.exit("Falta openpyxl: pip install openpyxl")
+    wb = load_workbook(origen, data_only=True)
+
+    # La fecha de corte: la celda a la derecha de «Periodo» en la portada (o en la primera hoja que la tenga)
+    hasta = None
+    for ws in wb.worksheets:
+        for fila in ws.iter_rows():
+            for c in fila:
+                if _texto_celda(c.value).lower() == "periodo":
+                    v = ws.cell(row=c.row, column=c.column + 1).value
+                    if _fecha_iso(v):
+                        hasta = _fecha_iso(v)
+                        break
+            if hasta:
+                break
+        if hasta:
+            break
+    if not hasta:
+        sys.exit("No encontré la fecha del período («Periodo») en el pre cierre.")
+
+    # Balance tributario: la hoja con la fila de títulos CTA | Nombre Cuenta | Debe | Haber | …
+    balance, titulos, fila_t = None, {}, None
+    for ws in wb.worksheets:
+        for fila in ws.iter_rows():
+            nombres = {_texto_celda(c.value).lower(): c.column for c in fila if c.value is not None}
+            if "cta" in nombres and "nombre cuenta" in nombres and "debe" in nombres:
+                balance, titulos, fila_t = ws, nombres, fila[0].row
+                break
+        if balance:
+            break
+    if not balance:
+        sys.exit("No encontré el balance tributario (fila con «CTA», «Nombre Cuenta» y «Debe»).")
+    col = {k: titulos.get(k) for k in ("cta", "nombre cuenta", "debe", "haber", "deudor", "acreedor", "activo", "pasivo", "perdida", "ganancia")}
+    if not col["perdida"]:
+        col["perdida"] = titulos.get("pérdida")
+    cuentas, resultado_libro = [], None
+    for r in range(fila_t + 1, balance.max_row + 1):
+        codigo = _texto_celda(balance.cell(row=r, column=col["cta"]).value)
+        nombre = _texto_celda(balance.cell(row=r, column=col["nombre cuenta"]).value)
+        if nombre.upper().startswith("RESULTADO"):
+            # «RESULTADO GANANCIA» o «RESULTADO PERDIDA»: el monto está en alguna de las columnas de la fila
+            vals = [balance.cell(row=r, column=c).value for c in col.values() if c]
+            monto = next((v for v in vals if isinstance(v, (int, float))), None)
+            if monto is not None:
+                resultado_libro = round(monto) * (-1 if "PERDIDA" in nombre.upper() or "PÉRDIDA" in nombre.upper() else 1)
+            continue
+        if not codigo or nombre.upper().startswith("TOTAL"):
+            continue
+        val = lambda k: _numero(balance.cell(row=r, column=col[k]).value) if col.get(k) else 0
+        cuentas.append({"codigo": codigo, "nombre": nombre.rstrip(". "), "debe": val("debe"), "haber": val("haber"),
+                        "deudor": val("deudor"), "acreedor": val("acreedor"), "activo": val("activo"), "pasivo": val("pasivo"),
+                        "perdida": val("perdida"), "ganancia": val("ganancia")})
+    resultado = sum(c["ganancia"] for c in cuentas) - sum(c["perdida"] for c in cuentas)
+    cuadre_inv = sum(c["activo"] for c in cuentas) - sum(c["pasivo"] for c in cuentas)
+    avisos = []
+    if resultado_libro is not None and resultado_libro != resultado:
+        avisos.append(f"el resultado del balance ({resultado_libro}) no calza con ganancias − pérdidas ({resultado})")
+    if cuadre_inv != resultado:
+        avisos.append(f"activos − pasivos ({cuadre_inv}) no calza con el resultado ({resultado})")
+
+    # Análisis de cuentas: hojas con la fila Fecha | Detalle | Monto y un «Saldo al …» al final
+    analisis = []
+    for ws in wb.worksheets:
+        if not CUENTAS_CON_DETALLE.search(ws.title):
+            continue
+        cab = None
+        for fila in ws.iter_rows():
+            textos = {_texto_celda(c.value).lower(): c.column for c in fila if c.value is not None}
+            if "fecha" in textos and "detalle" in textos and "monto" in textos:
+                cab = (fila[0].row, textos["fecha"], textos["detalle"], textos["monto"])
+                break
+        if not cab:
+            avisos.append(f"la hoja «{ws.title}» no tiene la fila Fecha | Detalle | Monto")
+            continue
+        r0, cf, cd, cm = cab
+        movs, saldo = [], None
+        for r in range(r0 + 1, ws.max_row + 1):
+            f = ws.cell(row=r, column=cf).value
+            if _texto_celda(f).lower().startswith("saldo"):
+                saldo = _numero(ws.cell(row=r, column=cm).value)
+                break
+            if _fecha_iso(f) and isinstance(ws.cell(row=r, column=cm).value, (int, float)):
+                movs.append({"fecha": _fecha_iso(f), "detalle": _texto_celda(ws.cell(row=r, column=cd).value), "monto": _numero(ws.cell(row=r, column=cm).value)})
+        suma = sum(m["monto"] for m in movs)
+        if saldo is not None and saldo != suma:
+            avisos.append(f"en «{ws.title}» los movimientos suman {suma} y el saldo dice {saldo}")
+        # el nombre de la hoja manda: la celda del título a veces viene copiada de otra hoja
+        analisis.append({"hoja": ws.title.strip(), "saldo": saldo if saldo is not None else suma, "movs": movs})
+
+    for a in avisos:
+        print("  ¡ojo!", a)
+    año = hasta[:4]
+    guardar(PRIVADO / "contable.json", {
+        "fuente": f"Pre cierre del contador al {hasta[8:10]}-{hasta[5:7]}-{año} ({origen.name})",
+        "archivo": origen.name,
+        "extraido": ahora(),
+        "desde": f"{año}-01-01",  # el balance tributario acumula desde el 1 de enero
+        "hasta": hasta,
+        "resultado": resultado,
+        "cuentas": cuentas,
+        "analisis": analisis,
+        "avisos": avisos,
+    })
+
+
 ADAPTADORES = {
     "finanzas": extraer_finanzas,
     "plan": extraer_plan,
     "cursos": extraer_cursos,
     "licitaciones": extraer_licitaciones,
     "comercial": extraer_comercial,
+    "contable": extraer_contable,
 }
 
 if __name__ == "__main__":
