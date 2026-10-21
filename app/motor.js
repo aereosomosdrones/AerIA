@@ -396,26 +396,31 @@
   const ES_COTIZACION = /previred|afp|isapre|fonasa|mutual|achs|cotizaci/i;
   /* ---------- CONTABLE: el pre cierre del contador (balance y resultado acumulados del año) ----------
      Se lee por el plan de cuentas: 1 activos, 2 pasivos y patrimonio, 3 ingresos, 4 gastos. */
-  const NO_OPERACIONAL = /correcci[oó]n monetaria|diferencia de cambio|iva no recuperable|impuesto a la renta|intereses|multas/i;
-  const PATRIMONIO = /capital|utilidad|p[eé]rdidas? acumulad|dividendo|reserva|resultado/i;
+  // fuera del EBITDA: lo que no es de la operación, la depreciación, los intereses y los impuestos
+  const NO_OPERACIONAL = /correcci[oó]n monetaria|diferencia de cambio|iva no recuperable|impuesto a la renta|imp(to)?\.?\s+(a\s+la\s+)?renta|depreciaci|amortizaci|intereses|gastos?\s+financieros?|reajustes?|multas|no operacional|otros ingresos|venta de activo/i;
+  // patrimonio: capital, resultados acumulados o del ejercicio, dividendos provisorios y reservas (lo que dice «por pagar» es deuda)
+  const PATRIMONIO = /^capital\b(?!.*(trabajo|por pagar))|utilidad(es)?\s+acumulad|p[eé]rdidas?\s+acumulad|resultados?\s+(del ejercicio|acumulados?)|dividendos?\s+provisorios?|^reservas?\b/i;
   // pagos que el contador deja como anticipo porque esperan boleta, factura o rendición
   const ESPERA_DOC = [
-    { id: 'honorarios', re: /anticipo\s+(a\s+|de\s+)?honorarios/i, nombre: 'Honorarios pagados sin boleta', corto: 'honorarios sin boleta' },
-    { id: 'proveedores', re: /anticipo\s+(a\s+)?proveedores/i, nombre: 'Proveedores pagados sin factura', corto: 'proveedores sin factura' },
-    { id: 'fondos', re: /fondos?\s+por\s+rendir/i, nombre: 'Fondos por rendir', corto: 'fondos sin rendir' },
+    { id: 'honorarios', re: /anticipos?\s+(a\s+|de\s+)?honorarios/i, nombre: 'Honorarios pagados sin boleta', corto: 'honorarios sin boleta' },
+    { id: 'proveedores', re: /anticipos?\s+(a\s+|de\s+)?proveedores/i, nombre: 'Proveedores pagados sin factura', corto: 'proveedores sin factura' },
+    { id: 'fondos', re: /fondos?\s+(por|a)\s+rendir/i, nombre: 'Fondos por rendir', corto: 'fondos sin rendir' },
   ];
+  const PRESTAMO_SOCIO = /(pr[eé]stamos?|cuenta corriente|cta\.?\s*cte\.?).*(socio|accionista)|(socio|accionista).*(pr[eé]stamo|cuenta corriente)/i;
+  // un sueldo de socio que el contador ya anotó como gasto: se compara con el del plan, no se suma
+  const REM_SOCIO = /(remuneraci|sueldo|dieta).*(socio|accionista|director)|(socio|accionista|director).*(remuneraci|sueldo|dieta)/i;
   // «TRANSFERENCIA A FULANO» → «fulano»: a quién se le pagó, para juntar sus pagos
   function contraparteDe(detalle) {
     const t = String(detalle || '').trim()
       .replace(/^pago\s+honorarios\s+[a-záéíóúñ]+\s*-\s*/i, '')
-      .replace(/^fondos?\s+por\s+rendir\s+/i, '')
+      .replace(/^fondos?\s+(por|a)\s+rendir\s+/i, '')
       .replace(/^(transferencias?|transf\.?|trans|tranf|traspaso)\s+(a\s+|de\s+)?/i, '')
       .replace(/^pago(\s+en\s+l[ií]nea|\s+mercado\s+pago)?\s*:?\s*/i, '')
       .replace(/[\s,.]+(spa|ltda|limitada|s\.?a)\.?$/i, '').trim();
     return t || 'sin detalle';
   }
-  function leerContable(D) {
-    const C = D.contable, M = D.modelo;
+  function leerContable(D, hoy) {
+    const C = D.contable, M = D.modelo || {}, Fi = D.finanzas || {};
     if (!C || !(C.cuentas || []).length || !C.hasta) return null;
     const cu = C.cuentas;
     const suma = (l, f) => l.reduce((t, x) => t + (f(x) || 0), 0);
@@ -425,27 +430,41 @@
     const de = (re, l) => l.filter(c => re.test(c.nombre));
     const ventasCtas = g('3').filter(c => !NO_OPERACIONAL.test(c.nombre));
     const gastosCtas = g('4').filter(c => !NO_OPERACIONAL.test(c.nombre));
+    const remSocio = suma(gastosCtas.filter(c => REM_SOCIO.test(c.nombre)), c => c.perdida - c.ganancia);
+    const gastosOp = gastosCtas.filter(c => !REM_SOCIO.test(c.nombre));
     const ventas = suma(ventasCtas, c => c.ganancia - c.perdida);
-    const gastos = suma(gastosCtas, c => c.perdida - c.ganancia);
-    const gastosTop = gastosCtas.map(c => ({ nombre: c.nombre, monto: c.perdida - c.ganancia })).filter(x => x.monto > 0).sort((a, b) => b.monto - a.monto);
+    const gastos = suma(gastosOp, c => c.perdida - c.ganancia);
+    const gastosTop = gastosOp.map(c => ({ nombre: c.nombre, monto: c.perdida - c.ganancia })).filter(x => x.monto > 0).sort((a, b) => b.monto - a.monto);
     const activos = suma(g('1'), saldoActivo);
     const pasivosCtas = g('2').filter(c => !PATRIMONIO.test(c.nombre));
     const pasivos = suma(pasivosCtas, saldoPasivo);
     const movsDe = re => (C.analisis || []).filter(a => re.test(a.hoja)).flatMap(a => a.movs || []);
     const glosaCof = M.cofundador_glosa ? new RegExp(M.cofundador_glosa, 'i') : null;
+    // proveedores que ya tienen factura en el SII hasta el corte (el contador todavía no la cruza con el anticipo)
+    const conFacturaSII = (Fi.compras || []).filter(x => x.fecha && x.fecha <= C.hasta && x.monto > 0).map(x => plano(x.prov));
+    const tieneFactura = n => { const k = plano(n); return k.length >= 6 && conFacturaSII.some(p => p.startsWith(k)); };
+    const delAnio = m => m.fecha && m.fecha >= C.desde;
     const espera = ESPERA_DOC.map(t => {
       const movs = movsDe(t.re);
-      return { id: t.id, nombre: t.nombre, corto: t.corto, monto: suma(de(t.re, g('1')), saldoActivo), n: movs.length, movs };
-    }).filter(t => t.monto > 0);
-    const sinDoc = suma(espera, t => t.monto);
+      const saldo = suma(de(t.re, g('1')), saldoActivo);
+      // lo movido desde el 1 de enero; lo anterior viene de otros años y no es gasto de este
+      const anio = movs.length ? Math.max(0, Math.min(saldo, suma(movs.filter(delAnio), m => m.monto))) : saldo;
+      const conFac = t.id === 'proveedores' ? movs.filter(m => delAnio(m) && m.monto > 0 && tieneFactura(contraparteDe(m.detalle))) : [];
+      const facturado = Math.min(anio, suma(conFac, m => m.monto));
+      const quedan = movs.filter(m => delAnio(m) && !conFac.includes(m));
+      return { id: t.id, nombre: t.nombre, corto: t.corto, saldo, monto: anio - facturado, facturado, arrastre: saldo - anio,
+        n: quedan.filter(m => m.monto > 0).length, devoluciones: quedan.filter(m => m.monto < 0).length, movs: quedan };
+    }).filter(t => t.saldo > 0);
+    const sinDoc = suma(espera, t => t.monto), facturado = suma(espera, t => t.facturado), arrastre = suma(espera, t => t.arrastre);
     // lo pagado al cofundador como honorario sin boleta: es su pago, no un gasto de operar
     const hon = espera.find(t => t.id === 'honorarios');
-    const cofundador = hon && glosaCof ? suma(hon.movs.filter(m => glosaCof.test(m.detalle)), m => m.monto) : 0;
+    const cofundador = hon && glosaCof ? Math.min(hon.monto, suma(hon.movs.filter(m => glosaCof.test(m.detalle)), m => m.monto)) : 0;
     const porNombre = {};
     for (const t of espera) for (const m of t.movs) {
       const n = contraparteDe(m.detalle), k = plano(n);
-      const r = porNombre[k] || (porNombre[k] = { nombre: nombrePropio(n), monto: 0, n: 0, tipos: new Set() });
-      r.monto += m.monto; r.n += 1; r.tipos.add(t.corto);
+      const r = porNombre[k] || (porNombre[k] = { nombre: nombrePropio(n), monto: 0, n: 0, tipos: new Set(), cofundador: !!(glosaCof && glosaCof.test(m.detalle)) });
+      r.monto += m.monto; if (m.monto > 0) r.n += 1; r.tipos.add(t.corto);
+      if (glosaCof && glosaCof.test(m.detalle)) r.cofundador = true;
     }
     // un nombre que el banco cortó («fulano de t») se junta con el completo («fulano de tal»), si hay uno solo que calce
     for (const k of Object.keys(porNombre)) {
@@ -453,23 +472,25 @@
       const largos = Object.keys(porNombre).filter(o => o !== k && o.startsWith(k));
       if (largos.length !== 1) continue;
       const L = porNombre[largos[0]], r = porNombre[k];
-      L.monto += r.monto; L.n += r.n; for (const t of r.tipos) L.tipos.add(t);
+      L.monto += r.monto; L.n += r.n; L.cofundador = L.cofundador || r.cofundador; for (const t of r.tipos) L.tipos.add(t);
       delete porNombre[k];
     }
     const contrapartes = Object.values(porNombre).map(r => ({ ...r, tipos: [...r.tipos] })).sort((a, b) => b.monto - a.monto);
-    const prestamos = de(/pr[eé]stamo/i, pasivosCtas).filter(c => /socio/i.test(c.nombre)).map(c => ({ nombre: c.nombre, monto: saldoPasivo(c) })).filter(x => x.monto > 0);
+    const prestamos = de(PRESTAMO_SOCIO, pasivosCtas).map(c => ({ nombre: c.nombre, monto: saldoPasivo(c) })).filter(x => x.monto > 0);
     const prestamosTotal = suma(prestamos, x => x.monto);
-    const dividendos = suma(de(/dividendo/i, g('2')), saldoActivo);
+    const dividendos = suma(de(/dividendos?\s+provisorios?/i, g('2')), saldoActivo);
     const [y0, m0] = C.desde.split('-').map(Number), [y1, m1] = C.hasta.split('-').map(Number);
     const nMeses = (y1 - y0) * 12 + (m1 - m0) + 1;
-    const sueldoSocio = (M.sueldo_socio_mes || 0) * nMeses;
+    const sueldoSocio = Math.max((M.sueldo_socio_mes || 0) * nMeses, remSocio);
     const gastosOperar = gastos + sinDoc - cofundador;
     const ebitda = ventas - gastosOperar - sueldoSocio - cofundador;
-    const etiqueta = mesNombre(C.desde.slice(0, 7)) + ' a ' + mesNombre(C.hasta.slice(0, 7));
+    const otroAnio = hoy && C.hasta.slice(0, 4) !== hoy.slice(0, 4);
+    const etiqueta = mesNombre(C.desde.slice(0, 7)) + ' a ' + mesNombre(C.hasta.slice(0, 7)) + (otroAnio ? ' de ' + C.hasta.slice(0, 4) : '');
     return {
-      fuente: C.fuente, desde: C.desde, hasta: C.hasta, nMeses, etiqueta,
-      ventas, gastos, gastosTop, resultado: C.resultado, resultadoOperacional: ventas - gastos,
-      espera, sinDoc, contrapartes, cofundador,
+      fuente: C.fuente, desde: C.desde, hasta: C.hasta, nMeses, etiqueta, otroAnio: !!otroAnio,
+      ventas, gastos, gastosContador: gastos + remSocio, remSocio, gastosTop,
+      resultado: C.resultado, resultadoOperacional: ventas - gastos - remSocio,
+      espera, sinDoc, facturado, arrastre, anticipos: suma(espera, t => t.saldo), contrapartes, cofundador,
       socios: { prestamos, prestamosTotal, dividendos },
       balance: {
         activos, pasivos, patrimonio: activos - pasivos,
@@ -478,7 +499,7 @@
         clientes: suma(de(/clientes/i, g('1')).filter(c => !/anticipo/i.test(c.nombre)), saldoActivo),
         equipos: suma(de(/drones?\b|equipos?|maquinaria|veh[ií]culos?/i, g('1')), saldoActivo),
         proveedores: suma(de(/proveedores/i, pasivosCtas).filter(c => !/anticipo/i.test(c.nombre)), saldoPasivo),
-        anticiposClientes: suma(de(/anticipo.*clientes?/i, pasivosCtas), saldoPasivo),
+        anticiposClientes: suma(de(/anticipos?.*clientes?/i, pasivosCtas), saldoPasivo),
       },
       ebitda: { ingresos: ventas, gastos: gastosOperar, sueldoSocio, cofundador, ebitda, margen: ventas > 0 ? ebitda / ventas : null },
       avisos: C.avisos || [],
@@ -546,14 +567,39 @@
       const bloque = { contable: true, mes: Cn.desde.slice(0, 7), hastaMes: corte, etiqueta: Cn.etiqueta, n: Cn.nMeses,
         ingresos: B.ingresos, gastos: B.gastos, sueldoSocio: B.sueldoSocio, cofundador: B.cofundador, ebitda: B.ebitda, margen: B.margen,
         meta: metaMes * Cn.nMeses, estado: color(B.ebitda, metaMes * Cn.nMeses) };
+      // lo que el contador ya cuenta (facturado o anotado hasta el corte) y el banco vuelve a contar al cobrarlo o pagarlo después
+      let cruce = null;
+      if (banco.length) {
+        const meses = new Set(banco.map(m => m.mes));
+        const ingresoCat = c => (Fi.cats[c] || {}).grupo === 'Ingresos operacionales';
+        const docs = (Fi.sii || []).filter(x => /factura/i.test(x.tipo || '') && x.fecha && x.fecha <= Cn.hasta && x.monto > 0);
+        const usadasCorte = new Set();
+        let ingresos = 0, nCobros = 0;
+        for (const mv of Fi.movs.filter(x => meses.has(x.mes) && x.monto > 0 && ingresoCat(x.cat))) {
+          const f = docs.find(d => !usadasCorte.has(d) && d.monto === mv.monto && (!rutGlosa(mv.desc) || rutGlosa(mv.desc) === digitos(d.rut)));
+          if (!f) continue;
+          usadasCorte.add(f); nCobros += 1;
+          ingresos += /afecta/i.test(f.tipo) ? Math.round(f.monto / 1.19) : f.monto;
+        }
+        // compras fechadas hasta el corte y pagadas desde las cuentas (un pago parcial cuenta solo lo pagado, si el informe lo dice)
+        let gastosC = 0, nPagos = 0;
+        for (const c of (Fi.compras || []).filter(x => x.fecha && x.fecha <= Cn.hasta)) {
+          let pagado = 0;
+          if (/^pagada desde las cuentas/i.test(c.pago || '')) pagado = c.monto;
+          else if (/^pago parcial/i.test(c.pago || '')) { const m = /\(\$([\d.]+)\)/.exec(c.det || ''); pagado = m ? Math.min(c.monto, Number(m[1].replace(/\./g, ''))) : 0; }
+          if (pagado > 0) { gastosC += pagado; nPagos += 1; }
+        }
+        if (ingresos || gastosC) cruce = { cruce: true, etiqueta: 'Ya contado en ' + Cn.etiqueta, ingresos: -ingresos, gastos: -gastosC, sueldoSocio: 0, cofundador: 0,
+          ebitda: -ingresos + gastosC, cobrado: ingresos, pagado: gastosC, nCobros, nPagos, margen: null };
+      }
       // meses entre el corte del contador y el primer mes del banco que no tiene ninguna de las dos fuentes
       const hueco = [];
       if (banco.length) for (let ym = sumarMesesISO(corte, 1); ym < banco[0].mes; ym = sumarMesesISO(ym, 1)) hueco.push(ym);
-      const partes = [bloque, ...banco];
+      const partes = [bloque, ...banco, ...(cruce ? [cruce] : [])];
       const n = Cn.nMeses + banco.length;
       const t = k => partes.reduce((a, x) => a + (x[k] || 0), 0);
       const ebitdaAnio = t('ebitda'), ingresosAnio = t('ingresos');
-      anual = { partes, banco, bloque, hueco, n, anio, desde: Cn.desde, hasta: banco.length ? finMes(banco[banco.length - 1].mes) : Cn.hasta,
+      anual = { partes, banco, bloque, cruce, hueco, n, anio, enCurso: !Cn.otroAnio, desde: Cn.desde, hasta: banco.length ? finMes(banco[banco.length - 1].mes) : Cn.hasta,
         etiqueta: mesNombre(Cn.desde.slice(0, 7)) + ' a ' + mesNombre((banco.length ? banco[banco.length - 1].mes : corte)),
         ingresos: ingresosAnio, gastos: t('gastos'), sueldoSocio: t('sueldoSocio'), cofundador: t('cofundador'), ebitda: ebitdaAnio,
         meta: metaMes * n, estado: color(ebitdaAnio, metaMes * n), margen: ingresosAnio > 0 ? ebitdaAnio / ingresosAnio : null };
@@ -664,34 +710,42 @@
         fuente: 'Revisión contable de ' + pasado.etiqueta,
       });
     }
-    // Lo que muestra el pre cierre del contador (los ids llevan el mes de corte: un pre cierre nuevo vuelve a avisar)
+    // Lo que muestra el pre cierre del contador. Los ids llevan el mes de corte y una huella del monto:
+    // un pre cierre nuevo, o uno corregido con otras cifras, vuelve a avisar
     const Cn = X.contable;
     if (Cn) {
-      const corte = Cn.hasta.slice(0, 7), alCorte = fDia(Cn.hasta);
+      const corte = Cn.hasta.slice(0, 7), alCorte = fDia(Cn.hasta), huella = v => Math.round(Math.abs(v) / 1e5);
+      const pagos = n => n + (n === 1 ? ' pago' : ' pagos');
       if (Cn.sinDoc > 0) {
-        const top = Cn.contrapartes.slice(0, 3);
+        const top = Cn.contrapartes.filter(r => !r.cofundador).slice(0, 3);
+        const conDoc = Cn.sinDoc - Cn.cofundador;
         add({
-          id: 'cont-sin-respaldo-' + corte, nivel: criticos.has('cont-sin-respaldo') ? 'critica' : 'alta', foco: 'pasado', monto: Cn.sinDoc,
+          id: 'cont-sin-respaldo-' + corte + '-' + huella(Cn.sinDoc), nivel: criticos.has('cont-sin-respaldo') ? 'critica' : 'alta', foco: 'pasado', monto: Cn.sinDoc,
           titulo: 'Pagos sin boleta, factura ni rendición: ' + mm(Cn.sinDoc) + ' de ' + Cn.etiqueta,
           detalle: 'El contador dejó ' + mm(Cn.sinDoc) + ' como anticipos porque no tienen documento: ' +
-            yLista(Cn.espera.map(t => minus(t.nombre) + ' ' + mm(t.monto) + ' (' + t.n + (t.n === 1 ? ' pago' : ' pagos') + ')')) + '.' +
-            (top.length ? ' Los más grandes: ' + yLista(top.map(r => r.nombre + ' ' + mm(r.monto))) + '.' : '') +
-            ' Sin documento, el SII puede rechazar esos gastos, y la utilidad que muestra el contador (' + mm(Cn.resultadoOperacional) + ') se ve mejor de lo que fue.',
+            yLista(Cn.espera.filter(t => t.monto > 0).map(t => minus(t.nombre) + ' ' + mm(t.monto) + ' (' + pagos(t.n) + ')')) + '.' +
+            (Cn.cofundador ? ' De esos, ' + mm(Cn.cofundador) + ' fueron al cofundador: antes de pedir boletas hay que definir si es sueldo, honorarios o retiro.' : '') +
+            (top.length ? ' Los más grandes' + (Cn.cofundador ? ', sin contar al cofundador' : '') + ': ' + yLista(top.map(r => r.nombre + ' ' + mm(r.monto))) + '.' : '') +
+            (Cn.facturado ? ' Otros ' + mm(Cn.facturado) + ' son pagos a proveedores que ya tienen factura en el SII: falta que el contador los cruce.' : '') +
+            ' Sin documento, el SII puede rechazar esos gastos, y el resultado que muestra el contador (' + mm(Cn.resultadoOperacional) + ') se ve mejor de lo que fue.',
           accion: 'Conseguir las boletas y facturas, o rendir los fondos, y pasárselas al contador antes del cierre del año.',
-          tarea: 'Juntar las boletas y facturas de los ' + mm(Cn.sinDoc) + ' pagados sin documento',
+          tarea: 'Juntar las boletas y facturas de los ' + mm(conDoc) + ' pagados sin documento' + (Cn.cofundador ? ' (sin contar lo del cofundador)' : ''),
           fuente: Cn.fuente,
         });
       }
       const B = Cn.balance, So = Cn.socios;
       if (B.patrimonio < 0 || So.prestamosTotal > 0) {
+        const sacaron = So.dividendos > 0 ? ' Los socios ya sacaron ' + mm(So.dividendos) + ', que el contador anotó como dividendos (reparto de utilidades)' +
+          (So.dividendos > Cn.resultado ? ': más de la utilidad que él mismo calcula (' + mm(Cn.resultado) + '), y eso sin descontar lo pagado sin documento' : '') + '.' +
+          (So.prestamosTotal > So.dividendos ? ' Si esa plata fue devolución del préstamo, la deuda con los socios baja a ' + mm(So.prestamosTotal - So.dividendos) + '.' : '') : '';
+        const decision = So.prestamosTotal > 0 ? ' Y decidir si los préstamos de los socios siguen como deuda (la empresa se los puede devolver) o pasan a capital (el balance queda sano, pero esa plata ya no se devuelve como préstamo).' : '';
         add({
-          id: 'cont-patrimonio-' + corte, nivel: B.patrimonio < 0 ? (criticos.has('cont-patrimonio') ? 'critica' : 'alta') : 'media', foco: 'pasado', monto: So.prestamosTotal,
-          titulo: B.patrimonio < 0 ? 'La empresa debe más de lo que tiene: ' + mm(-B.patrimonio) + ' al ' + alCorte : 'La empresa les debe ' + mm(So.prestamosTotal) + ' a los socios',
-          detalle: 'Al ' + alCorte + ', Aéreo tiene ' + mm(B.activos) + ' y debe ' + mm(B.pasivos) + (So.prestamosTotal ? '; ' + mm(So.prestamosTotal) + ' de eso son préstamos de los socios' : '') + '.' +
-            (So.dividendos > 0 ? ' Además, el contador anotó ' + mm(So.dividendos) + ' como dividendos (reparto de utilidades a los socios), y la empresa todavía no tiene utilidades para repartir.' : '') +
-            ' Un inversionista descuenta la deuda con los socios del precio, si no pasa antes a capital.',
-          accion: 'Definir con el contador qué fue lo que recibieron los socios (sueldo, devolución del préstamo o reembolso de gastos) y si los préstamos pasan a capital.',
-          tarea: 'Ordenar con el contador la deuda con los socios (' + mm(So.prestamosTotal) + ')',
+          id: 'cont-patrimonio-' + corte + '-' + huella(B.patrimonio < 0 ? B.patrimonio : So.prestamosTotal), nivel: B.patrimonio < 0 ? (criticos.has('cont-patrimonio') ? 'critica' : 'alta') : 'media', foco: 'pasado',
+          monto: B.patrimonio < 0 ? -B.patrimonio : So.prestamosTotal,
+          titulo: B.patrimonio < 0 ? 'Según cómo lo anotó el contador, la empresa debe ' + mm(-B.patrimonio) + ' más de lo que tiene' : 'La empresa les debe ' + mm(So.prestamosTotal) + ' a los socios',
+          detalle: 'Al ' + alCorte + ', Aéreo tiene ' + mm(B.activos) + ' y debe ' + mm(B.pasivos) + (So.prestamosTotal ? '; ' + mm(So.prestamosTotal) + ' de eso son préstamos de los socios' : '') + '.' + sacaron,
+          accion: (So.dividendos > 0 ? 'Definir con el contador qué fue lo que sacaron los socios: sueldo, devolución del préstamo o reembolso de gastos.' : 'Revisar con el contador por qué la empresa debe más de lo que tiene.') + decision,
+          tarea: So.prestamosTotal > 0 ? 'Definir con el contador qué fue lo que sacaron los socios y qué hacer con sus préstamos (' + mm(So.prestamosTotal) + ')' : 'Revisar con el contador por qué la empresa debe más de lo que tiene',
           fuente: Cn.fuente,
         });
       }
@@ -1064,8 +1118,10 @@
         f29 ? { l: 'Próximo F29 (impuestos)', v: (f29.dias === 0 ? 'hoy, ' : f29.dias === 1 ? 'mañana, ' : '') + fCorta(f29.fecha), cls: f29.dias <= 1 ? 'mal' : '' } : null,
       ].filter(Boolean),
       detalle: { tab: 'pasado', capa: 'pasado-caja', texto: 'Ver la plata día a día' },
-      detalle2: Cn ? { tab: 'pasado', capa: 'pasado-anio', texto: 'Ver el año según el contador' }
-        : finCrit.length ? { tab: 'pasado', capa: 'pasado-revision', texto: 'Ver lo que encontró la revisión contable' } : null,
+      // la revisión contable crítica no pierde su enlace; el año del contador va al lado
+      detalle2: finCrit.length ? { tab: 'pasado', capa: 'pasado-revision', texto: 'Ver lo que encontró la revisión contable' }
+        : Cn ? { tab: 'pasado', capa: 'pasado-anio', texto: 'Ver el año según el contador' } : null,
+      detalle3: finCrit.length && Cn ? { tab: 'pasado', capa: 'pasado-anio', texto: 'Ver el año según el contador' } : null,
       fuente: 'cartolas del banco, SII y Mercado Pago (' + P.etiqueta + ')' + (Cn ? '; ' + minus(Cn.fuente) : '') + '; el mínimo sale del plan 2027',
     });
 
@@ -1397,7 +1453,7 @@
       'Operar costó ' + mm(u.gastos) + (top.length ? '. Lo que más pesó: ' + yLista(top.map(g => minus(g.label) + ' (' + mm(g.monto) + ')')) : '') + '.',
       u.rem > 0 ? 'Tu sueldo: ' + mm(u.rem) + ' salieron del banco como remuneración de socios; cuento ' + mm(u.sueldoSocio) + ' (el sueldo del plan es ' + mm(E.sueldo) + ').'
         : u.sueldoSocio ? 'Cuento tu sueldo del plan, ' + mm(u.sueldoSocio) + '. En el banco no sale como sueldo, porque lo que te llevas son transferencias sin clasificar.' : null,
-      u.cofundador ? 'Cuento también lo que se le pagó al cofundador (' + mm(u.cofundador) + '): el plan lo tiene en sus costos fijos, aunque para el SII sea retiro de socio.' : null,
+      u.cofundador ? 'Cuento también lo que se le pagó al cofundador (' + mm(u.cofundador) + '): el plan lo tiene en sus costos fijos. Falta definir si es sueldo, honorarios o retiro.' : null,
       delMes,
     ].filter(Boolean);
     const promE = R.n ? R.empresas / R.n : 0;
@@ -1417,30 +1473,41 @@
     const A = E.anual, Cn = I.contable;
     let anio = null;
     if (A && Cn) {
-      const Bq = A.bloque, banco = A.banco;
+      const Bq = A.bloque, banco = A.banco, Xc = A.cruce;
       const bancoEbitda = banco.reduce((t, m) => t + m.ebitda, 0);
       const bancoTxt = yLista(banco.map(m => mesNombre(m.mes)));
+      const ultB = banco[banco.length - 1];
+      const deBanco = !banco.length ? '' : banco.length === 1
+        ? ' ' + mayus(bancoTxt) + (bancoEbitda >= 0 ? ' dejó ' + mm(bancoEbitda) : ' perdió ' + mm(-bancoEbitda)) + '.'
+        : ' ' + mayus(bancoTxt) + ' juntos ' + (bancoEbitda >= 0 ? 'dejaron ' + mm(bancoEbitda) : 'perdieron ' + mm(-bancoEbitda)) +
+          (bancoEbitda >= 0 && ultB.estado === 'urgente' ? ', pero ' + mesNombre(ultB.mes) + ' perdió ' + mm(-ultB.ebitda) : '') + '.';
+      const sinCof = Cn.sinDoc - Bq.cofundador, sueldoExtra = Bq.sueldoSocio - Cn.remSocio;
       anio = {
-        frase: 'En lo que va de ' + A.anio + ' (' + A.etiqueta + '), el EBITDA suma ' + mm(A.ebitda) + ': ' +
+        frase: (A.enCurso ? 'En lo que va de ' : 'En ') + A.anio + ' (' + A.etiqueta + '), el EBITDA suma ' + mm(A.ebitda) + ': ' +
           (A.ebitda < 0 ? 'se perdió plata.' : A.ebitda < A.meta ? 'quedó a favor, pero bajo la meta del plan para esos meses (' + mm(A.meta) + ').' : 'quedó sobre la meta del plan para esos meses (' + mm(A.meta) + ').') +
-          (banco.length && Bq.ebitda < 0 && bancoEbitda >= 0 ? ' De ' + Cn.etiqueta + ' se perdieron ' + mm(-Bq.ebitda) + '; desde ' + mesNombre(banco[0].mes) + ', el negocio deja plata.' : ''),
+          (banco.length ? ' De ' + Cn.etiqueta + (Bq.ebitda < 0 ? ' se perdieron ' + mm(-Bq.ebitda) : ' quedaron ' + mm(Bq.ebitda)) + '.' + deBanco : ''),
         porque: [
-          'De ' + Cn.etiqueta + ' uso el pre cierre del contador: ventas por ' + mm(Cn.ventas) + ' (sin IVA) y gastos con documento por ' + mm(Cn.gastos) + '. Con eso, el contador muestra una utilidad de ' + mm(Cn.resultadoOperacional) + '.',
-          Cn.sinDoc > 0 ? 'Pero el contador dejó fuera ' + mm(Cn.sinDoc) + ' pagados sin boleta, factura ni rendición: ' + yLista(Cn.espera.map(t => minus(t.nombre) + ' ' + mm(t.monto))) + '. Yo los cuento como gasto, porque la plata ya salió.' : null,
-          'También cuento tu sueldo del plan (' + mm(Bq.sueldoSocio) + ' en ' + Bq.n + ' meses)' + (Bq.cofundador ? ' y lo pagado al cofundador (' + mm(Bq.cofundador) + ')' : '') + ', igual que en los meses del banco.',
-          banco.length ? 'Ojo: ' + Cn.etiqueta + ' sale de la contabilidad (lo facturado y lo anotado) y ' + bancoTxt + ', del banco (lo cobrado y lo pagado). Se pueden sumar, pero no son exactamente lo mismo.' : null,
+          'De ' + Cn.etiqueta + ' uso el pre cierre del contador: ventas por ' + mm(Cn.ventas) + ' (sin IVA) y gastos con documento por ' + mm(Cn.gastosContador) + '. Con eso, el contador muestra un resultado de la operación de ' + mm(Cn.resultadoOperacional) + '.',
+          Cn.sinDoc > 0 ? 'Pero el contador dejó fuera ' + mm(Cn.sinDoc) + ' pagados sin boleta, factura ni rendición: ' + yLista(Cn.espera.filter(t => t.monto > 0).map(t => minus(t.nombre) + ' ' + mm(t.monto))) + '. Yo los cuento como gasto, porque la plata ya salió' +
+            (Bq.cofundador ? '. De esos, ' + mm(Bq.cofundador) + ' fueron al cofundador: van en su columna, no se cuentan dos veces' : '') + '.' : null,
+          Cn.facturado ? 'Otros ' + mm(Cn.facturado) + ' pagados a proveedores ya tienen factura en el SII: no los resto aparte, para no contarlos dos veces.' : null,
+          Bq.sueldoSocio ? 'También cuento tu sueldo del plan (' + mm(Bq.sueldoSocio) + ' en ' + Bq.n + ' meses), igual que en los meses del banco' + (Cn.remSocio ? '; el contador ya anotó ' + mm(Cn.remSocio) + ' de eso como sueldo' : '') + '.' : null,
+          banco.length ? 'Ojo: ' + Cn.etiqueta + ' sale de la contabilidad (lo facturado y lo anotado) y ' + bancoTxt + ', del banco (lo cobrado y lo pagado).' +
+            (Xc ? ' ' + yLista([Xc.cobrado ? mm(Xc.cobrado) + ' vendidos hasta ' + mesNombre(Bq.hastaMes) + ' se cobraron después' : null, Xc.pagado ? mm(Xc.pagado) + ' en compras de esos meses se pagaron después' : null].filter(Boolean)) +
+              ': los saco de ' + bancoTxt + ' para no contarlos dos veces.' : '') : null,
+          Cn.balance.anticiposClientes > 0 ? 'Además, el contador tiene ' + mm(Cn.balance.anticiposClientes) + ' que clientes pagaron antes de la factura y que todavía no cruza con sus facturas. No los sumo, porque parte ya está en las ventas.' : null,
           A.hueco.length ? 'Faltan ' + yLista(A.hueco.map(mesNombre)) + ': no están ni en el pre cierre ni en las cartolas.' : null,
         ].filter(Boolean),
-        // de la utilidad del contador al EBITDA del bloque
+        // del resultado del contador al EBITDA del bloque
         puente: [
-          { l: 'Utilidad que muestra el contador', v: Cn.resultadoOperacional, tot: true },
-          { l: 'Pagado sin documento' + (Bq.cofundador ? ' (sin lo del cofundador)' : ''), v: -(Cn.sinDoc - Bq.cofundador) },
+          { l: 'Resultado de la operación según el contador', v: Cn.resultadoOperacional, tot: true },
+          { l: 'Pagado sin documento' + (Bq.cofundador ? ' (sin lo del cofundador)' : ''), v: -sinCof },
           { l: 'Lo pagado al cofundador', v: -Bq.cofundador },
-          { l: 'Tu sueldo del plan', v: -Bq.sueldoSocio },
+          { l: 'Tu sueldo del plan' + (Cn.remSocio ? ' (sin lo que el contador ya anotó)' : ''), v: -sueldoExtra },
           { l: 'EBITDA de ' + Cn.etiqueta, v: Bq.ebitda, tot: true },
         ].filter(x => x.tot || x.v),
-        provisorio: Cn.sinDoc > 0 ? 'Es provisorio: es un pre cierre, y ' + mm(Cn.sinDoc) + ' todavía esperan boleta, factura o rendición. Si alguno de esos pagos fue una compra de equipos, el EBITDA mejora un poco.' : '',
-        hacer: Cn.sinDoc > 0 ? 'Juntar las boletas y facturas de los ' + mm(Cn.sinDoc) + ' que el contador dejó sin documento: así el EBITDA de ' + Cn.etiqueta + ' queda firme.' : null,
+        provisorio: Cn.sinDoc > 0 ? 'Es provisorio: es un pre cierre, y ' + mm(Cn.sinDoc) + ' todavía esperan boleta, factura o rendición. Si alguno de esos pagos fue un equipo, no es gasto de operar y el EBITDA mejora; si alguno es de un trabajo que todavía no se factura, falta esa venta.' : '',
+        hacer: sinCof > 0 ? 'Juntar las boletas y facturas de los ' + mm(sinCof) + ' que el contador dejó sin documento' + (Bq.cofundador ? ' (lo del cofundador, primero definir qué es)' : '') + ': así el EBITDA de ' + Cn.etiqueta + ' queda firme.' : null,
       };
       if (anio.hacer) hacer.splice(1, 0, { texto: anio.hacer });
     }
@@ -1450,7 +1517,8 @@
       provisorio,
       que: [
         'Es la plata que genera la operación, antes de impuestos, intereses y compras de equipos.',
-        'Aquí se calcula con el banco: lo que entró por ventas (sin IVA), menos los gastos de operar, menos tu sueldo del plan (' + mm(E.sueldo) + ') y lo pagado al cofundador, que el plan también cuenta como costo.',
+        'Aquí se calcula con el banco: lo que entró por ventas (sin IVA), menos los gastos de operar, menos tu sueldo del plan (' + mm(E.sueldo) + ') y lo pagado al cofundador, que el plan también cuenta como costo.' +
+          (E.anual ? ' ' + mayus(E.anual.bloque.etiqueta) + ' se calcula igual, pero con el pre cierre del contador: lo facturado y lo anotado, no lo cobrado.' : ''),
         'Verde: ' + mm(E.metaMes) + ' o más al mes. Es el resultado que el plan 2027 espera con la venta meta a empresas (' + mm(E.metaAnio) + ' en el año), dividido en 12. Amarillo: entre $0 y eso. Rojo: bajo $0, se perdió plata.',
         E.temporada ? 'El plan avisa que no todos los meses son iguales: «' + E.temporada.replace(/\.$/, '') + '». Por eso el semáforo grande mira hasta 3 meses juntos.' : null,
         'Margen: el EBITDA dividido por lo que entró por ventas. Un margen de 20% quiere decir que de cada $100 cobrados quedaron $20.',
@@ -1483,7 +1551,7 @@
     }) : null;
     const futuro = leerFuturo(D.modelo, pasado, hoy, comercial);
     const tablero = leerTablero(D.modelo, pasado, cursos, D, comercial);
-    const contable = leerContable(D);
+    const contable = leerContable(D, hoy);
     const X = { pasado, cursos, lic, cot, porCobrar, cruce, futuro, tablero, comercial, despues, contable };
     X.ebitda = leerEbitda(D, X, hoy);
     const alertas = construirAlertas(D, X, hoy, ahora);
@@ -1531,11 +1599,12 @@
     if (I.contable) {
       const C = I.contable, B = C.balance;
       L.push('\n## CONTABILIDAD · ' + C.fuente + ' (acumulado ' + C.desde + ' a ' + C.hasta + ')');
-      L.push('- Ventas ' + clp(C.ventas) + ' (sin IVA); gastos con documento ' + clp(C.gastos) + ' (' + C.gastosTop.slice(0, 6).map(g => g.nombre + ' ' + clp(g.monto)).join(', ') + '); utilidad que muestra el contador ' + clp(C.resultado) + '.');
-      if (C.espera.length) L.push('- Pagado sin documento (el contador lo deja como anticipo): ' + C.espera.map(t => t.nombre + ' ' + clp(t.monto) + ' en ' + t.n + ' pagos').join('; ') + '. Mayores: ' + C.contrapartes.slice(0, 6).map(r => r.nombre + ' ' + clp(r.monto)).join(', ') + '.');
+      L.push('- Ventas ' + clp(C.ventas) + ' (sin IVA); gastos con documento ' + clp(C.gastosContador) + ' (' + C.gastosTop.slice(0, 6).map(g => g.nombre + ' ' + clp(g.monto)).join(', ') + '); resultado de la operación ' + clp(C.resultadoOperacional) + '; resultado del ejercicio (con lo no operacional) ' + clp(C.resultado) + '.');
+      if (C.espera.length) L.push('- Pagado sin documento del año (el contador lo deja como anticipo): ' + C.espera.filter(t => t.monto > 0).map(t => t.nombre + ' ' + clp(t.monto) + ' en ' + t.n + ' pagos').join('; ') + (C.cofundador ? '; incluye ' + clp(C.cofundador) + ' de honorarios del cofundador sin boleta' : '') + '. Mayores: ' + C.contrapartes.slice(0, 6).map(r => r.nombre + ' ' + clp(r.monto) + (r.cofundador ? ' (cofundador)' : '')).join(', ') + '.' +
+        (C.facturado ? ' Aparte, ' + clp(C.facturado) + ' en anticipos a proveedores que ya tienen factura en el SII (no se cuentan como gasto aparte).' : '') + (C.arrastre ? ' Arrastrado de años anteriores: ' + clp(C.arrastre) + '.' : ''));
       L.push('- Socios: préstamos ' + (C.socios.prestamos.map(x => x.nombre + ' ' + clp(x.monto)).join(', ') || 'ninguno') + '; dividendos provisorios ' + clp(C.socios.dividendos) + '.');
       L.push('- Balance al ' + C.hasta + ': activos ' + clp(B.activos) + ' (bancos ' + clp(B.bancos) + ', caja ' + clp(B.caja) + ', clientes por cobrar ' + clp(B.clientes) + ', equipos ' + clp(B.equipos) + ', pagado sin documento ' + clp(C.sinDoc) + '); pasivos ' + clp(B.pasivos) + ' (préstamos de socios ' + clp(C.socios.prestamosTotal) + ', proveedores por pagar ' + clp(B.proveedores) + ', anticipos de clientes ' + clp(B.anticiposClientes) + '); patrimonio ' + clp(B.patrimonio) + '.');
-      L.push('- EBITDA ' + C.etiqueta + ' según AerIA (ventas − gastos − pagado sin documento − sueldo del socio del plan ' + clp(C.ebitda.sueldoSocio) + '; lo del cofundador va aparte, ' + clp(C.ebitda.cofundador) + '): ' + clp(C.ebitda.ebitda) + '.');
+      L.push('- EBITDA ' + C.etiqueta + ' según AerIA = ventas − gastos con documento − pagado sin documento − sueldo del socio del plan ' + clp(C.ebitda.sueldoSocio) + ' = ' + clp(C.ebitda.ebitda) + ' (el pagado sin documento incluye ' + clp(C.ebitda.cofundador) + ' del cofundador; no se resta dos veces).');
     }
     L.push('\n## PRESENTE');
     L.push('- Cursos publicados en aereo.cl (precio actual N1 ' + clp(D.cursos.precios_web.nivel1) + ', N2+3 ' + clp(D.cursos.precios_web.nivel23) + ', Pack ' + clp(D.cursos.precios_web.pack) + '; 6 cupos por curso). Meses agotados 2026: ' + cursos.racha.map(m => MESES[m]).join(', ') + '.');
@@ -1568,7 +1637,7 @@
       for (const m of E.meses) L.push('- ' + m.mes + (m.parcial ? ' (en curso, al ' + m.hasta + ')' : '') + ': ventas ' + clp(m.ingresos) + ', gastos ' + clp(m.gastos) + ', sueldo socio ' + clp(m.sueldoSocio) + ', cofundador ' + clp(m.cofundador) + ' → EBITDA ' + clp(m.ebitda) + (m.margen != null ? ' (' + pct(m.margen) + ')' : '') + ' [' + m.estado + '].');
       if (E.anual) {
         const A = E.anual;
-        L.push('- Año ' + A.anio + ' (' + A.desde + ' a ' + A.hasta + '): ' + A.partes.map(x => (x.contable ? x.etiqueta + ' según el pre cierre (contable, cuenta como gasto lo pagado sin documento)' : x.mes) + ' ' + clp(x.ebitda)).join(' + ') + ' = EBITDA ' + clp(A.ebitda) + ' contra una meta de ' + clp(A.meta) + ' [' + A.estado + ']' + (A.hueco.length ? '; faltan ' + A.hueco.join(', ') : '') + '.');
+        L.push('- Año ' + A.anio + ' (' + A.desde + ' a ' + A.hasta + '): ' + A.partes.map(x => (x.contable ? x.etiqueta + ' con el pre cierre (base contable; cuenta como gasto lo pagado sin documento)' : x.cruce ? 'menos lo ya contado en ' + A.bloque.etiqueta + ' que se cobró (' + clp(x.cobrado) + ') o pagó (' + clp(x.pagado) + ') después' : x.mes) + ' ' + clp(x.ebitda)).join(' + ') + ' = EBITDA ' + clp(A.ebitda) + ' contra una meta de ' + clp(A.meta) + ' [' + A.estado + ']' + (A.hueco.length ? '; faltan ' + A.hueco.join(', ') : '') + '.');
       }
       L.push('- Semáforo de los últimos ' + E.periodo.n + ' meses cerrados: EBITDA ' + clp(E.periodo.ebitda) + ' contra una meta de ' + clp(E.periodo.meta) + ' [' + E.periodo.estado + ']. Rojo < $0; amarillo hasta la meta; verde ≥ meta (' + clp(E.metaMes) + '/mes = meta anual del plan ' + clp(E.metaAnio) + ' / 12).' + (E.salvedades.length ? ' Provisorio por: ' + E.salvedades.join('; ') + '.' : ''));
     }
@@ -1583,7 +1652,7 @@
 
   const API = {
     analizar, explicar, resultado2027, buscarMovimientos, resumenParaIA, cuentas, dashboardConectado, leerContable,
-    fmt: { clp, mm, pct, fCorta, fLarga, fDia, mesNombre, cuando, horasA, plano, diasEntre, sumarDias, iso, nombrePropio, sinJerga },
+    fmt: { clp, mm, pct, fCorta, fLarga, fDia, mesNombre, cuando, horasA, plano, diasEntre, sumarDias, iso, nombrePropio, sinJerga, yLista },
     FERIADOS, MESES,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

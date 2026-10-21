@@ -56,15 +56,24 @@ URL como `url`; nunca crear otra página.
   contable: ventas sin IVA − gastos con documento − lo pagado sin documento, o sea anticipos de
   honorarios y de proveedores y fondos por rendir − el sueldo del plan por cada mes; lo pagado al
   cofundador, que se reconoce por `cofundador_glosa` del modelo, va en su columna). Después se
-  suman los meses cerrados del banco. Su semáforo usa la meta del mes por los meses del año; el
+  suman los meses cerrados del banco, menos lo que el bloque ya cuenta y el banco vuelve a contar
+  (fila «Ya contado en…»: cobros de facturas del SII fechadas hasta el corte y compras hasta el
+  corte pagadas desde las cuentas). Su semáforo usa la meta del mes por los meses del año; el
   semáforo grande sigue mirando los últimos meses del banco («cómo vamos ahora»). Si entre el
   pre cierre y la primera cartola faltan meses, se dice cuáles.
 - **Pre cierre del contador** (`leerContable` en `motor.js`, `I.contable`): balance tributario
   acumulado desde el 1 de enero y análisis de cuentas. Se lee por el plan de cuentas (1 activos,
-  2 pasivos y patrimonio, 3 ingresos, 4 gastos), nunca por nombres de clientes o proveedores. En
+  2 pasivos y patrimonio, 3 ingresos, 4 gastos), nunca por nombres de clientes o proveedores; lo no
+  operacional (depreciación, intereses, impuesto a la renta, corrección monetaria) queda fuera, y un
+  sueldo de socio que el contador ya anotó se compara con el del plan (se toma el mayor). Lo pagado
+  sin documento es lo movido desde el 1 de enero (lo de años anteriores va aparte) y deja fuera los
+  anticipos a proveedores que ya tienen factura en el SII hasta el corte. En
   La plata es la capa «El año según el contador» (`pasado-anio`); en Hoy, una frase de la
-  pregunta de la plata, y dos avisos: `cont-sin-respaldo-<AAAA-MM>` y `cont-patrimonio-<AAAA-MM>`
-  (el mes es el del corte: un pre cierre nuevo vuelve a avisar).
+  pregunta de la plata, y dos avisos: `cont-sin-respaldo-<AAAA-MM>-<huella>` y
+  `cont-patrimonio-<AAAA-MM>-<huella>` (el mes del corte y el monto en cientos de miles: un pre
+  cierre nuevo, o uno corregido con otras cifras, vuelve a avisar). El extractor no acepta un Excel
+  sin valores calculados ni un plan de cuentas que no siga 1-2-3-4; de los préstamos de socios
+  guarda solo el saldo.
 - Las pruebas usan datos ficticios: el repo es público.
 
 ## Recuperar los datos privados (sesión nueva)
@@ -101,7 +110,7 @@ Luego `python3 tools/construir.py --revisar` y publicar `dist/aeria.html` en la 
 | `estado/sync_dashboard` | La última sincronización automática con el dashboard: `{id, fecha, firma, via (tabla\|ia), url, filas, creadas, actualizadas, iguales, parecidas, ids[], fallas, conflictos[], deshecha, revisado, intento: {fecha, estado, manual, codigo, paso, mensaje, permiso, auth, soloLectura, via, rechazo, activa}}` (`revisado`: la última lectura sin cambios; `intento`: el último intento, también los fallidos, con lo que respondió la app y en qué paso: leerlo con `ArtifactData get` para entender una falla sin ver la pantalla; `rechazo` guarda que la app no dejó abrir el dashboard, y mientras esté la sincronización automática no vuelve a llamar al navegador). Cada cambio que hizo lleva `resp: <id>` en su entrada del historial: «Deshacer la última» la revierte entera con `deshacerPor` |
 | `config/fuentes` | Enlaces e ids de las fuentes privadas (escrito por Claude, no por la página). `cotizaciones_local` es la URL del dashboard que abre la sincronización |
 
-Los ids de alertas y acciones son estables (`fin-<hallazgo>`, `cont-<tipo>-<AAAA-MM>`, `lic-<código>`,
+Los ids de alertas y acciones son estables (`fin-<hallazgo>`, `cont-<tipo>-<AAAA-MM>-<huella>`, `lic-<código>`,
 `feriado-<nivel>-<fecha>`, `vender-<nivel>-<fecha>`, `caja`, `cobrar`, `com-*`…): no
 cambiarlos sin migrar `estado/*`. Los comerciales llevan lo que los dispara, para que
 marcarlos no esconda el siguiente vencimiento: `com-seg-<cotización>-<próximo seguimiento

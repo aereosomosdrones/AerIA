@@ -605,6 +605,7 @@ dfn.glosa:focus-visible { outline: 2px solid var(--foco); outline-offset: 2px; }
 .luz-anio.bien { background: var(--s-3); }
 .gran-num.chico { font-size: clamp(38px, 5vw, 54px); }
 tr.fila-bloque td { background: var(--sup-2); }
+details.capa { scroll-margin-top: 62px; }
 .banda :focus-visible { outline-color: var(--amarillo); }
 .led.amarillo { background: #d9a400; box-shadow: 0 0 0 3px rgba(217, 164, 0, .2); }
 .aviso-prov { font-size: 13.5px; color: var(--aten-t); background: var(--aten-f); border-radius: 4px; padding: 8px 12px; max-width: 78ch; }

@@ -297,9 +297,12 @@ def extraer_comercial(origen: Path):
 # --------------------------------------------------------------------------
 # PASADO · contable (pre cierre del contador)
 # --------------------------------------------------------------------------
-# Del análisis de cuentas se guarda el detalle solo de las cuentas que AerIA
-# muestra (pagos que esperan documento y préstamos de socios); del resto, el saldo.
-CUENTAS_CON_DETALLE = re.compile(r"anticipo\s+(a\s+)?(honorarios|proveedores)|fondos?\s+por\s+rendir|pr[eé]stamo.*socio", re.I)
+# Del análisis de cuentas se guarda el detalle solo de los pagos que esperan documento
+# (anticipos de honorarios y de proveedores, fondos por rendir): es lo que AerIA muestra.
+# Los préstamos de socios se leen para comprobarlos, pero de ellos se guarda solo el saldo.
+ESPERA_DOC = re.compile(r"anticipos?\s+(a\s+|de\s+)?(honorarios|proveedores)|fondos?\s+(por|a)\s+rendir", re.I)
+PRESTAMO_SOCIO = re.compile(r"(pr[eé]stamos?|cuenta\s+corriente|cta\.?\s*cte\.?).*(socio|accionista)|(socio|accionista).*(pr[eé]stamo|cuenta\s+corriente)", re.I)
+HACIA = re.compile(r"^(transferencias?|transf\.?|trans|tranf)\s+a\s+", re.I)
 
 
 def _texto_celda(v):
@@ -318,6 +321,10 @@ def _numero(v):
     return round(float(v)) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
 
 
+def _pesos(n):
+    return "$" + f"{round(n):,}".replace(",", ".")
+
+
 def extraer_contable(origen: Path):
     """Arma datos/privado/contable.json desde el pre cierre del contador (Excel).
 
@@ -331,6 +338,7 @@ def extraer_contable(origen: Path):
     except ImportError:
         sys.exit("Falta openpyxl: pip install openpyxl")
     wb = load_workbook(origen, data_only=True)
+    wb_formulas = load_workbook(origen, data_only=False)
 
     # La fecha de corte: la celda a la derecha de «Periodo» en la portada (o en la primera hoja que la tenga)
     hasta = None
@@ -364,16 +372,26 @@ def extraer_contable(origen: Path):
     col = {k: titulos.get(k) for k in ("cta", "nombre cuenta", "debe", "haber", "deudor", "acreedor", "activo", "pasivo", "perdida", "ganancia")}
     if not col["perdida"]:
         col["perdida"] = titulos.get("pérdida")
+    # Un Excel con fórmulas que nunca se abrió en Excel no trae sus valores: todo quedaría en $0 sin aviso
+    sin_valor = 0
+    bf = wb_formulas[balance.title]
+    for r in range(fila_t + 1, balance.max_row + 1):
+        for k in ("debe", "haber", "deudor", "acreedor", "activo", "pasivo", "perdida", "ganancia"):
+            if col.get(k) and balance.cell(row=r, column=col[k]).value is None and str(bf.cell(row=r, column=col[k]).value or "").startswith("="):
+                sin_valor += 1
+    if sin_valor:
+        sys.exit(f"El balance tiene {sin_valor} celdas con fórmula pero sin su valor calculado. Abre el Excel en Excel, guárdalo y vuelve a intentar.")
     cuentas, resultado_libro = [], None
     for r in range(fila_t + 1, balance.max_row + 1):
         codigo = _texto_celda(balance.cell(row=r, column=col["cta"]).value)
         nombre = _texto_celda(balance.cell(row=r, column=col["nombre cuenta"]).value)
-        if nombre.upper().startswith("RESULTADO"):
-            # «RESULTADO GANANCIA» o «RESULTADO PERDIDA»: el monto está en alguna de las columnas de la fila
+        # «RESULTADO GANANCIA» o «RESULTADO PERDIDA» es una fila sin código (una cuenta «Resultados acumulados» sí tiene)
+        if not codigo and nombre.upper().startswith("RESULTADO"):
             vals = [balance.cell(row=r, column=c).value for c in col.values() if c]
             monto = next((v for v in vals if isinstance(v, (int, float))), None)
             if monto is not None:
-                resultado_libro = round(monto) * (-1 if "PERDIDA" in nombre.upper() or "PÉRDIDA" in nombre.upper() else 1)
+                perdida = "PERDIDA" in nombre.upper() or "PÉRDIDA" in nombre.upper()
+                resultado_libro = -abs(round(monto)) if perdida else abs(round(monto))
             continue
         if not codigo or nombre.upper().startswith("TOTAL"):
             continue
@@ -381,18 +399,32 @@ def extraer_contable(origen: Path):
         cuentas.append({"codigo": codigo, "nombre": nombre.rstrip(". "), "debe": val("debe"), "haber": val("haber"),
                         "deudor": val("deudor"), "acreedor": val("acreedor"), "activo": val("activo"), "pasivo": val("pasivo"),
                         "perdida": val("perdida"), "ganancia": val("ganancia")})
+    if not cuentas or not any(c["debe"] or c["haber"] for c in cuentas):
+        sys.exit("El balance no trae montos (todo en $0). Revisa que el Excel tenga sus valores guardados.")
+    # AerIA lee el plan de cuentas por su primer dígito: 1 activos, 2 pasivos y patrimonio, 3 ingresos, 4 gastos
+    raras = [c["codigo"] + " " + c["nombre"] for c in cuentas
+             if (c["codigo"][:1] in "12" and (c["perdida"] or c["ganancia"])) or (c["codigo"][:1] in "34" and (c["activo"] or c["pasivo"]))
+             or c["codigo"][:1] not in "1234"]
+    if raras or not any(c["codigo"][:1] == "3" and c["ganancia"] for c in cuentas):
+        sys.exit("El plan de cuentas no sigue 1 activos, 2 pasivos, 3 ingresos y 4 gastos; AerIA no sabría leerlo. Ejemplos: " + "; ".join(raras[:4]))
     resultado = sum(c["ganancia"] for c in cuentas) - sum(c["perdida"] for c in cuentas)
     cuadre_inv = sum(c["activo"] for c in cuentas) - sum(c["pasivo"] for c in cuentas)
     avisos = []
-    if resultado_libro is not None and resultado_libro != resultado:
-        avisos.append(f"el resultado del balance ({resultado_libro}) no calza con ganancias − pérdidas ({resultado})")
+    if resultado_libro is None:
+        avisos.append("no encontré la fila de resultado del balance para comprobarlo")
+    elif resultado_libro != resultado:
+        avisos.append(f"el resultado del balance ({_pesos(resultado_libro)}) no calza con ganancias − pérdidas ({_pesos(resultado)})")
     if cuadre_inv != resultado:
-        avisos.append(f"activos − pasivos ({cuadre_inv}) no calza con el resultado ({resultado})")
+        avisos.append(f"activos − pasivos ({_pesos(cuadre_inv)}) no calza con el resultado ({_pesos(resultado)})")
 
     # Análisis de cuentas: hojas con la fila Fecha | Detalle | Monto y un «Saldo al …» al final
     analisis = []
     for ws in wb.worksheets:
-        if not CUENTAS_CON_DETALLE.search(ws.title):
+        es_espera, es_prestamo = bool(ESPERA_DOC.search(ws.title)), bool(PRESTAMO_SOCIO.search(ws.title))
+        if not (es_espera or es_prestamo):
+            continue
+        if re.search(r"\(\d+\)\s*$", ws.title):
+            avisos.append(f"dejé fuera la hoja «{ws.title}», que parece una copia")
             continue
         cab = None
         for fila in ws.iter_rows():
@@ -407,16 +439,27 @@ def extraer_contable(origen: Path):
         movs, saldo = [], None
         for r in range(r0 + 1, ws.max_row + 1):
             f = ws.cell(row=r, column=cf).value
-            if _texto_celda(f).lower().startswith("saldo"):
-                saldo = _numero(ws.cell(row=r, column=cm).value)
+            texto = _texto_celda(f).lower()
+            monto = ws.cell(row=r, column=cm).value
+            if texto.startswith("saldo") and re.search(r"inicial|anterior", texto):
+                # lo que viene de años anteriores: entra en la suma, sin fecha
+                if isinstance(monto, (int, float)):
+                    movs.append({"fecha": None, "detalle": _texto_celda(f), "monto": _numero(monto)})
+                continue
+            if texto.startswith("saldo"):
+                saldo = _numero(monto)
                 break
-            if _fecha_iso(f) and isinstance(ws.cell(row=r, column=cm).value, (int, float)):
-                movs.append({"fecha": _fecha_iso(f), "detalle": _texto_celda(ws.cell(row=r, column=cd).value), "monto": _numero(ws.cell(row=r, column=cm).value)})
+            if _fecha_iso(f) and isinstance(monto, (int, float)):
+                movs.append({"fecha": _fecha_iso(f), "detalle": _texto_celda(ws.cell(row=r, column=cd).value), "monto": _numero(monto)})
         suma = sum(m["monto"] for m in movs)
         if saldo is not None and saldo != suma:
-            avisos.append(f"en «{ws.title}» los movimientos suman {suma} y el saldo dice {saldo}")
+            avisos.append(f"en «{ws.title.strip()}» los movimientos suman {_pesos(suma)} y el saldo dice {_pesos(saldo)}")
+        if es_prestamo:
+            hacia = [m for m in movs if m["monto"] > 0 and HACIA.search(m["detalle"])]
+            if hacia:
+                avisos.append(f"en «{ws.title.strip()}» hay {len(hacia)} transferencias hacia el socio por {_pesos(sum(m['monto'] for m in hacia))} sumadas como préstamo: revisarlas con el contador")
         # el nombre de la hoja manda: la celda del título a veces viene copiada de otra hoja
-        analisis.append({"hoja": ws.title.strip(), "saldo": saldo if saldo is not None else suma, "movs": movs})
+        analisis.append({"hoja": ws.title.strip(), "saldo": saldo if saldo is not None else suma, "movs": movs if es_espera else []})
 
     for a in avisos:
         print("  ¡ojo!", a)
@@ -432,7 +475,6 @@ def extraer_contable(origen: Path):
         "analisis": analisis,
         "avisos": avisos,
     })
-
 
 ADAPTADORES = {
     "finanzas": extraer_finanzas,
