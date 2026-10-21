@@ -57,8 +57,10 @@ URL como `url`; nunca crear otra página.
   honorarios y de proveedores y fondos por rendir − el sueldo del plan por cada mes; lo pagado al
   cofundador, que se reconoce por `cofundador_glosa` del modelo, va en su columna). Después se
   suman los meses cerrados del banco, menos lo que el bloque ya cuenta y el banco vuelve a contar
-  (fila «Ya contado en…»: cobros de facturas del SII fechadas hasta el corte y compras hasta el
-  corte pagadas desde las cuentas). Su semáforo usa la meta del mes por los meses del año; el
+  (fila «Ya contado en…»: cobros de facturas del SII fechadas hasta el corte y dadas por cobradas;
+  compras hasta el corte cuyo pago se encuentra en el banco, por fecha y proveedor, en una categoría
+  que el EBITDA cuenta como gasto; y boletas e impuestos por pagar al corte pagados después por el
+  mismo monto). Su semáforo usa la meta del mes por los meses del año; el
   semáforo grande sigue mirando los últimos meses del banco («cómo vamos ahora»). Si entre el
   pre cierre y la primera cartola faltan meses, se dice cuáles.
 - **Pre cierre del contador** (`leerContable` en `motor.js`, `I.contable`): balance tributario
@@ -66,14 +68,14 @@ URL como `url`; nunca crear otra página.
   2 pasivos y patrimonio, 3 ingresos, 4 gastos), nunca por nombres de clientes o proveedores; lo no
   operacional (depreciación, intereses, impuesto a la renta, corrección monetaria) queda fuera, y un
   sueldo de socio que el contador ya anotó se compara con el del plan (se toma el mayor). Lo pagado
-  sin documento es lo movido desde el 1 de enero (lo de años anteriores va aparte) y deja fuera los
-  anticipos a proveedores que ya tienen factura en el SII hasta el corte. En
+  sin documento es lo movido desde el 1 de enero (lo de años anteriores va aparte) y deja fuera, por
+  proveedor, lo que cubren sus facturas por pagar al corte (pagos a cuenta de facturas ya anotadas). En
   La plata es la capa «El año según el contador» (`pasado-anio`); en Hoy, una frase de la
   pregunta de la plata, y dos avisos: `cont-sin-respaldo-<AAAA-MM>-<huella>` y
   `cont-patrimonio-<AAAA-MM>-<huella>` (el mes del corte y el monto en cientos de miles: un pre
   cierre nuevo, o uno corregido con otras cifras, vuelve a avisar). El extractor no acepta un Excel
-  sin valores calculados ni un plan de cuentas que no siga 1-2-3-4; de los préstamos de socios
-  guarda solo el saldo.
+  sin valores calculados, montos en texto ni un plan de cuentas que no siga 1-2-3-4; de los
+  préstamos de socios guarda solo el saldo, y de las boletas e impuestos por pagar, fecha y monto.
 - Las pruebas usan datos ficticios: el repo es público.
 
 ## Recuperar los datos privados (sesión nueva)
